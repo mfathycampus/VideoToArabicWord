@@ -1,0 +1,12 @@
+# محرّك تفريغ اختياري: Cohere Transcribe Arabic (مُخصَّص للعربية)
+#
+# ⚠ يجرّ PyTorch (~2.5GB) — وهو ما يتجنّبه التثبيت الأساسي عمدًا
+#   (ADR-012). ثبّته فقط إن قِست وثبت لك تفوّقه على مادتك:
+#       python tools/benchmark_asr.py --eval-set my_eval.json
+-r requirements.txt
+transformers>=5.4.0
+torch>=2.2.0
+librosa>=0.10.0
+soundfile>=0.12.0
+sentencepiece>=0.2.0
+accelerate>=0.30.0

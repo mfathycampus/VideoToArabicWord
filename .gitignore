@@ -1,0 +1,35 @@
+# بيئات وذاكرة مؤقتة
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# ثنائيات مشحونة — تُجلب بـ tools/setup_ffmpeg.py ولا تدخل المستودع
+bin/
+models/
+
+# نواتج التشغيل
+logs/
+temp/
+output/
+dist/
+build/
+testdata/corpus/
+*.spec.bak
+
+# نواتج القياس والقبول (تُولَّد بالتشغيل)
+acceptance_report.json
+asr_benchmark.json
+wer_*.json
+
+# إعداد محلي قد يحوي مفاتيح
+config.local.yaml
+.env
+
+# نظام التشغيل
+Thumbs.db
+desktop.ini
+.DS_Store

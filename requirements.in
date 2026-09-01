@@ -1,0 +1,33 @@
+# متطلبات مباشرة. ولّد ملفًا مقفلًا بـ:  pip-compile requirements.in
+#
+# ملاحظة توافق مهمة:
+#   لا تقيّد numpy بـ <2. opencv-python 5.x تشترط numpy>=2 على Python 3.9+،
+#   وعجلات numpy 1.x غير موجودة أصلًا لـ Python 3.13/3.14. التقييد القديم
+#   كان يجعل التثبيت مستحيلًا على المفسّرات الحديثة.
+
+PyQt6>=6.5.0                # عجلات abi3 — تعمل على 3.10 حتى 3.14+
+faster-whisper>=1.0.0
+ctranslate2>=4.0.0          # محرك faster-whisper الفعلي (لا PyTorch — ADR-012)
+opencv-python>=4.8.0        # عجلات abi3
+Pillow>=10.0.0
+scikit-image>=0.21.0
+numpy>=1.24.0               # بلا سقف — انظر ملاحظة التوافق أعلاه
+python-docx>=1.1.0          # ⚠ ليست «docx» — انظر التحذير أدناه
+lxml>=4.9.0
+pydantic>=2.0.0
+PyYAML>=6.0
+
+# أدوات تطوير — لا تُشحن مع التطبيق
+pytest>=7.4.0
+pip-tools>=7.0.0
+
+# ────────────────────────────────────────────────────────────────
+# ⚠ تحذير: لا تثبّت حزمة اسمها «docx».
+#   هي مشروع مهجور من زمن Python 2، تثبّت ملف docx.py يحجب python-docx
+#   ويفشل بـ: ModuleNotFoundError: No module named 'exceptions'
+#   إن ثُبّتت بالخطأ:  pip uninstall -y docx
+#                      pip install --force-reinstall python-docx
+#
+# torch: محذوف عمدًا. faster-whisper يعمل على CTranslate2 (ADR-012).
+# imageio-ffmpeg: اختياري كمسار احتياطي؛ الإنتاج يشحن ffmpeg+ffprobe (ADR-013).
+# ────────────────────────────────────────────────────────────────
