@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import subprocess
-import sys
 from pathlib import Path
 from typing import Optional
 
@@ -33,19 +32,43 @@ class FFmpegService:
             raise FFmpegExecutionError(
                 f"تجاوز FFmpeg المهلة ({timeout}s).") from exc
 
+    # سلسلة تنظيف محافظة: تُزيل ما يضرّ التفريغ ولا تمسّ الكلام.
+    #   highpass=80   : يقطع هدير المكيّف وضجيج المروحة تحت 80Hz
+    #   afftdn        : خفض ضوضاء طيفي خفيف
+    #   loudnorm      : توحيد المستوى — تسجيل يتذبذب فيه بُعد الميكروفون
+    #                   يُربك VAD فيبتلع مقاطع كاملة
+    DENOISE_FILTER = "highpass=f=80,afftdn=nf=-25,loudnorm=I=-16:TP=-1.5:LRA=11"
+
     def extract_audio(self, video_path: Path, output_path: Path,
-                      sample_rate: int = 16000) -> Path:
-        """يستخرج صوتًا أحاديًا 16kHz PCM — الصيغة التي يتوقعها Whisper."""
+                      sample_rate: int = 16000,
+                      start_seconds: float = 0.0,
+                      end_seconds: Optional[float] = None,
+                      denoise: bool = False) -> Path:
+        """يستخرج صوتًا أحاديًا 16kHz PCM — الصيغة التي يتوقعها Whisper.
+
+        ``-ss`` قبل ``-i`` للبحث السريع (يقفز بلا فكّ ترميز)، و ``-to``
+        بعده لأنه يُحسب من نقطة البدء.
+        """
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        result = self._run([
-            "-i", str(video_path),
+        args: list[str] = []
+        if start_seconds > 0:
+            args += ["-ss", f"{start_seconds:.3f}"]
+        args += ["-i", str(video_path)]
+        if end_seconds is not None:
+            args += ["-to", f"{max(0.0, end_seconds - start_seconds):.3f}"]
+        args += [
             "-vn",                       # تجاهل الفيديو
             "-map", "0:a:0",             # أول مسار صوتي فقط
+        ]
+        if denoise:
+            args += ["-af", self.DENOISE_FILTER]
+        args += [
             "-acodec", "pcm_s16le",
             "-ar", str(sample_rate),
             "-ac", "1",                  # أحادي
             str(output_path),
-        ])
+        ]
+        result = self._run(args)
         if result.returncode != 0 or not output_path.exists():
             raise FFmpegExecutionError(
                 f"فشل استخراج الصوت: {result.stderr.strip()[:400]}")
@@ -74,10 +97,18 @@ class FFmpegService:
                 f"{result.stderr.strip()[:300]}")
         return output_path
 
-    def validate_readable(self, video_path: Path) -> None:
-        """يتحقق من إمكانية فك ترميز الفيديو فعليًا قبل بدء الـ pipeline."""
-        result = self._run(["-i", str(video_path), "-frames:v", "1",
-                            "-f", "null", "-"], timeout=120)
+    def validate_readable(self, media_path: Path,
+                          expect_video: bool = True) -> None:
+        """يتحقق من إمكانية فك ترميز المصدر فعليًا قبل بدء الـ pipeline.
+
+        ‏``-frames:v 1`` يفشل حتمًا على ملف صوتي سليم، فلا يصلح فحصًا
+        موحّدًا. لمصدر صوتي نفكّ عيّنة من الصوت بدل الإطار.
+        """
+        args = (["-i", str(media_path), "-frames:v", "1", "-f", "null", "-"]
+                if expect_video else
+                ["-i", str(media_path), "-t", "1", "-f", "null", "-"])
+        result = self._run(args, timeout=120)
         if result.returncode != 0:
+            kind = "الفيديو" if expect_video else "الملف الصوتي"
             raise MediaValidationError(
-                f"تعذر فك ترميز الفيديو: {result.stderr.strip()[:300]}")
+                f"تعذر فك ترميز {kind}: {result.stderr.strip()[:300]}")

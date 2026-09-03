@@ -31,3 +31,5 @@ pip-tools>=7.0.0
 # torch: محذوف عمدًا. faster-whisper يعمل على CTranslate2 (ADR-012).
 # imageio-ffmpeg: اختياري كمسار احتياطي؛ الإنتاج يشحن ffmpeg+ffprobe (ADR-013).
 # ────────────────────────────────────────────────────────────────
+
+keyring>=25.0,<26

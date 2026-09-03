@@ -19,7 +19,6 @@
 
 from __future__ import annotations
 
-import re
 from typing import Optional
 
 from docx.enum.table import WD_TABLE_ALIGNMENT
@@ -189,20 +188,13 @@ def configure_document_defaults(
         set_section_rtl(section)
 
 
-# محارف العزل الاتجاهي (Unicode Bidi Isolates)
-LRI = "\u2066"   # Left-to-Right Isolate
-PDI = "\u2069"   # Pop Directional Isolate
-
-
-def isolate_ltr(text: str) -> str:
-    """يعزل نصًا لاتينيًا/رقميًا داخل فقرة عربية.
-
-    بدون هذا العزل، خوارزمية Bidi تعيد ترتيب المقاطع الرقمية حول الفواصل
-    عند العرض: ``1280×720`` يظهر ``720×1280``، و ``⏱ 00:01:23`` يظهر
-    ``00:01:23 ⏱``. الـ XML صحيح تمامًا — العطل في *العرض* فقط، ولا
-    يُكتشف إلا بفتح الملف فعليًا.
-    """
-    return f"{LRI}{text}{PDI}"
+# ملاحظة تاريخية: النسخة السابقة عزلت المقاطع اللاتينية بمحارف يونيكود
+# (U+2066/U+2069). تعمل في LibreOffice و**تفشل في Microsoft Word**: يعرضها
+# مربّعات مكتوبًا داخلها LRI و PDI. الحل الحالي بنيوي بلا أي محرف مضاف —
+# ``split_by_direction`` + ``add_mixed_text`` أدناه. الدوال القديمة
+# (``isolate_ltr`` و ``isolate_mixed`` و ``auto_isolate``) حُذفت حتى لا
+# يستدعيها أحد بالخطأ؛ اختبار انحدار في ``test_document_quality`` يفشل إن
+# عاد أي محرف تحكّم اتجاهي إلى المستند.
 
 
 def style_ltr_run(
@@ -270,7 +262,7 @@ def dominant_direction(text: str) -> str:
     ``"تفريغ ومحتوى مرئي — static_single_slide.mp4"``
     أغلب حروفه لاتينية، فتصنّفه قاعدة الأغلبية ``ltr`` ويخرج بلا
     ``w:rtl``، فيُعرض جزؤه العربي مكسورًا. أما المقاطع اللاتينية داخله
-    فتحميها عزلات الاتجاه (``isolate_mixed``) لا تصنيف الفقرة.
+    فتحميها قسمة الاتجاه (``split_by_direction``) لا تصنيف الفقرة.
 
     نص بلا أي حرف قوي (``"01_2026.mp4"``) يُعدّ ``ltr``.
     """
@@ -311,20 +303,6 @@ def add_mixed_text(
             style_arabic_run(run, font_name, size_pt, bold=bold, color=color)
         else:
             style_ltr_run(run, font_name, size_pt, bold=bold, color=color)
-
-
-# مقاطع لاتينية/رقمية: حروف وأرقام وما يفصلها من نقاط ونقطتين وشرطات
-_LATIN_TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._\-/:×+()]*")
-
-
-def isolate_mixed(text: str) -> str:
-    """مُهملة — انظر التحذير أعلاه."""
-    return text
-
-
-def auto_isolate(text: str) -> str:
-    """مُهملة: تُعيد النص كما هو. الاتجاه يُضبط على مستوى الفقرة/الـ run."""
-    return text
 
 
 def split_by_direction(text: str) -> list[tuple[str, bool]]:

@@ -47,24 +47,76 @@ class TranscriptionEngine:
         # الإنتاج يُسقط النموذج بعد كل مهمة لتحرير VRAM. أدوات القياس
         # الدفعية تضبط هذه الراية لتحميله مرة واحدة.
         self.keep_model_loaded = False
+        # حاجز ثانٍ ضد التنزيل الصامت (ADR-014): حتى لو أخطأ فحص التوفّر،
+        # ``local_files_only`` يمنع faster-whisper من الاتصال بالشبكة.
+        # يرفعه الـ pipeline فقط بعد إذن صريح من المستخدم.
+        self.allow_download = False
         self._cached: Optional[tuple[str, str, WhisperModel]] = None
         if self.config.download_root is None:
             from audio.model_manager import default_cache_root
             self.config = self.config.model_copy(
                 update={"download_root": default_cache_root()})
 
+    def _effective_prompt(self) -> Optional[str]:
+        """يدمج القاموس في موجّه البداية.
+
+        ‏Whisper يميل إلى كتابة الأسماء المنقولة كما يسمعها؛ ذكرها في
+        الموجّه يجعلها متاحة في سياقه فيختارها بدل تخمين إملائها.
+        الحدّ 224 رمزًا في Whisper — نقصّ القاموس بحدّ حروف محافظ حتى لا
+        يزيح الموجّه الأساسي.
+        """
+        base = (self.config.initial_prompt or "").strip()
+        glossary = " ".join((self.config.glossary or "").split())
+        if not glossary:
+            return base or None
+        glossary = glossary[:400]
+        merged = f"{base} المصطلحات الواردة: {glossary}." if base \
+            else f"المصطلحات الواردة: {glossary}."
+        return merged
+
+    def _resolve_threads(self) -> int:
+        """عدد الخيوط: الإعداد إن حُدّد، وإلا أنوية المعالج الفعلية.
+
+        الرقم الثابت لا يناسب جهازين مختلفين: أربعة خيوط على معالج
+        بثمانية أنوية تترك نصف الأداء، وعلى نواتين تُثقِله بتبديل سياق.
+        نترك نواةً للنظام والواجهة حتى لا يتجمّد الجهاز أثناء ساعات
+        التفريغ.
+        """
+        configured = int(self.config.cpu_threads or 0)
+        if configured > 0:
+            return configured
+        import os
+
+        cores = os.cpu_count() or 4
+        return max(1, cores - 1) if cores > 2 else cores
+
     def _load_model(self, device: str, compute_type: str) -> WhisperModel:
         if (self.keep_model_loaded and self._cached
                 and self._cached[0] == device and self._cached[1] == compute_type):
             return self._cached[2]
-        logger.info(f"تحميل Whisper ({self.config.model_size}) على {device}/{compute_type}")
+        threads = self._resolve_threads()
+        logger.info(f"تحميل Whisper ({self.config.model_size}) على "
+                    f"{device}/{compute_type} · خيوط={threads} · "
+                    f"beam={self.config.beam_size}")
+
+        # تشخيص صريح لأخطر سبب بطء غير مرئي: بيئتا OpenMP في عملية واحدة.
+        # بلا هذا السطر يظهر العطل كـ«التفريغ بطيء بلا سبب» ولا شيء
+        # يدلّ عليه في السجلّ.
+        import sys as _sys
+
+        if "torch" in _sys.modules:
+            logger.warning(
+                "‏PyTorch محمَّل في هذه العملية مع CTranslate2 — بيئتا "
+                "OpenMP تتنازعان الأنوية وقد يتضاعف زمن التفريغ. "
+                "لا تُفعّل المحرّكات الاختيارية إلا عند استعمالها فعلًا.")
         model = WhisperModel(
             self.config.model_size,
             device=device,
             compute_type=compute_type,
-            cpu_threads=self.config.cpu_threads,
+            cpu_threads=self._resolve_threads(),
             download_root=str(self.config.download_root)
             if self.config.download_root else None,
+            local_files_only=not self.allow_download,
         )
         if self.keep_model_loaded:
             self._cached = (device, compute_type, model)
@@ -124,7 +176,7 @@ class TranscriptionEngine:
                 condition_on_previous_text=cfg.condition_on_previous_text,
                 no_speech_threshold=cfg.no_speech_threshold,
                 compression_ratio_threshold=cfg.compression_ratio_threshold,
-                initial_prompt=cfg.initial_prompt,
+                initial_prompt=self._effective_prompt(),
             )
 
             total = float(getattr(info, "duration", 0.0) or 0.0)

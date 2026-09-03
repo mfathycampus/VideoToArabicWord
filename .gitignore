@@ -18,7 +18,11 @@ output/
 dist/
 build/
 testdata/corpus/
+acceptance_out/
 *.spec.bak
+
+# مجلدات مهام أُنتجت داخل المشروع (يحدث إن ضُبط مجلد الحفظ هنا)
+*/job_state.json
 
 # نواتج القياس والقبول (تُولَّد بالتشغيل)
 acceptance_report.json

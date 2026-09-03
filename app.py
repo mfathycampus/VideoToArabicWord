@@ -1,12 +1,27 @@
 """نقطة الدخول."""
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from utils.deps import require_ready          # noqa: E402
+# ── حارس OpenMP ─────────────────────────────────────────────────────
+# يجب أن يسبق أي استيراد لمكتبة حسابية. ‏CTranslate2 (محرّك التفريغ)
+# يوزّع عمله على أنوية المعالج عبر OpenMP. إن حُمّلت في العملية نفسها
+# مكتبة أخرى تحمل بيئة OpenMP خاصة بها — PyTorch مثلًا — تنازعت
+# البيئتان الأنويةَ وتضاعف زمن التفريغ.
+#
+# الحلّ الأساسي ألّا يُحمَّل PyTorch أصلًا (فحص المحرّكات صار
+# ``find_spec`` بلا استيراد)، وهذا حزام أمان إضافي: نثبّت عدد خيوط
+# OpenMP على أنوية المعالج ناقص واحدة إن لم يضبطها المستخدم.
+if "OMP_NUM_THREADS" not in os.environ:
+    _cores = os.cpu_count() or 4
+    os.environ["OMP_NUM_THREADS"] = str(max(1, _cores - 1)
+                                        if _cores > 2 else _cores)
+
+from utils.deps import require_ready  # noqa: E402
 
 
 def main() -> int:

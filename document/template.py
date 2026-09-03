@@ -14,24 +14,26 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
-
-from utils.timestamps import arabic_datetime
 from pathlib import Path
 from typing import Optional
 
 from docx import Document
-from docx.enum.section import WD_SECTION
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_BREAK
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Inches, Pt, RGBColor
 
 from document.rtl_utils import (
-    add_mixed_text, dominant_direction, set_paragraph_ltr, set_paragraph_rtl,
-    set_section_rtl, set_table_rtl, style_arabic_run, style_ltr_run,
+    add_mixed_text,
+    dominant_direction,
+    set_paragraph_ltr,
+    set_paragraph_rtl,
+    set_section_rtl,
+    set_table_rtl,
+    style_arabic_run,
+    style_ltr_run,
 )
-
+from utils.timestamps import arabic_datetime
 
 # مسار الشعار الافتراضي داخل المشروع
 DEFAULT_LOGO = Path(__file__).resolve().parents[1] / "assets" / "logo.png"
@@ -381,7 +383,81 @@ def add_table_of_contents(document: Document, theme: Theme,
     document.add_paragraph().add_run().add_break(WD_BREAK.PAGE)
 
 
+def add_figure_index(document: Document, theme: Theme,
+                     heading: str = "فهرس الأشكال") -> None:
+    """قائمة بكل الأشكال وتوقيتاتها، تُبنى من حقول SEQ في التسميات.
+
+    لمراجعة محاضرة، هذه القائمة هي أسرع طريق إلى اللقطة المطلوبة: تُقرأ
+    كفهرس بصري للفيديو كله. تتحدّث داخل Word بـ F9 مثل جدول المحتويات.
+
+    المعرّف ``Figure`` لاتيني عمدًا رغم أن التسمية المعروضة عربية:
+    معرّفات SEQ العربية تعمل في Word لكنها تنكسر عند فتح الملف في
+    محرّرات أخرى، والمعرّف لا يظهر للقارئ أصلًا.
+    """
+    title = document.add_paragraph()
+    set_paragraph_rtl(title, WD_ALIGN_PARAGRAPH.RIGHT)
+    style_arabic_run(title.add_run(heading), theme.heading_font, 14,
+                     bold=True, color=theme.accent)
+
+    holder = document.add_paragraph()
+    set_paragraph_rtl(holder)
+    _field(holder, ' TOC \\h \\z \\c "Figure" ',
+           "اضغط داخل هذا الإطار ثم F9 لتحديث فهرس الأشكال",
+           theme, theme.body_pt, theme.muted)
+
+    document.add_paragraph().add_run().add_break(WD_BREAK.PAGE)
+
+
+def add_sequence_number(paragraph, identifier: str, theme: Theme,
+                        size_pt: float = 9.5, fallback: int = 1,
+                        color: Optional[RGBColor] = None):
+    """رقم شكل محسوب بحقل ``SEQ`` بدل رقم نصّي ثابت.
+
+    الرقم النصّي يبدو صحيحًا لكنه لا يُبنى منه فهرس أشكال، ويصير خاطئًا
+    لحظة أن يحذف المستخدم صورة من المستند. حقل SEQ يعيد الترقيم تلقائيًا
+    ويغذّي ``add_figure_index``.
+    """
+    return _field(paragraph, f" SEQ {identifier} \\* ARABIC ",
+                  str(fallback), theme, size_pt, color)
+
+
+def _modernize_compatibility(document: Document) -> None:
+    """يرفع إعدادات توافق الإصدار عن قالب python-docx الافتراضي.
+
+    قالب python-docx المدمج (المبني على default.docx القديم) يحمل في
+    ``word/settings.xml`` عنصر ``w:compat`` بقيمتين تُخرِّبان مستندات
+    RTL تحديدًا:
+
+    * ``compatibilityMode = 14`` (Word 2010) — يفتح Word الحديث الملف
+      في «وضع التوافق» (Compatibility Mode) ويستخدم محرك التنسيق
+      والعدالة (justification) القديم لنصوص Complex Script، فتظهر
+      محاذاة الفقرات مكسورة بصريًا رغم أن ``w:jc``/``w:bidi`` صحيحان
+      تمامًا في XML. رفعها إلى 15 (Word 2013+) يزيل الشارة ويشغّل
+      محرك التخطيط الحديث.
+    * ``doNotFlipMirrorIndents = 1`` — يمنع Word من عكس المسافات
+      البادئة (``w:ind``) للفقرات ثنائية الاتجاه، فأي مسافة بادئة
+      محسوبة بمنطق LTR (تعداد نقطي، اقتباس بمسافة بادئة يسراً...)
+      تبقى ملتصقة بالهامش الأيسر بدل أن تنتقل تلقائيًا لليمين. هذا هو
+      سبب ظهور القوائم والاقتباسات منزاحة عن الهامش الأيمن رغم صحة
+      محاذاة النص نفسه. تعطيلها (0) يعيد لـ Word سلوكه الطبيعي في
+      عكس المسافات البادئة لفقرات RTL.
+
+    يُستدعى مرة واحدة عقب ``Document()`` (من ``configure_page``)، قبل
+    أي فقرة أو نمط.
+    """
+    compat = document.settings.element.find(qn("w:compat"))
+    if compat is None:
+        return
+    for setting in compat.findall(qn("w:compatSetting")):
+        name = setting.get(qn("w:name"))
+        if name == "compatibilityMode":
+            setting.set(qn("w:val"), "15")
+        elif name == "doNotFlipMirrorIndents":
+            setting.set(qn("w:val"), "0")
+
+
 def configure_page(document: Document, theme: Theme) -> None:
+    _modernize_compatibility(document)
     section = document.sections[0]
     set_section_rtl(section)
     section.top_margin = Inches(0.9)

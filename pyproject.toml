@@ -1,0 +1,75 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "video-to-arabic-word"
+version = "1.4.0"
+description = "تطبيق سطح مكتب محلي يحوّل فيديو تعليميًا إلى مستند Word عربي منظّم"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Mohammed Yosef" }]
+keywords = ["arabic", "rtl", "whisper", "docx", "transcription", "offline"]
+classifiers = [
+  "Environment :: X11 Applications :: Qt",
+  "Natural Language :: Arabic",
+  "Operating System :: Microsoft :: Windows",
+  "Programming Language :: Python :: 3.10",
+  "Topic :: Multimedia :: Video",
+  "Topic :: Text Processing :: Markup",
+]
+
+[project.scripts]
+video-to-word = "tools.run_pipeline:main"
+video-to-word-doctor = "tools.doctor:main"
+
+[tool.setuptools]
+packages = ["ai", "audio", "config", "core", "document", "tools", "ui",
+            "utils", "video"]
+
+# ---------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# مصفوفة التوافق تحتاج ملفات مولَّدة: python tools/make_test_corpus.py
+markers = [
+  "slow: اختبارات بطيئة",
+  "asr: تحتاج نموذج تفريغ مثبّتًا",
+]
+filterwarnings = ["ignore::DeprecationWarning"]
+
+# ---------------------------------------------------------------------
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+exclude = ["bin", "models", "testdata", "build", "dist", ".venv"]
+
+[tool.ruff.lint]
+# مجموعة تمسك الأعطال لا الأذواق. قواعد الترقية التجميلية (UP، PTH، C4)
+# مؤجَّلة عمدًا: تفعيلها اليوم يعني تعديلًا ميكانيكيًا في ~300 سطر يدفن
+# التغييرات الحقيقية في سجلّ المستودع. فعّلها في دفعة مستقلة:
+#   ruff check --select UP,PTH,C4 --fix .
+select = [
+  "E", "W",    # pycodestyle
+  "F",         # pyflakes — يمسك الاستيرادات والمتغيّرات الميتة
+  "I",         # ترتيب الاستيرادات
+  "B",         # bugbear — أعطال شائعة حقيقية
+]
+ignore = [
+  "E501",      # طول السطر يتكفّل به المنسّق
+  "E702",      # فاصلة منقوطة: أسلوب مقصود في الاختبارات والأدوات
+  "B008",      # استدعاء في القيمة الافتراضية — نمط Field الطبيعي
+  "B905",      # zip(strict=) — لا يضيف شيئًا في المواضع الحالية
+]
+
+[tool.ruff.lint.per-file-ignores]
+# الاختبارات تستورد للتوثيق وللواقط، وتؤكّد على استثناءات عامة عمدًا
+"tests/*" = ["F401", "F841", "B017", "E401", "I001"]
+"tools/*" = ["E401", "I001"]
+
+# ---------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true       # cv2 و faster_whisper بلا تلميحات
+warn_unused_ignores = true
+warn_redundant_casts = true
+exclude = "(bin|models|testdata|build|dist)/"

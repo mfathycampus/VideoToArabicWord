@@ -47,23 +47,116 @@ class CohereArabicEngine(ASREngine):
     )
 
     def __init__(self, model_id: str = MODEL_ID, device: str = "auto",
-                 **_kwargs) -> None:
+                 config=None, hf_token: str = "", **_kwargs) -> None:
         self.model_id = model_id
+        # الإعداد هو المصدر حين يُمرَّر: الجهاز والرمز يأتيان منه
+        if config is not None:
+            device = getattr(config, "device", device) or device
+            hf_token = hf_token or getattr(config, "hf_token", "") or ""
         self.device = device
+        self._explicit_token = (hf_token or "").strip()
         self._model = None
         self._processor = None
 
+    @property
+    def hf_token(self) -> str:
+        """الرمز من الإعداد أولًا ثم من متغيّر البيئة.
+
+        تقديم الإعداد يجنّب أشهر التباس: ``setx`` لا يؤثر على البرامج
+        المفتوحة، فيضبط المستخدم الرمز ويظل يرى «مقيّد الوصول».
+        """
+        import os
+
+        return (self._explicit_token
+                or os.environ.get("HF_TOKEN", "")
+                or os.environ.get("HUGGING_FACE_HUB_TOKEN", ""))
+
     # ------------------------------------------------------------------
+    # حزم إلزامية: (اسم الاستيراد، اسم الحزمة على PyPI)
+    _REQUIRED = (
+        ("torch", "torch"),
+        ("transformers", "transformers"),
+        ("librosa", "librosa"),
+        ("soundfile", "soundfile"),
+    )
+
+    def diagnose(self) -> tuple[bool, str]:
+        """يفحص كل تبعية على حدة ويعيد سببًا صالحًا للعرض.
+
+        ثلاث مصائد حقيقية يعالجها هذا الفحص:
+
+        1. **مفسّر مختلف.** ``pip install`` في PowerShell قد يصيب مفسّرًا
+           غير الذي يشغّل التطبيق، فيرى المستخدم «مثبّتة» في الطرفية
+           و«غير مثبّت» في البرنامج. لذلك نطبع مسار المفسّر الجاري.
+        2. **‏torch يفشل بغير ``ImportError``.** على ويندوز يرفع أحيانًا
+           ``OSError`` (‏DLL ناقصة أو حزمة MSVC) — والفحص القديم كان
+           يلتقط ``ImportError`` وحدها، فيتسرّب الخطأ ويظهر «غير مثبّت»
+           بلا سبب.
+        3. **‏transformers قديمة.** الصنف المطلوب أُضيف في 5.4؛ إصدار
+           أقدم يستورد بلا خطأ ثم يفشل عند التحميل.
+        """
+        import importlib.util
+        import sys
+
+        # ⚠ الفحص بـ ``find_spec`` لا ``__import__``.
+        #
+        # الاستيراد الفعلي كان يُحمّل PyTorch و transformers في العملية
+        # **عند فتح البرنامج**، لمجرد كتابة «(غير مثبّت)» بجوار محرّك لم
+        # يختره أحد. والأثر ليس بطء إقلاع فحسب: PyTorch يجلب معه بيئة
+        # OpenMP خاصة به، و CTranslate2 (محرّك faster-whisper) يستعمل
+        # OpenMP أيضًا. بيئتا OpenMP في عملية واحدة تتنازعان الأنوية،
+        # فيتضاعف زمن التفريغ على المعالج — وهو ما فسّر قفزة معالجة
+        # نفس الملف من ~1:45 إلى أكثر من ثلاث ساعات بعد تثبيت المحرّك
+        # الاختياري، **دون اختياره**.
+        #
+        # ``find_spec`` يجيب على السؤال نفسه (أمثبَّتة الحزمة؟) بلا
+        # تحميل أي شيء في العملية.
+        missing: list[str] = []
+        for module, package in self._REQUIRED:
+            try:
+                if importlib.util.find_spec(module) is None:
+                    missing.append(package)
+            except Exception as exc:      # حزمة معطوبة أو DLL ناقصة
+                return (False,
+                        f"تعذّر فحص «{package}»: {type(exc).__name__}: "
+                        f"{str(exc)[:160]}\n"
+                        f"المفسّر: {sys.executable}")
+        if missing:
+            return (False,
+                    "حزم ناقصة: " + "، ".join(missing) + "\n"
+                    f"ثبّتها بـ:  \"{sys.executable}\" -m pip install "
+                    "-r requirements-cohere.txt\n"
+                    f"المفسّر الذي يبحث فيه البرنامج: {sys.executable}")
+
+        # الإصدار من بيانات التوزيعة لا من استيراد الحزمة
+        try:
+            from importlib.metadata import version as package_version
+
+            version = package_version("transformers")
+        except Exception:
+            version = "0"
+
+        def _at_least(found: str, required: tuple[int, ...]) -> bool:
+            parts = []
+            for chunk in found.split("."):
+                digits = "".join(c for c in chunk if c.isdigit())
+                if not digits:
+                    break
+                parts.append(int(digits))
+            return tuple(parts[:len(required)]) >= required
+
+        if not _at_least(version, (5, 4)):
+            return (False,
+                    f"إصدار transformers ({version}) أقدم من المطلوب. "
+                    "الصنف المطلوب أُضيف في 5.4:\n"
+                    f"  \"{sys.executable}\" -m pip install -U "
+                    "\"transformers>=5.4.0\"")
+
+        return (True, f"جاهز · transformers {version}")
+
     def is_available(self) -> bool:
         """توفّر التبعيات فقط — لا يُنزّل النموذج ولا يشغّله."""
-        try:
-            import transformers  # noqa: F401
-            import torch  # noqa: F401
-            import librosa  # noqa: F401
-        except ImportError:
-            return False
-        return hasattr(__import__("transformers"),
-                       "CohereAsrForConditionalGeneration")
+        return self.diagnose()[0]
 
     def _load(self):
         if self._model is not None:
@@ -82,11 +175,18 @@ class CohereArabicEngine(ASREngine):
             resolved = "cuda" if torch.cuda.is_available() else "cpu"
         logger.info(f"تحميل {self.model_id} على {resolved}…")
 
+        # يُمرَّر صراحةً: الاعتماد على اكتشاف huggingface_hub وحده يختلف
+        # بين إصداراتها، والإعداد يسبق متغيّر البيئة.
+        token = self.hf_token or None
+        auth = {"token": token} if token else {}
+
         try:
-            self._processor = AutoProcessor.from_pretrained(self.model_id)
+            self._processor = AutoProcessor.from_pretrained(
+                self.model_id, **auth)
             self._model = CohereAsrForConditionalGeneration.from_pretrained(
                 self.model_id,
                 dtype=torch.float16 if resolved == "cuda" else torch.float32,
+                **auth,
             ).to(resolved)
         except Exception as exc:
             message = str(exc)
@@ -99,8 +199,12 @@ class CohereArabicEngine(ASREngine):
                     "     واضغط على زر طلب الوصول ووافق على الشروط.\n"
                     "  2) أنشئ رمزًا من https://huggingface.co/settings/tokens\n"
                     '  3) في PowerShell:  setx HF_TOKEN "hf_..."\n'
-                    "     ثم أعد فتح البرنامج.\n\n"
-                    "حتى ذلك الحين يعمل محرّك Whisper الافتراضي بلا قيود."
+                    "     ثم أعد فتح البرنامج (setx لا يؤثر على "
+                    "البرامج المفتوحة).\n\n"
+                    + ("الرمز الحالي: غير مضبوط.\n\n" if not token else
+                       "رمز موجود في HF_TOKEN لكن الوصول ما زال مرفوضًا — "
+                       "تأكّد أنك وافقت على شروط النموذج بنفس الحساب.\n\n")
+                    + "ستكمل المهمة الآن بمحرّك Whisper الافتراضي."
                 ) from exc
             raise ModelUnavailableError(
                 f"تعذّر تحميل نموذج Cohere: {message[:300]}") from exc
@@ -125,7 +229,7 @@ class CohereArabicEngine(ASREngine):
         pieces: list[str] = []
         started = time.monotonic()
 
-        for index, offset in enumerate(range(0, max(1, len(waveform)), step), start=1):
+        for offset in range(0, max(1, len(waveform)), step):
             if cancel_token:
                 cancel_token.raise_if_cancelled()
                 cancel_token.wait_if_paused()

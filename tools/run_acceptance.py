@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import subprocess
 import sys
 import time
@@ -41,9 +42,6 @@ def run_pytest() -> dict:
         cwd=str(ROOT), capture_output=True, text=True, timeout=2400)
     tail = result.stdout.strip().splitlines()[-1] if result.stdout else ""
     passed = failed = skipped = 0
-    for token in tail.replace(",", " ").split():
-        pass
-    import re
     for count, label in re.findall(r"(\d+) (passed|failed|skipped|error)", tail):
         if label == "passed":
             passed = int(count)
@@ -83,7 +81,9 @@ def run_matrix() -> dict:
         expect_failure = entry["category"] == "must_fail"
         start = time.time()
         try:
-            docx = pipeline.run(video)
+            # المصدر الصوتي الخالص مسارٌ مقصود لا حالة فشل — يُفعَّل صراحةً
+            docx = pipeline.run(
+                video, allow_audio_only=entry["category"] == "audio")
             ok = not expect_failure
             rows.append({**entry, "result": "processed", "ok": ok,
                          "seconds": round(time.time() - start, 2),

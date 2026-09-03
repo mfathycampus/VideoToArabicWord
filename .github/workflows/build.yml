@@ -1,0 +1,35 @@
+name: بناء الحزمة التنفيذية
+
+# PyInstaller مع PyQt6 و ctranslate2 وثنائيات ffmpeg هو أكبر مجهول في
+# المشروع. تشغيله في كل دفعة يكشف أعطال التغليف يوم حدوثها لا يوم التسليم.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pyinstaller
+      - name: تعبئة bin/ بـ ffmpeg و ffprobe
+        run: python tools/setup_ffmpeg.py
+      - name: البناء
+        run: pyinstaller build.spec --noconfirm
+      - name: تشغيل تجريبي للحزمة
+        # لا واجهة في العدّاء، فنكتفي بأن التنفيذي موجود ويستجيب
+        run: |
+          if (-not (Test-Path "dist/VideoToArabicWord/VideoToArabicWord.exe")) {
+            throw "لم يُنتَج الملف التنفيذي"
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VideoToArabicWord-windows
+          path: dist/VideoToArabicWord

@@ -103,6 +103,20 @@ winget install -e --id Gyan.FFmpeg
 
 **`ffprobe` إلزامي** — حزمة `imageio-ffmpeg` لا تشحنه إطلاقًا (ADR-013).
 
+### تفعيل OCR (نص الشاشة) — اختياري
+
+ميزة «استخراج نص الشاشة من الصور» في الواجهة تحتاج ثنائي **Tesseract**
+منفصلًا (مثل ffmpeg تمامًا) — بلا تثبيته يبقى البرنامج يعمل عاديًا،
+وتُترك حقول نص الشاشة فارغة في المستند.
+
+```powershell
+winget install -e --id UB-Mannheim.TesseractOCR
+```
+
+أو نزّل من <https://github.com/UB-Mannheim/tesseract/wiki> — **فعِّل
+حزمة اللغة العربية (Arabic)** ضمن خيارات التثبيت، فهي غير مثبَّتة
+افتراضيًا. تحقّق من التثبيت عبر `python tools\doctor.py`.
+
 ### `numpy` يرفض التثبيت على Python 3.13/3.14
 
 تأكد أنك تستخدم `requirements.txt` المرفق. النسخ القديمة كانت تقيّد

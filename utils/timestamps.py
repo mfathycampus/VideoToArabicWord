@@ -79,14 +79,32 @@ def estimate_remaining(elapsed: float, fraction_done: float) -> float | None:
     return elapsed * (1.0 - fraction_done) / fraction_done
 
 
+def strip_source_fingerprint(name: str) -> str:
+    """يُزيل بصمة مصدر الملف (``__xxxxxxxx``) من اسم مجلد المهمة للعرض.
+
+    ``core/pipeline.py::job_dir_for`` يُلحق بصمة 8 أحرف سداسية عشرية
+    باسم مجلد المهمة لمنع تصادم ملفين بنفس الاسم من مسارين مختلفين.
+    البصمة ضرورية على القرص لتمييز المهام، لكنها ضجيج بصري للمستخدم —
+    هذه الدالة هي نقطة الفصل بين "اسم المجلد" و"الاسم المعروض".
+    """
+    import re
+
+    return re.sub(r"__[0-9a-f]{8}\b", "", name).strip()
+
+
 def humanize_title(stem: str) -> str:
     """يحوّل اسم ملف إلى عنوان مقروء.
 
     ``WhatsApp Video 2026-08-30 at 10.48.24 AM`` ⇒
     ``WhatsApp Video 2026-08-30``  — تُزال اللواحق التقنية والفواصل.
+
+    بصمة مصدر الملف المُلحَقة باسم مجلد المهمة (انظر
+    ``strip_source_fingerprint``) تُزال أولًا فلا تظهر داخل عناوين
+    المستندات المدموجة.
     """
     import re
 
+    stem = strip_source_fingerprint(stem)
     text = stem.replace("_", " ")
     # الشرطة فاصلة بين كلمات فقط، لا داخل تاريخ مثل 2026-08-30
     text = re.sub(r"(?<=[^\W\d])-(?=[^\W\d])", " ", text)

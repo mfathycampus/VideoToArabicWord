@@ -114,3 +114,22 @@ def test_sections_are_chronological():
     plan = TimelinePlanner().build(t, [], "عنوان")
     starts = [s.start_timestamp for s in plan.sections]
     assert starts == sorted(starts)
+
+
+def test_ocr_text_is_copied_from_keyframe_to_figure_block():
+    """نص الشاشة (OCR) يُنسخ من KeyframeMetadata إلى كتلة الشكل — مصدر
+    مختلف تمامًا عن caption المحسوبة من الكلام المصاحب."""
+    t = transcript((0.0, 2.0, "كلام قصير."))
+    keyframe = kf(1, 10.0)
+    keyframe.ocr_text = "العنوان: مقدمة في الجبر الخطي"
+    plan = TimelinePlanner().build(t, [keyframe], "عنوان")
+    figures = [b for s in plan.sections for b in s.blocks if b.kind == "figure"]
+    assert len(figures) == 1
+    assert figures[0].ocr_text == "العنوان: مقدمة في الجبر الخطي"
+
+
+def test_empty_ocr_text_stays_empty_in_figure_block():
+    t = transcript((0.0, 2.0, "كلام قصير."))
+    plan = TimelinePlanner().build(t, [kf(1, 10.0)], "عنوان")
+    figures = [b for s in plan.sections for b in s.blocks if b.kind == "figure"]
+    assert figures[0].ocr_text == ""

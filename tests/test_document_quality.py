@@ -432,3 +432,69 @@ def test_arabic_date_avoids_reversible_numeric_groups():
     text = arabic_datetime(datetime(2026, 8, 31, 21, 33))
     assert "أغسطس" in text and "2026" in text and "31" in text
     assert "2026-08-31" not in text, "صيغة ISO تنعكس بصريًا في العربية"
+
+
+def test_ocr_text_renders_under_the_figure_when_present(tmp_path):
+    """نص الشاشة (OCR) على لقطة يجب أن يظهر في المستند تحتها، منفصلًا
+    عن التسمية العادية — انظر document/word_generator.py::_add_figure."""
+    images = tmp_path / "img"
+    images.mkdir()
+    name = "000001_00-00-01-000.png"
+    Image.new("RGB", (1280, 720), (230, 230, 230)).save(images / name)
+    keyframe = KeyframeMetadata(
+        image_id=1, timestamp=1.0, filename=name, scene_id=1,
+        change_score=0.4, width=1280, height=720,
+        selection_reason="scene_representative",
+        ocr_text="تعريف: المشتقة هي معدل التغيّر اللحظي")
+
+    segments = [AudioSegment(id=1, start=0.0, end=2.0,
+                             text_raw="كلام", text_clean="كلام")]
+    transcript = TranscriptionResult(
+        language="ar", full_text_raw="", full_text_clean="",
+        segments=segments, words=[], engine={"name": "test"})
+    metadata = VideoMetadata(
+        filename="lecture.mp4", path=Path("lecture.mp4"),
+        duration_seconds=5.0, width=1280, height=720, fps=25.0,
+        codec="h264", has_audio=True, audio_sample_rate=16000,
+        stored_width=1280, stored_height=720)
+
+    plan = TimelinePlanner().build(transcript, [keyframe], "lecture.mp4")
+    docx = DocumentGenerator(DocumentConfig()).generate(
+        plan, metadata, images, tmp_path / "ocr_doc.docx")
+
+    doc = Document(str(docx))
+    body = "\n".join(p.text for p in doc.paragraphs)
+    assert "النص الظاهر على الشاشة" in body
+    assert "تعريف: المشتقة هي معدل التغيّر اللحظي" in body
+
+
+def test_absent_ocr_text_adds_no_extra_paragraph(tmp_path):
+    """لا نص OCR ⇐ لا فقرة إضافية ولا تسمية «النص الظاهر على الشاشة» —
+    الميزة صامتة تمامًا حين لا بيانات لديها."""
+    images = tmp_path / "img"
+    images.mkdir()
+    name = "000001_00-00-01-000.png"
+    Image.new("RGB", (1280, 720), (230, 230, 230)).save(images / name)
+    keyframe = KeyframeMetadata(
+        image_id=1, timestamp=1.0, filename=name, scene_id=1,
+        change_score=0.4, width=1280, height=720,
+        selection_reason="scene_representative")
+
+    segments = [AudioSegment(id=1, start=0.0, end=2.0,
+                             text_raw="كلام", text_clean="كلام")]
+    transcript = TranscriptionResult(
+        language="ar", full_text_raw="", full_text_clean="",
+        segments=segments, words=[], engine={"name": "test"})
+    metadata = VideoMetadata(
+        filename="lecture.mp4", path=Path("lecture.mp4"),
+        duration_seconds=5.0, width=1280, height=720, fps=25.0,
+        codec="h264", has_audio=True, audio_sample_rate=16000,
+        stored_width=1280, stored_height=720)
+
+    plan = TimelinePlanner().build(transcript, [keyframe], "lecture.mp4")
+    docx = DocumentGenerator(DocumentConfig()).generate(
+        plan, metadata, images, tmp_path / "no_ocr_doc.docx")
+
+    doc = Document(str(docx))
+    body = "\n".join(p.text for p in doc.paragraphs)
+    assert "النص الظاهر على الشاشة" not in body

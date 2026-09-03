@@ -161,9 +161,20 @@ def test_empty_file_raises_media_error():
         probe_raw(CORPUS / "empty.mp4")
 
 
-def test_audio_only_file_has_no_video_stream():
+def test_audio_only_file_is_rejected_by_default():
+    """الافتراضي رفض: ملف صوتي اختير بالخطأ في منتقي الفيديو خطأٌ واضح."""
     with pytest.raises(MediaValidationError):
         extract_video_facts(probe_raw(CORPUS / "audio_only.m4a"))
+
+
+def test_audio_only_file_is_accepted_when_allowed():
+    """زر «تفريغ ملف صوتي» يفعّل المسار صراحةً."""
+    facts = extract_video_facts(probe_raw(CORPUS / "audio_only.m4a"),
+                                allow_audio_only=True)
+    assert facts["has_video"] is False
+    assert facts["has_audio"] is True
+    assert facts["duration_seconds"] > 0
+    assert facts["width"] == 0 and facts["height"] == 0 and facts["fps"] == 0.0
 
 
 def test_zero_fps_is_rejected():

@@ -13,13 +13,18 @@ import re
 from typing import List, Optional
 
 from config.schemas import (
-    DocumentBlock, DocumentPlan, DocumentSection, KeyframeMetadata,
+    DocumentBlock,
+    DocumentPlan,
+    DocumentSection,
+    KeyframeMetadata,
     TranscriptionResult,
 )
 from utils.timestamps import seconds_to_display
 
 # نهايات جُمل عربية — لتجميع المقاطع في فقرات مقروءة
-_SENTENCE_END = re.compile(r"[.!؟]\\s*$|[.!؟]$")
+# نهاية جملة عربية أو لاتينية. النسخة السابقة كتبت ``\\s`` داخل سلسلة
+# خام، أي شرطة مائلة حرفية متبوعة بحرف s — فكان أحد بديلَي التعبير ميتًا.
+_SENTENCE_END = re.compile(r"[.!?؟…]\s*$")
 
 _ORDINALS = ("الأول", "الثاني", "الثالث", "الرابع", "الخامس", "السادس",
              "السابع", "الثامن", "التاسع", "العاشر", "الحادي عشر",
@@ -121,6 +126,8 @@ class TimelinePlanner:
             blocks.append(DocumentBlock(
                 kind="paragraph", text=text,
                 timestamp=buffer[0].start,
+                source_start=buffer[0].start,
+                source_end=buffer[-1].end,
                 segment_ids=[s.id for s in buffer]))
         buffer.clear()
 
@@ -130,7 +137,6 @@ class TimelinePlanner:
         current: Optional[DocumentSection] = None
         buffer: List = []
         section_start = 0.0
-        figure_number = 0
 
         for timestamp, _, kind, payload in events:
             if current is None or timestamp - section_start >= section_seconds:
@@ -144,13 +150,15 @@ class TimelinePlanner:
 
             if kind == "figure":
                 self._flush_paragraph(buffer, current.blocks)
-                figure_number += 1
                 current.blocks.append(DocumentBlock(
                     kind="figure",
                     timestamp=payload.timestamp,
                     image_id=payload.image_id,
                     image_filename=payload.filename,
-                    caption=f"لقطة عند {seconds_to_display(payload.timestamp)}"))
+                    caption=f"لقطة عند {seconds_to_display(payload.timestamp)}",
+                    ocr_text=payload.ocr_text,
+                    source_start=payload.timestamp,
+                    source_end=payload.timestamp))
             else:
                 buffer.append(payload)
                 joined = sum(len(s.text_clean or s.text_raw) for s in buffer)

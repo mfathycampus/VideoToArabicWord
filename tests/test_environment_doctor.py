@@ -211,3 +211,111 @@ def test_setup_ffmpeg_extracts_from_nested_archive(tmp_path):
     finally:
         setup.BIN = original_bin
         setup.platform.system = original_system
+
+# ----------------------------------------------------------------------
+# فحص صلاحية الكتابة — العطل الذي كان يمنع الإقلاع على ويندوز وحده
+# ----------------------------------------------------------------------
+
+def test_write_probe_closes_handle_before_deleting_it(tmp_path, monkeypatch):
+    """الإغلاق قبل الحذف — وإلا فشل الفحص على كل جهاز ويندوز.
+
+    ``mkstemp`` تُعيد واصفًا مفتوحًا، وويندوز يرفض حذف ملف مفتوح
+    (‏WinError 32). الترتيب المعكوس كان يجعل ``require_ready`` يمنع
+    إقلاع التطبيق كليًا هناك، بينما ينجح على لينكس وmacOS حيث حذف ملف
+    مفتوح مسموح — لذلك يُثبَّت الترتيب نفسه هنا لا نتيجته وحدها.
+
+    المراقبة مقيَّدة بواصف الفحص واسمه تحديدًا: ``tempfile`` يفتح ويغلق
+    ملفًا داخليًا عند أول استخدام لتحديد مجلد المؤقتات، فمراقبة
+    ``os.close`` على إطلاقها تجعل الاختبار متذبذبًا بحسب ترتيب تشغيله.
+    """
+    import os
+    import tempfile
+    from pathlib import Path as _Path
+    from utils import deps
+
+    order: list[str] = []
+    probe: dict = {}
+    real_mkstemp, real_close, real_unlink = tempfile.mkstemp, os.close, _Path.unlink
+
+    def spy_mkstemp(*args, **kwargs):
+        fd, name = real_mkstemp(*args, **kwargs)
+        probe["fd"], probe["name"] = fd, name
+        return fd, name
+
+    def spy_close(fd):
+        if fd == probe.get("fd"):
+            order.append("close")
+        return real_close(fd)
+
+    def spy_unlink(self, *args, **kwargs):
+        if str(self) == probe.get("name"):
+            order.append("unlink")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(tempfile, "mkstemp", spy_mkstemp)
+    monkeypatch.setattr(os, "close", spy_close)
+    monkeypatch.setattr(_Path, "unlink", spy_unlink)
+
+    result = deps.check_write_access(tmp_path)
+
+    assert result.ok, result.detail
+    assert order == ["close", "unlink"], f"ترتيب خاطئ: {order}"
+
+
+def test_write_probe_leaves_no_residue(tmp_path):
+    assert deps_check(tmp_path).ok
+    assert not list(tmp_path.glob(".doctor-*")), "ملف الفحص لم يُنظَّف"
+
+
+def deps_check(path):
+    from utils.deps import check_write_access
+    return check_write_access(path)
+
+
+def test_write_probe_survives_undeletable_probe_file(tmp_path, monkeypatch):
+    """الكتابة نجحت؛ تعذّر الحذف (مضاد فيروسات/مزامنة) ليس فشل صلاحية."""
+    from pathlib import Path as _Path
+    from utils.deps import check_write_access
+
+    def refuse(self, *args, **kwargs):
+        raise PermissionError("[WinError 32] الملف مستخدم من عملية أخرى")
+
+    monkeypatch.setattr(_Path, "unlink", refuse)
+    assert check_write_access(tmp_path).ok
+
+
+def test_write_probe_targets_the_configured_output_dir_not_an_invented_one():
+    """الفحص كان يخترع مجلدًا في المنزل (``~/VideoToArabicWord``) ويُنشئه،
+    بدل مجلد الإخراج الذي يكتب فيه التطبيق فعلًا."""
+    from utils.deps import default_output_dir
+
+    target = default_output_dir()
+    assert target.name != "VideoToArabicWord", \
+        "الفحص يستهدف مجلدًا مخترعًا لا علاقة له بمخرجات التطبيق"
+
+
+def test_arabic_advice_never_reaches_the_command_block():
+    """النصائح العربية من الفحوص الحقيقية يجب ألا تظهر كأوامر للنسخ.
+
+    الفلترة القديمة كانت بقائمة بادئات («يُنصح»، «ضع»، «الحد») فتسرّبت
+    «اختر مجلد إخراج…» و«وفّر 2.0 GB…» إلى كتلة COPY AND RUN.
+    """
+    from utils.deps import CheckResult, Diagnosis, fix_commands, format_report
+
+    diagnosis = Diagnosis(results=[
+        CheckResult("صلاحية الكتابة", False, "C:\\Users\\x — تعذّرت الكتابة",
+                    "اختر مجلد إخراج قابلًا للكتابة بدلًا من C:\\Users\\x"),
+        CheckResult("مساحة القرص", False, "0.4 GB متاحة",
+                    "وفّر 2.0 GB على الأقل قبل بدء المعالجة"),
+        CheckResult("scikit-image", False, "مفقودة",
+                    '"C:\\Python312\\python.exe" -m pip install scikit-image'),
+    ])
+    commands = fix_commands(diagnosis)
+
+    for command in commands:
+        assert not any("\u0600" <= ch <= "\u06ff" for ch in command), \
+            f"نصيحة عربية تسرّبت كأمر: {command}"
+    assert any("pip install scikit-image" in c for c in commands), \
+        "الأمر الحقيقي اختفى مع الفلترة"
+    # النصيحة نفسها تبقى معروضة في متن التقرير — تُقرأ ولا تُنفَّذ
+    assert "اختر مجلد إخراج" in format_report(diagnosis)

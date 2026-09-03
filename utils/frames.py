@@ -21,6 +21,7 @@
 """
 from __future__ import annotations
 
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -66,8 +67,15 @@ def resolve_rotation_plan(
     display_height: int,
     sample_frame: Optional[np.ndarray] = None,
     ffmpeg=None,
+    temp_dir: Optional[Path] = None,
 ) -> RotationPlan:
-    """يقرر ما إذا كان يجب تدوير إطارات OpenCV، وبأي زاوية."""
+    """يقرر ما إذا كان يجب تدوير إطارات OpenCV، وبأي زاوية.
+
+    ``temp_dir``: مكان الإطار المرجعي المؤقت. النسخة السابقة كانت تكتبه
+    بجوار فيديو المستخدم (``video_path.parent``) — مخالفةً للمواصفة §29
+    ("لا كتابة فوق ملفات المستخدم الأصلية")، وفاشلةً على مجلد للقراءة
+    فقط أو وسيط شبكي. الافتراضي الآن مجلد النظام المؤقت.
+    """
     if not declared_rotation % 360:
         return RotationPlan(0, "no_rotation_metadata")
 
@@ -90,7 +98,9 @@ def resolve_rotation_plan(
     # --- الحالة 2: الأبعاد لا تحسم (180 أو مربّع) ⇒ قارن بمرجع FFmpeg ---
     if ffmpeg is not None:
         try:
-            reference_path = video_path.parent / f".__rotref_{video_path.stem}.png"
+            scratch = Path(temp_dir) if temp_dir else Path(tempfile.gettempdir())
+            scratch.mkdir(parents=True, exist_ok=True)
+            reference_path = scratch / f"rotref_{video_path.stem}.png"
             ffmpeg.extract_frame(video_path, 0.0, reference_path)
             reference = cv2.imread(str(reference_path))
             reference_path.unlink(missing_ok=True)

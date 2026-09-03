@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 import tempfile
+import time
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
@@ -25,9 +26,11 @@ from typing import Any, Dict, Optional
 from pydantic import BaseModel, Field
 
 from core.exceptions import ArtifactMissingError
-from utils.logger import logger
+from utils.logger import bind_job, clear_job, logger
+from utils.fingerprints import source_fingerprint
+from version import JOB_SCHEMA_VERSION
 
-SCHEMA_VERSION = "1.3"
+SCHEMA_VERSION = JOB_SCHEMA_VERSION
 
 
 class JobStatus(str, Enum):
@@ -97,12 +100,16 @@ class ArtifactRef(BaseModel):
     filename: str
     checksum: str
     created_at: str
+    # Fingerprint of the inputs/configuration that produced this artifact.
+    # Optional for backward compatibility with pre-1.4 jobs.
+    processing_fingerprint: Optional[str] = None
 
 
 class JobState(BaseModel):
     schema_version: str = SCHEMA_VERSION
     job_id: str
     video_path: str
+    source_fingerprint: Optional[str] = None
     status: JobStatus = JobStatus.QUEUED
     stage: Optional[Stage] = None
     progress: float = 0.0
@@ -135,6 +142,8 @@ class JobManager:
     def __init__(self, job_dir: Path, state: JobState) -> None:
         self.job_dir = job_dir
         self.state = state
+        self._stage_started_at: Optional[float] = None
+        bind_job(state.job_id, state.stage.value if state.stage else "-")
 
     # ------------------------------------------------------------------
     @classmethod
@@ -149,13 +158,18 @@ class JobManager:
                 # حالة من إصدار أقدم: أسماء النواتج وبنيتها قد تكون تغيّرت،
                 # فاستئنافها ينهار على ناتج لم يعد له وجود. نبدأ من الصفر
                 # بدل الانهيار (قاعدة رفع schema_version).
-                if stored.get("schema_version") != SCHEMA_VERSION:
+                stored_version = str(stored.get("schema_version", "1.0"))
+                if stored_version not in {"1.3", SCHEMA_VERSION}:
                     logger.info(
-                        f"حالة مهمة بإصدار مختلف "
-                        f"({stored.get('schema_version')} ≠ {SCHEMA_VERSION}) "
-                        "— إعادة البدء من الصفر.")
+                        f"حالة مهمة بإصدار غير مدعوم ({stored_version}) — إعادة البدء من الصفر.")
                     raise ValueError("schema version mismatch")
                 state = JobState(**stored)
+                current_source_fp = source_fingerprint(video_path)
+                if state.source_fingerprint and state.source_fingerprint != current_source_fp:
+                    logger.warning("تغيّر مصدر المهمة فعليًا — لا يمكن الاستئناف فوق نواتج قديمة.")
+                    raise ValueError("source fingerprint mismatch")
+                state.source_fingerprint = current_source_fp
+                state.schema_version = SCHEMA_VERSION
                 if state.video_path == str(video_path):
                     manager = cls(job_dir, state)
                     manager._invalidate_missing_artifacts()
@@ -167,6 +181,7 @@ class JobManager:
         state = JobState(
             job_id=job_id or datetime.now().strftime("%Y%m%d-%H%M%S"),
             video_path=str(video_path),
+            source_fingerprint=source_fingerprint(video_path),
         )
         manager = cls(job_dir, state)
         manager.persist()
@@ -224,12 +239,20 @@ class JobManager:
         self.state.stage = stage
         self.state.status = JobStatus.RUNNING
         self.state.progress = STAGE_PROGRESS[stage][0]
+        bind_job(self.state.job_id, stage.value)
+        self._stage_started_at = time.monotonic()
         self.persist()
 
     def complete_stage(self, stage: Stage) -> None:
         if stage not in self.state.completed_stages:
             self.state.completed_stages.append(stage)
         self.state.progress = STAGE_PROGRESS[stage][1]
+        # مدة المرحلة جزء من عقد السجلّات (§25) ولم تكن تُسجَّل إطلاقًا
+        started = getattr(self, "_stage_started_at", None)
+        if started is not None:
+            logger.info(f"اكتملت المرحلة {stage.value} في "
+                        f"{time.monotonic() - started:.1f}s")
+            self._stage_started_at = None
         self.persist()
 
     def stage_progress(self, stage: Stage, fraction: float) -> float:
@@ -238,30 +261,43 @@ class JobManager:
         return low + max(0.0, min(1.0, fraction)) * (high - low)
 
     # ------------------------------------------------------------------
-    def save_artifact(self, key: str, filename: str, content: str) -> Path:
+    def save_artifact(self, key: str, filename: str, content: str,
+                      processing_fingerprint: Optional[str] = None) -> Path:
         path = self.job_dir / filename
         atomic_write_text(path, content)
         self.state.artifacts[key] = ArtifactRef(
             filename=filename,
             checksum=file_checksum(path),
             created_at=datetime.now(timezone.utc).isoformat(),
+            processing_fingerprint=processing_fingerprint,
         )
         self.persist()
         return path
 
-    def register_artifact(self, key: str, path: Path) -> None:
+    def register_artifact(self, key: str, path: Path,
+                          processing_fingerprint: Optional[str] = None) -> None:
         """يسجّل ناتجًا كُتب خارجيًا (صورة، docx، wav)."""
         self.state.artifacts[key] = ArtifactRef(
             filename=str(path.relative_to(self.job_dir))
             if path.is_relative_to(self.job_dir) else str(path),
             checksum=file_checksum(path),
             created_at=datetime.now(timezone.utc).isoformat(),
+            processing_fingerprint=processing_fingerprint,
         )
         self.persist()
 
-    def has_artifact(self, key: str) -> bool:
+    def has_artifact(self, key: str, expected_processing_fingerprint: Optional[str] = None) -> bool:
         ref = self.state.artifacts.get(key)
-        return bool(ref) and (self.job_dir / ref.filename).exists()
+        if not ref:
+            return False
+        path = self.job_dir / ref.filename
+        if not path.exists():
+            return False
+        if file_checksum(path) != ref.checksum:
+            return False
+        if expected_processing_fingerprint is not None:
+            return ref.processing_fingerprint == expected_processing_fingerprint
+        return True
 
     def load_artifact(self, key: str) -> Any:
         """يقرأ ناتجًا محفوظًا.
@@ -282,6 +318,7 @@ class JobManager:
 
     # ------------------------------------------------------------------
     def fail(self, error: str) -> None:
+        logger.error(f"فشل بعد {self.state.retry_count} محاولة: {error[:200]}")
         self.state.status = (
             JobStatus.RECOVERABLE
             if self.state.retry_count < self.state.max_retries
@@ -302,3 +339,4 @@ class JobManager:
         self.state.progress = 100.0
         self.state.last_error = None
         self.persist()
+        clear_job()

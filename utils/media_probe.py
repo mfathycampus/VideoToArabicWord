@@ -13,7 +13,6 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import shutil
 import subprocess
@@ -202,13 +201,39 @@ def _rotation_degrees(video_stream: dict) -> int:
     return 0
 
 
-def extract_video_facts(data: dict) -> dict:
-    """يستخرج الحقول التي يحتاجها ``VideoMetadata`` من مخرجات ffprobe."""
+def _audio_only_facts(audio: dict, fmt: dict) -> dict:
+    """ميتاداتا مصدر صوتي خالص — بلا أبعاد ولا معدّل إطارات."""
+    duration = float(fmt.get("duration") or audio.get("duration") or 0.0)
+    if duration <= 0:
+        raise MediaValidationError("مدة الملف الصوتي غير صالحة (0 ثانية).")
+    return {
+        "duration_seconds": duration,
+        "width": 0, "height": 0, "fps": 0.0,
+        "codec": audio.get("codec_name", "unknown"),
+        "has_audio": True,
+        "has_video": False,
+        "audio_sample_rate": int(audio["sample_rate"])
+        if audio.get("sample_rate") else None,
+        "rotation": 0, "stored_width": None, "stored_height": None,
+        "nb_frames": None,
+    }
+
+
+def extract_video_facts(data: dict, allow_audio_only: bool = False) -> dict:
+    """يستخرج الحقول التي يحتاجها ``VideoMetadata`` من مخرجات ffprobe.
+
+    ``allow_audio_only`` يقلب سلوك الملف الصوتي الخالص من رفض إلى قبول.
+    الافتراضي رفض عمدًا: المسار الأساسي للأداة فيديو، ورفضُ ملف صوتي
+    اختير بالخطأ في منتقي الفيديو أوضح من إنتاج مستند بلا صور بصمت.
+    مسار الصوت يُفعّله المتّصل صراحةً (زر «تفريغ ملف صوتي»).
+    """
     streams = data.get("streams", [])
     video = next((s for s in streams if s.get("codec_type") == "video"), None)
     audio = next((s for s in streams if s.get("codec_type") == "audio"), None)
 
     if video is None:
+        if allow_audio_only and audio is not None:
+            return _audio_only_facts(audio, data.get("format", {}))
         raise MediaValidationError("لا يوجد مسار فيديو صالح داخل الملف.")
 
     # avg_frame_rate أدق من r_frame_rate للفيديو متغير الإطارات (VFR)
@@ -241,6 +266,7 @@ def extract_video_facts(data: dict) -> dict:
         "fps": fps,
         "codec": video.get("codec_name", "unknown"),
         "has_audio": audio is not None,
+        "has_video": True,
         "audio_sample_rate": int(audio["sample_rate"])
         if audio and audio.get("sample_rate") else None,
         "rotation": rotation,

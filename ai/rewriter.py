@@ -20,13 +20,18 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from dataclasses import dataclass
 from typing import Callable, List, Optional
 
 from ai.providers import LLMProvider, RewriteUnavailableError
 from config.schemas import (
-    AudioSegment, DocumentBlock, DocumentPlan, DocumentSection,
-    KeyframeMetadata, TranscriptionResult,
+    AudioSegment,
+    DocumentBlock,
+    DocumentPlan,
+    DocumentSection,
+    KeyframeMetadata,
+    TranscriptionResult,
 )
 from utils.logger import logger
 from utils.timestamps import seconds_to_display, timestamp_to_seconds
@@ -98,9 +103,37 @@ def _extract_json(raw: str) -> Optional[dict]:
 
 
 class TranscriptRewriter:
+    # إعادة المحاولة على الأخطاء العابرة فقط (تحديد معدّل، عطل خدمة،
+    # انقطاع شبكة). التراجع الأسّي يمنع إغراق خدمة تشتكي أصلًا.
+    MAX_ATTEMPTS = 3
+    BACKOFF_SECONDS = 3.0
+
     def __init__(self, provider: LLMProvider, config: RewriteConfig) -> None:
         self.provider = provider
         self.config = config
+
+    def _complete_with_retry(self, system_prompt: str, user_prompt: str,
+                             max_tokens: int = 2048) -> str:
+        """نداء المزوّد مع إعادة محاولة للأخطاء العابرة."""
+        last: Optional[BaseException] = None
+        for attempt in range(1, self.MAX_ATTEMPTS + 1):
+            try:
+                return self.provider.complete(
+                    system_prompt, user_prompt, max_tokens=max_tokens,
+                    timeout=self.config.timeout_seconds)
+            except RewriteUnavailableError as exc:
+                last = exc
+                if not getattr(exc, "retryable", False):
+                    raise
+                if attempt == self.MAX_ATTEMPTS:
+                    break
+                delay = self.BACKOFF_SECONDS * (2 ** (attempt - 1))
+                logger.warning(
+                    f"خطأ عابر من المزوّد ({exc}) — "
+                    f"إعادة المحاولة {attempt}/{self.MAX_ATTEMPTS - 1} "
+                    f"بعد {delay:.0f} ثانية.")
+                time.sleep(delay)
+        raise last  # type: ignore[misc]
 
     # ------------------------------------------------------------------
     # عدد الأقسام المستهدف — فهرس مفيد بلا تفتيت
@@ -153,17 +186,20 @@ class TranscriptRewriter:
             note = ("\n\nلقطات الشاشة المرافقة لهذا المقطع عند الأزمنة التالية: "
                     f"{stamps}\nاكتب تعليقًا وصفيًا لكل زمن في حقل figures، "
                     "بنفس صيغة الزمن المعطاة.")
+        failed = False
         try:
-            raw = self.provider.complete(
+            raw = self._complete_with_retry(
                 SYSTEM_PROMPT,
-                f"التفريغ الخام (يبدأ عند {start}):\n\n{source}{note}",
-                timeout=self.config.timeout_seconds)
+                f"التفريغ الخام (يبدأ عند {start}):\n\n{source}{note}")
             parsed = _extract_json(raw)
-        except RewriteUnavailableError:
-            raise
         except Exception as exc:
-            logger.warning(f"فشل إعادة صياغة دفعة: {exc}")
+            # الفشل معزول عند حدود الدفعة. النسخة السابقة كانت تُعيد رفع
+            # ``RewriteUnavailableError`` فتنتشر إلى الـ pipeline: تحديدُ
+            # معدّل عند الدفعة الثانية عشرة كان يرمي إحدى عشرة دفعة
+            # مدفوعة الثمن ويُخرج مستندًا خامًا بالكامل.
+            logger.warning(f"فشل إعادة صياغة دفعة {start}: {exc}")
             parsed = None
+            failed = True
 
         paragraphs = []
         if parsed:
@@ -191,6 +227,7 @@ class TranscriptRewriter:
             captions[key] = text
 
         return {
+            "failed": failed,
             "captions": captions,
             "title": (parsed.get("title") or "").strip()
                      or f"المقطع الزمني {start}",
@@ -276,29 +313,15 @@ class TranscriptRewriter:
         listing = "\n".join(
             f"- {s['title']}: {s['summary']}" for s in sections)
         try:
-            raw = self.provider.complete(
-                OUTLINE_PROMPT, f"أقسام الوثيقة:\n{listing}",
-                max_tokens=800, timeout=self.config.timeout_seconds)
+            raw = self._complete_with_retry(
+                OUTLINE_PROMPT, f"أقسام الوثيقة:\n{listing}", max_tokens=800)
             parsed = _extract_json(raw) or {}
         except Exception as exc:
+            # الملخّص التنفيذي تحسين لا شرط: فشله لا يُفشل الصياغة كلها
             logger.warning(f"تعذّر بناء الملخّص التنفيذي: {exc}")
             parsed = {}
-        captions: dict[str, str] = {}
-        for item in (parsed.get("figures") or []) if parsed else []:
-            if not isinstance(item, dict):
-                continue
-            stamp = str(item.get("t", "")).strip()
-            text = str(item.get("caption", "")).strip()
-            if not (stamp and text):
-                continue
-            try:                       # نطبّع الزمن: قد يعيده النموذج MM:SS
-                key = seconds_to_display(timestamp_to_seconds(stamp))
-            except (ValueError, IndexError):
-                continue
-            captions[key] = text
 
         return {
-            "captions": captions,
             "title": (parsed.get("title") or "").strip() or fallback_title,
             "abstract": (parsed.get("abstract") or "").strip(),
             "key_points": [p.strip() for p in parsed.get("key_points", [])
@@ -327,6 +350,15 @@ class TranscriptRewriter:
                 progress_callback(
                     index / (len(batches) + 1),
                     f"إعادة الصياغة: القسم {index} من {len(batches)}")
+
+        failures = sum(1 for entry in rewritten if entry.get("failed"))
+        if failures == len(rewritten):
+            # لا فائدة من مستند يحمل وسم «ai:» ومحتواه خام بالكامل
+            raise RewriteUnavailableError(
+                "فشلت كل دفعات إعادة الصياغة — المتابعة بالنص الخام.")
+        if failures:
+            logger.warning(
+                f"{failures} من {len(rewritten)} دفعة استُخدم نصها الخام.")
 
         outline = self._build_outline(rewritten, fallback_title)
         if progress_callback:
@@ -377,7 +409,8 @@ class TranscriptRewriter:
                     timestamp=keyframe.timestamp,
                     image_id=keyframe.image_id,
                     image_filename=keyframe.filename,
-                    caption=captions.get(stamp, ""))))
+                    caption=captions.get(stamp, ""),
+                    ocr_text=keyframe.ocr_text)))
 
             times = TranscriptRewriter._paragraph_times(entry)
             for position, paragraph in enumerate(entry["paragraphs"]):

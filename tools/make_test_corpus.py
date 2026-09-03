@@ -123,11 +123,13 @@ def build() -> list[dict]:
           "-c:a", "aac", "-shortest"],
          {"expect_scenes": 5, "expect_audio": True}),
 
-        ("rotated_90.mp4", "بيانات دوران 90° (مصيدة كلاسيكية)",
-         ["-i", str(raw), *tone, "-map", "0:v", "-map", "1:a",
-          "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
-          "-metadata:s:v:0", "rotate=90", "-shortest"],
-         {"expect_scenes": 5, "expect_audio": True}),
+        # ملاحظة: حالة الدوران تُولَّد في القسم «2ب» أدناه عبر
+        # ``-display_rotation``. كان هنا مدخل ثانٍ لنفس الملف يستخدم
+        # ``-metadata rotate=90`` — وهو **مهمل ولا يكتب شيئًا** في ffmpeg
+        # الحديث (6.x). النتيجة كانت عطلين صامتين: مدخل مكرّر لنفس الملف
+        # في manifest.json (فتُعالَج الحالة مرتين وتختل الأعداد)، وملف
+        # بلا بيانات دوران إن توقّف التوليد قبل القسم 2ب — فيفشل اختبار
+        # الدوران برسالة غامضة.
 
         ("vfr.mp4", "معدل إطارات متغيّر (VFR)",
          ["-i", str(raw), *tone, "-map", "0:v", "-map", "1:a",
@@ -229,7 +231,7 @@ def build() -> list[dict]:
     if run(["-f", "lavfi", "-i", "sine=frequency=440:duration=5",
             "-c:a", "aac", str(OUT / "audio_only.m4a")]):
         manifest.append({"file": "audio_only.m4a", "desc": "صوت فقط بلا مسار فيديو",
-                         "category": "must_fail", "expect_failure": True})
+                         "category": "audio", "expect_failure": False})
 
     # --- 4. أسماء ملفات عربية وبمسافات ---
     arabic = OUT / "محاضرة الذكاء الاصطناعي 01.mp4"

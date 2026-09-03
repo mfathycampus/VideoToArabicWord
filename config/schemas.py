@@ -4,27 +4,57 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field, field_serializer, field_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
-SCHEMA_VERSION = "1.2"
+from version import CONFIG_SCHEMA_VERSION
+
+SCHEMA_VERSION = CONFIG_SCHEMA_VERSION
 
 
 class VideoMetadata(BaseModel):
+    """ميتاداتا المصدر — فيديو أو صوت.
+
+    ``has_video=False`` يصف ملفًا صوتيًا خالصًا (‏mp3، m4a، wav…). عندها
+    تكون الأبعاد ومعدّل الإطارات أصفارًا بلا معنى، ويتخطّى الـ pipeline
+    كشف المشاهد واستخراج الصور، فيخرج مستند نصّي منسّق بلا لقطات.
+    القيود الموجبة تبقى مفروضة على الفيديو حيث تعني شيئًا.
+    """
     schema_version: str = SCHEMA_VERSION
     filename: str
     path: Path
     duration_seconds: float = Field(..., gt=0)
-    width: int = Field(..., gt=0)
-    height: int = Field(..., gt=0)
-    fps: float = Field(..., gt=0)
+    width: int = Field(..., ge=0)
+    height: int = Field(..., ge=0)
+    fps: float = Field(..., ge=0)
     codec: str
     has_audio: bool
+    has_video: bool = True
     audio_sample_rate: Optional[int] = None
     # الدوران المصرَّح به في الحاوية؛ OpenCV يتجاهله فنصححه يدويًا
     rotation: int = 0
     stored_width: Optional[int] = None
     stored_height: Optional[int] = None
     nb_frames: Optional[int] = None
+
+    @model_validator(mode="after")
+    def _video_dimensions_are_positive(self) -> "VideoMetadata":
+        """الأبعاد ومعدّل الإطارات إلزامية موجبة **للفيديو فقط**.
+
+        إسقاط القيد كليًا كان سيسمح بفيديو أبعاده صفر يمرّ إلى كاشف
+        المشاهد؛ وإبقاؤه مطلقًا يمنع الملفات الصوتية. الشرط هنا يفرّق.
+        """
+        if self.has_video and not (self.width > 0 and self.height > 0
+                                   and self.fps > 0):
+            raise ValueError(
+                "أبعاد الفيديو ومعدّل إطاراته يجب أن تكون موجبة "
+                "(أو اضبط has_video=False لمصدر صوتي).")
+        return self
 
     # JSON يحمل str؛ الذاكرة تحمل Path — كما تنص ملاحظة v1.1
     @field_validator("path", mode="before")
@@ -81,34 +111,17 @@ class KeyframeMetadata(BaseModel):
     height: int
     selection_reason: str
     checksum: Optional[str] = None
+    # نص الشاشة عبر OCR (video/ocr.py) — اختياري، فارغ إن كان معطّلًا في
+    # الإعداد أو Tesseract غير مثبَّت أو لم يُعثر على نص. حقل جديد بقيمة
+    # افتراضية: مهمة قديمة تُستأنف من keyframes.json محفوظ قبله تُحمَّل
+    # بلا مشكلة، وحقلها هذا فارغ ببساطة.
+    ocr_text: str = ""
 
 
-class DocumentItem(BaseModel):
-    """عنصر واحد في المستند النهائي.
-
-    تغيير جوهري عن v1.0/v1.1: العنصر الآن **مدفوع بالنص** لا بالصورة.
-    كل ``AudioSegment`` يظهر في عنصر واحد بالضبط، والصور تُحقن كعناصر
-    مستقلة عند طوابعها الزمنية. هذا هو ما يمنع ضياع الكلام وتكراره.
-    """
-    item_id: int
-    kind: Literal["image", "text"]
-    timestamp: float
-    # للصور
-    image_id: Optional[int] = None
-    image_filename: Optional[str] = None
-    # للنصوص
-    segment_id: Optional[int] = None
-    text: str = ""
-
-
-class TimelineMatchResult(BaseModel):
-    schema_version: str = SCHEMA_VERSION
-    items: List[DocumentItem] = Field(default_factory=list)
-    # ثوابت تحقق تُفحص في Quality Gates
-    total_segments_in: int = 0
-    total_segments_out: int = 0
-    total_keyframes_in: int = 0
-    total_keyframes_out: int = 0
+# ملاحظة: ``TimelineMatchResult`` من الإصدار 1.1 حُذف. حلّ محلّه
+# ``DocumentPlan`` أدناه، وهو أغنى (أقسام وكتل لا عناصر مسطّحة) ويحمل
+# ثوابت التحقق نفسها. لم يكن العقد القديم مُنتَجًا ولا مُستهلَكًا في أي
+# وحدة — بقايا إعادة هيكلة.
 
 
 # ---------------------------------------------------------------------
@@ -124,8 +137,16 @@ class DocumentBlock(BaseModel):
     image_id: Optional[int] = None
     image_filename: Optional[str] = None
     caption: str = ""
+    # نص الشاشة عبر OCR، منسوخ من KeyframeMetadata.ocr_text عند بناء
+    # كتلة الشكل (document/planner.py وai/rewriter.py كلاهما). منفصل عن
+    # ``caption`` عمدًا: الأول ما يُحسب من الكلام المصاحب، هذا ما يظهر
+    # فعليًا مكتوبًا على الشاشة — مصدران مختلفان لا يجوز خلطهما.
+    ocr_text: str = ""
     # مراجع المقاطع الأصلية — تضمن إمكانية التتبّع للنص الخام
     segment_ids: List[int] = Field(default_factory=list)
+    # Provenance: نطاق المصدر الذي بُنيت منه الكتلة، إن أمكن.
+    source_start: Optional[float] = None
+    source_end: Optional[float] = None
 
 
 class DocumentSection(BaseModel):
@@ -155,3 +176,6 @@ class DocumentPlan(BaseModel):
     total_segments_out: int = 0
     total_figures_in: int = 0
     total_figures_out: int = 0
+    # تقرير جودة آخر بناء محفوظ داخل الخطة، اختياري للتوافق مع الخطط القديمة.
+    quality_score: Optional[float] = None
+    quality_warnings: List[str] = Field(default_factory=list)

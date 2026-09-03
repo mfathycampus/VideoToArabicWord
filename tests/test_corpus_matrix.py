@@ -65,6 +65,11 @@ def processable(manifest):
     return [e for e in manifest if e["category"] != "must_fail"]
 
 
+def is_audio(result) -> bool:
+    """مصدر صوتي خالص: لا مشاهد ولا صور — وهذا هو العقد لا نقص فيه."""
+    return result["entry"]["category"] == "audio"
+
+
 def must_fail(manifest):
     return [e for e in manifest if e["category"] == "must_fail"]
 
@@ -85,7 +90,8 @@ def processed(request, tmp_path_factory):
             continue
         pipeline = build_pipeline(out / entry["file"].replace(".", "_"))
         try:
-            docx = pipeline.run(video)
+            docx = pipeline.run(video,
+                                allow_audio_only=entry["category"] == "audio")
             results[entry["file"]] = {"ok": True, "docx": docx,
                                       "entry": entry, "error": None,
                                       "job_dir": pipeline.job_dir_for(video)}
@@ -204,11 +210,20 @@ def test_all_data_contracts_are_persisted(processed):
         if not result["ok"]:
             continue
         job_dir = result["job_dir"]
-        for artifact in ("metadata.json", "transcription.json", "scenes.json",
-                         "keyframes.json", "plan.json", "job_state.json"):
+        artifacts = ["metadata.json", "transcription.json", "plan.json",
+                     "job_state.json"]
+        if not is_audio(result):
+            # النواتج البصرية تخصّ الفيديو وحده
+            artifacts += ["scenes.json", "keyframes.json"]
+        for artifact in artifacts:
             path = job_dir / artifact
             assert path.exists(), f"{name}: عقد مفقود {artifact}"
             json.loads(path.read_text(encoding="utf-8"))
+        if is_audio(result):
+            assert not (job_dir / "scenes.json").exists(), \
+                f"{name}: مصدر صوتي لا يجب أن ينتج مشاهد"
+            assert not (job_dir / "keyframes.json").exists(), \
+                f"{name}: مصدر صوتي لا يجب أن ينتج صورًا"
         state = json.loads((job_dir / "job_state.json").read_text(encoding="utf-8"))
         assert state["status"] == "completed", f"{name}: الحالة {state['status']}"
         assert state["progress"] == 100.0
@@ -217,7 +232,7 @@ def test_all_data_contracts_are_persisted(processed):
 # ---- 6. مدى change_score ضمن العقد ----
 def test_change_scores_within_contract_range(processed):
     for name, result in processed.items():
-        if not result["ok"]:
+        if not result["ok"] or is_audio(result):
             continue
         scenes = json.loads(
             (result["job_dir"] / "scenes.json").read_text(encoding="utf-8"))
@@ -231,7 +246,7 @@ def test_change_scores_within_contract_range(processed):
 def test_keyframe_filenames_are_windows_safe(processed):
     forbidden = set('<>:"/\\|?*')
     for name, result in processed.items():
-        if not result["ok"]:
+        if not result["ok"] or is_audio(result):
             continue
         keyframes = json.loads(
             (result["job_dir"] / "keyframes.json").read_text(encoding="utf-8"))
@@ -242,7 +257,7 @@ def test_keyframe_filenames_are_windows_safe(processed):
 
 
 # ---- 8. الحالات التي يجب أن تفشل بأمان ----
-@pytest.mark.parametrize("name", ["corrupt.mp4", "empty.mp4", "audio_only.m4a"])
+@pytest.mark.parametrize("name", ["corrupt.mp4", "empty.mp4"])
 def test_invalid_files_fail_with_clear_arabic_message(tmp_path, corpus_dir, name):
     video = corpus_dir / name
     if not video.exists():
@@ -309,3 +324,30 @@ def test_arabic_filename_is_handled(processed):
     matching = [k for k in processed if "محاضرة" in k]
     assert matching, "ملف الاسم العربي غير موجود في المصفوفة"
     assert processed[matching[0]]["ok"], processed[matching[0]]["error"]
+
+
+# ---- 10. المصدر الصوتي الخالص ----
+def test_audio_only_source_produces_a_text_document(processed):
+    """‏mp3/m4a يمرّ بالمسار كاملًا وينتج مستندًا منسّقًا بلا لقطات."""
+    result = processed.get("audio_only.m4a")
+    if not result:
+        pytest.skip("لا يوجد ملف صوتي في المصفوفة")
+    assert result["ok"], f"فشل المصدر الصوتي: {result['error']}"
+
+    metadata = json.loads(
+        (result["job_dir"] / "metadata.json").read_text(encoding="utf-8"))
+    assert metadata["has_video"] is False
+    assert metadata["duration_seconds"] > 0
+
+    document = Document(str(result["docx"]))
+    assert len(document.paragraphs) > 5, "المستند شبه فارغ"
+
+    # لا لقطات: العقد يقول صفرًا، والمستند لا يحمل أي تسمية شكل.
+    # (الشعار يبقى مضمّنًا كصورة — وهو هوية بصرية لا لقطة محتوى.)
+    plan = json.loads(
+        (result["job_dir"] / "plan.json").read_text(encoding="utf-8"))
+    assert plan["total_figures_in"] == 0
+    assert plan["total_figures_out"] == 0
+    captions = [p.text for p in document.paragraphs
+                if p.text.strip().startswith("شكل")]
+    assert not captions, f"مستند صوتي يحمل تسميات أشكال: {captions}"

@@ -16,8 +16,9 @@
 from __future__ import annotations
 
 import hashlib
+import tempfile
 from pathlib import Path
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 import cv2
 import numpy as np
@@ -31,7 +32,11 @@ from utils.frames import RotationPlan
 from utils.logger import logger
 from utils.timestamps import safe_timestamp_for_filename
 from video.frame_quality import (
-    FrameQuality, dhash, difference, hamming_similarity, measure,
+    FrameQuality,
+    dhash,
+    difference,
+    hamming_similarity,
+    measure,
 )
 from video.scene_detector import Scene
 
@@ -43,7 +48,7 @@ class KeyframeSelector:
     # ------------------------------------------------------------------
     def _read_at(self, cap, timestamp: float, fps: float,
                  rotation_plan: RotationPlan, video_path: Optional[Path] = None,
-                 ffmpeg=None, output_dir: Optional[Path] = None
+                 ffmpeg=None, temp_dir: Optional[Path] = None
                  ) -> Optional[np.ndarray]:
         """يقرأ إطارًا، مع مسار احتياطي عبر FFmpeg.
 
@@ -57,7 +62,9 @@ class KeyframeSelector:
             return rotation_plan.apply(frame)
 
         if ffmpeg is not None and video_path is not None:
-            target = (output_dir or Path(".")) / "_probe_frame.png"
+            scratch = Path(temp_dir) if temp_dir else Path(tempfile.gettempdir())
+            scratch.mkdir(parents=True, exist_ok=True)
+            target = scratch / "_probe_frame.png"
             try:
                 ffmpeg.extract_frame(video_path, timestamp, target)
                 frame = cv2.imread(str(target))
@@ -67,6 +74,64 @@ class KeyframeSelector:
             finally:
                 target.unlink(missing_ok=True)
         return None
+
+    # فوق هذه المسافة يصير البحث العشوائي أرخص من التقدّم إطارًا إطارًا.
+    # ‏250 إطارًا تقارب طول مجموعة الصور (GOP) المعتادة في H.264، وهي
+    # المسافة التي يضطر البحث لفكّ ترميزها على أي حال.
+    MAX_SEQUENTIAL_GAP = 250
+
+    def _read_pair(self, cap, first: float, second: Optional[float],
+                   fps: float, rotation_plan: RotationPlan,
+                   video_path: Optional[Path] = None, ffmpeg=None,
+                   temp_dir: Optional[Path] = None
+                   ) -> tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+        """يقرأ لحظتين متقاربتين بقفزة واحدة بدل قفزتين.
+
+        هذا هو العطل B7 نفسه الذي أُصلح في كاشف المشاهد ونجا منه المنتقي:
+        ``cap.set`` داخل الحلقة يفرض على OpenCV فكّ الترميز من أقرب إطار
+        مفتاحي في **كل** استدعاء. مع خمسة مرشّحين وثلاث قراءات لكلٍّ منهم
+        كانت النتيجة خمس عشرة قفزة لكل مشهد — على محاضرة بمئات المشاهد
+        تصير المرحلة أبطأ من التفريغ نفسه، وشريط التقدّم ساكن فتبدو
+        متجمّدة.
+
+        اللحظة الثانية تقع بعد الأولى بأقل من ثانية عادةً، فالتقدّم إليها
+        بـ ``grab()`` (بلا نسخ إلى numpy) أرخص بكثير من قفزة ثانية.
+        """
+        first_index = max(0, int(first * fps))
+        cap.set(cv2.CAP_PROP_POS_FRAMES, first_index)
+        ok, frame = cap.read()
+
+        if ok and frame is not None:
+            frame = rotation_plan.apply(frame)
+            # المؤشر الآن عند first_index + 1 بالضبط — وهذا وحده ما يجعل
+            # التقدّم التسلسلي صحيحًا.
+            sequential = True
+        else:
+            # مسار FFmpeg الاحتياطي: موضع المؤشر غير معروف بعده، فلا
+            # يجوز التقدّم منه تسلسليًا.
+            frame = self._read_at(cap, first, fps, rotation_plan,
+                                  video_path, ffmpeg, temp_dir)
+            sequential = False
+
+        if frame is None or second is None or second <= first:
+            return frame, None
+
+        second_index = max(0, int(second * fps))
+        gap = second_index - first_index
+        if gap <= 0:
+            return frame, None
+        if not sequential or gap > self.MAX_SEQUENTIAL_GAP:
+            # مسافة بعيدة أو مؤشر مجهول: القفزة أرخص وأسلم
+            return frame, self._read_at(cap, second, fps, rotation_plan,
+                                        video_path, ffmpeg, temp_dir)
+
+        for _ in range(gap - 1):
+            if not cap.grab():
+                return frame, None
+        ok, probe = cap.read()
+        if not ok or probe is None:
+            return frame, None
+        return frame, rotation_plan.apply(probe)
 
     def _candidate_times(self, scene: Scene) -> List[float]:
         """لحظات مرشّحة داخل المشهد، منحازة إلى ما بعد الانتقال.
@@ -84,11 +149,20 @@ class KeyframeSelector:
     def _evaluate(self, cap, timestamp: float, fps: float,
                   rotation_plan: RotationPlan, scene_end: float,
                   video_path: Optional[Path] = None, ffmpeg=None,
-                  output_dir: Optional[Path] = None
+                  temp_dir: Optional[Path] = None,
+                  scene_reference: Optional[np.ndarray] = None
                   ) -> Optional[tuple[float, np.ndarray, FrameQuality]]:
-        """يعيد (درجة, إطار, جودة) أو None إن كان الإطار غير صالح."""
-        frame = self._read_at(cap, timestamp, fps, rotation_plan,
-                              video_path, ffmpeg, output_dir)
+        """يعيد (درجة, إطار, جودة) أو None إن كان الإطار غير صالح.
+
+        ``scene_reference``: إطار الحالة المستقرة قرب نهاية المشهد. يُقرأ
+        **مرة واحدة لكل مشهد** في ``extract`` بدل مرة لكل مرشّح — فهو
+        نفسه لكل مرشّحي المشهد، وقراءته خمس مرات كانت هدرًا خالصًا.
+        """
+        settle_probe = min(timestamp + self.config.settle_probe_seconds,
+                           scene_end - 0.4)
+        frame, near_probe = self._read_pair(
+            cap, timestamp, settle_probe if settle_probe > timestamp else None,
+            fps, rotation_plan, video_path, ffmpeg, temp_dir)
         if frame is None:
             return None
 
@@ -108,19 +182,12 @@ class KeyframeSelector:
         #       المستقرة الأخيرة. الفحص القريب وحده لا يراها لأن شاشة
         #       التحميل ساكنة تمامًا أثناء انتظارها.
         instability = 0.0
-        for probe_time in (
-            min(timestamp + self.config.settle_probe_seconds, scene_end - 0.4),
-            # هامش قبل نهاية المشهد: النهاية نفسها هي لحظة الانتقال
-            # التالي، فمقارنتها تُظهر اختلافًا في كل مرة وتعاقب الإطارات
-            # السليمة بلا سبب.
-            scene_end - 0.4,
-        ):
-            if probe_time <= timestamp:
-                continue
-            probe = self._read_at(cap, probe_time, fps, rotation_plan,
-                                  video_path, ffmpeg, output_dir)
-            if probe is not None:
-                instability = max(instability, difference(frame, probe))
+        if near_probe is not None:
+            instability = max(instability, difference(frame, near_probe))
+        # هامش قبل نهاية المشهد: النهاية نفسها هي لحظة الانتقال التالي،
+        # فمقارنتها تُظهر اختلافًا في كل مرة وتعاقب الإطارات السليمة بلا سبب.
+        if scene_reference is not None and scene_end - 0.4 > timestamp:
+            instability = max(instability, difference(frame, scene_reference))
 
         score = quality.score()
         if instability > self.config.max_instability:
@@ -153,6 +220,8 @@ class KeyframeSelector:
         fps_hint: Optional[float] = None,
         rotation_plan: Optional[RotationPlan] = None,
         ffmpeg=None,
+        temp_dir: Optional[Path] = None,
+        progress_callback: Optional[Callable[[float, str], None]] = None,
     ) -> List[KeyframeMetadata]:
         rotation_plan = rotation_plan or RotationPlan(0, "none")
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -161,7 +230,6 @@ class KeyframeSelector:
             raise MediaValidationError(f"تعذر فتح الفيديو: {video_path}")
 
         keyframes: List[KeyframeMetadata] = []
-        signatures: List[np.ndarray] = []
         rejected = {"blank": 0, "duplicate": 0, "too_close": 0, "unreadable": 0}
 
         try:
@@ -174,16 +242,36 @@ class KeyframeSelector:
             # كاملة تتجاوز جيجابايت من الذاكرة.
             candidates: list[dict] = []
             last_time = -1e9
-            for scene in scenes:
+            total_scenes = max(1, len(scenes))
+            last_emit = -1.0
+            for index, scene in enumerate(scenes, start=1):
                 if cancel_token:
                     cancel_token.raise_if_cancelled()
                     cancel_token.wait_if_paused()
+
+                # تقدّم حقيقي: بلا هذا يبقى الشريط ساكنًا طوال المرحلة
+                # فتبدو متجمّدة، ويُلغي المستخدم عملًا سليمًا.
+                if progress_callback:
+                    fraction = index / total_scenes
+                    if fraction - last_emit >= 0.01 or index == total_scenes:
+                        last_emit = fraction
+                        progress_callback(
+                            fraction * 0.85,
+                            f"اختيار الصور: المشهد {index} من {total_scenes}")
+
+                # مرجع الحالة المستقرة: إطار واحد لكل مشهد لا لكل مرشّح
+                scene_reference = None
+                if scene.end - 0.4 > scene.start:
+                    scene_reference = self._read_at(
+                        cap, scene.end - 0.4, fps, rotation_plan,
+                        video_path, ffmpeg, temp_dir)
 
                 best = None
                 for timestamp in self._candidate_times(scene):
                     evaluated = self._evaluate(cap, timestamp, fps,
                                                rotation_plan, scene.end,
-                                               video_path, ffmpeg, output_dir)
+                                               video_path, ffmpeg, temp_dir,
+                                               scene_reference=scene_reference)
                     if evaluated is None:
                         continue
                     if best is None or evaluated[0] > best[0]:
@@ -239,9 +327,13 @@ class KeyframeSelector:
             for index, candidate in enumerate(unique, start=1):
                 if cancel_token:
                     cancel_token.raise_if_cancelled()
+                if progress_callback:
+                    progress_callback(
+                        0.85 + 0.15 * index / max(1, len(unique)),
+                        f"حفظ الصور: {index} من {len(unique)}")
                 frame = self._read_at(cap, candidate["timestamp"], fps,
                                       rotation_plan, video_path, ffmpeg,
-                                      output_dir)
+                                      temp_dir)
                 if frame is None:
                     rejected["unreadable"] += 1
                     continue

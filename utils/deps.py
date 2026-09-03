@@ -136,11 +136,26 @@ def check_binaries() -> List[CheckResult]:
         if not found:
             candidate = bundled / (f"{name}.exe" if sys.platform == "win32" else name)
             found = str(candidate) if candidate.is_file() else None
-        essential = name == "ffprobe"
         results.append(CheckResult(
             name, bool(found), found or "غير موجود",
             "" if found else f'"{sys.executable}" tools/setup_ffmpeg.py'))
     return results
+
+
+def check_ocr_binary() -> CheckResult:
+    """Tesseract اختياري (ميزة OCR — video/ocr.py). غيابه لا يمنع تشغيل
+    البرنامج، لذا ``ok=True`` دائمًا هنا (تحذير لا فشل — نفس نمط
+    ``check_environment_isolation`` أدناه)."""
+    found = shutil.which("tesseract") or shutil.which("tesseract.exe")
+    if found:
+        return CheckResult("tesseract (OCR)", True, found)
+    hint = ("sudo apt install tesseract-ocr tesseract-ocr-ara"
+            if sys.platform not in ("win32", "darwin") else
+            "brew install tesseract tesseract-lang" if sys.platform == "darwin"
+            else "https://github.com/UB-Mannheim/tesseract/wiki (حزمة اللغة العربية)")
+    return CheckResult(
+        "tesseract (OCR)", True,      # تحذير لا فشل — OCR ميزة اختيارية
+        "غير مثبَّت — ميزة OCR (نص الشاشة) ستبقى معطّلة", hint)
 
 
 def check_environment_isolation() -> CheckResult:
@@ -155,6 +170,69 @@ def check_environment_isolation() -> CheckResult:
         "يُنصح بشدة: python -m venv .venv ثم تفعيلها قبل التثبيت")
 
 
+
+def check_disk_space(path: Path | None = None, minimum_gb: float = 2.0) -> CheckResult:
+    """يتحقق من المساحة الحرة دون افتراض مسار ثابت للتثبيت."""
+    target = Path(path or Path.home()).resolve()
+    try:
+        usage = shutil.disk_usage(target)
+    except OSError as exc:
+        return CheckResult("مساحة القرص", False, f"تعذر الفحص: {exc}")
+    free_gb = usage.free / (1024 ** 3)
+    ok = free_gb >= minimum_gb
+    return CheckResult(
+        "مساحة القرص", ok, f"{free_gb:.1f} GB متاحة",
+        f"وفّر {minimum_gb:.1f} GB على الأقل قبل بدء المعالجة" if not ok else "",
+    )
+
+
+def default_output_dir() -> Path:
+    """مجلد الإخراج الفعلي كما يراه التطبيق.
+
+    الاستيراد كسول ومحاط بـ ``try``: فحص البيئة يسبق عمدًا التحقق من
+    ‏pydantic و PyYAML، فلا يجوز أن يعتمد على نجاح استيراد ``config``.
+    """
+    try:
+        from config.settings import AppConfig
+        return Path(AppConfig.load().application.output_dir)
+    except Exception:
+        return Path.home() / "VideoToDocOutput"
+
+
+def check_write_access(path: Path | None = None) -> CheckResult:
+    """يتحقق من إمكانية إنشاء ملف في مجلد الإخراج.
+
+    ترتيب العمليات هنا ليس تفصيلًا أسلوبيًا: ``mkstemp`` تُعيد **واصفًا
+    مفتوحًا**، وويندوز يرفض حذف ملف ما زال مفتوحًا
+    (‏``PermissionError: [WinError 32]``). حذفُ الملف قبل ``os.close``
+    كان يجعل هذا الفحص يفشل على **كل** جهاز ويندوز — أي أن
+    ``require_ready`` يمنع إقلاع التطبيق كليًا — بينما ينجح على لينكس
+    وmacOS حيث حذف ملف مفتوح مسموح. لذلك: الإغلاق أولًا ثم الحذف.
+
+    وبقاء ملف الفحص لسبب خارجي (مضاد فيروسات، مزامنة سحابية) ليس فشل
+    صلاحية كتابة: الكتابة نجحت بالفعل، فلا نُسقط الإقلاع من أجله.
+    """
+    import os
+    import tempfile
+
+    target = Path(path) if path is not None else default_output_dir()
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+        fd, name = tempfile.mkstemp(dir=str(target), prefix=".doctor-")
+    except OSError as exc:
+        return CheckResult("صلاحية الكتابة", False, f"{target} — {exc}",
+                           f"اختر مجلد إخراج قابلًا للكتابة بدلًا من {target}")
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+    try:
+        Path(name).unlink()
+    except OSError:
+        pass
+    return CheckResult("صلاحية الكتابة", True, str(target))
+
+
 def diagnose() -> Diagnosis:
     diagnosis = Diagnosis()
     diagnosis.results.append(check_python_version())
@@ -162,7 +240,28 @@ def diagnose() -> Diagnosis:
     diagnosis.results.append(check_docx_package())
     diagnosis.results.extend(r for r in check_imports() if r.name != "python-docx")
     diagnosis.results.extend(check_binaries())
+    diagnosis.results.append(check_ocr_binary())
+    diagnosis.results.append(check_disk_space())
+    diagnosis.results.append(check_write_access())
     return diagnosis
+
+
+def _is_shell_command(line: str) -> bool:
+    """هل هذا السطر أمرٌ يُنفَّذ، أم نصيحة عربية تُقرأ؟
+
+    القائمة السابقة كانت تستثني بادئات عربية بعينها («يُنصح»، «ضع»،
+    «الحد») فتسرّبت كل نصيحة تبدأ بغيرها — «اختر مجلد إخراج…» و«وفّر
+    2.0 GB…» ظهرتا داخل كتلة «COPY AND RUN THESE COMMANDS» كأنهما أمران.
+
+    الفحص هنا على أول حرف لا على السطر كله عمدًا: اشتراط ASCII كاملًا
+    يحذف أمرًا صحيحًا على جهاز اسم مستخدمه عربي
+    (‏``C:/Users/محمد/.../python.exe``)، فيبقى المستخدم بلا أي أمر
+    يُنفّذه — وهو أسوأ من أمر يحتوي مسارًا عربيًا.
+    """
+    if not line:
+        return False
+    return (not ("\u0600" <= line[0] <= "\u06ff")
+            and not line.lower().startswith(("http://", "https://")))
 
 
 def fix_commands(diagnosis: Diagnosis) -> List[str]:
@@ -175,7 +274,7 @@ def fix_commands(diagnosis: Diagnosis) -> List[str]:
     for result in diagnosis.failures:
         for line in result.fix.splitlines():
             command = line.strip()
-            if command and not command.startswith(("يُنصح", "ضع", "الحد")):
+            if command and _is_shell_command(command):
                 commands.append(command)
     return commands
 

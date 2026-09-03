@@ -1,19 +1,35 @@
-# متطلبات التشغيل — بلا سقوف تكسر Python 3.12/3.13/3.14.
-# للتثبيت:
+# متطلبات التشغيل.
+#
+# التثبيت:
 #     python -m venv .venv
 #     .venv\Scripts\activate        (Windows)   أو   source .venv/bin/activate
 #     python -m pip install -U pip
 #     python -m pip install -r requirements.txt
 #     python tools/doctor.py
+#
+# للتثبيت المُعاد إنتاجه بالضبط (نفس الإصدارات الفرعية):
+#     python -m pip install -r requirements.lock.txt
+# ويُولَّد بـ:  python tools/lock_requirements.py
+#
+# سياسة الإصدارات (المواصفة §28):
+#   * سقف على رقم الإصدار الرئيسي حيث يكون الكسر متوقعًا عند القفزة
+#     الكبرى (pydantic، PyQt6، python-docx، ctranslate2، faster-whisper).
+#   * **بلا سقف** على numpy و opencv و scikit-image و Pillow: قيدُها
+#     يجعل التثبيت مستحيلًا على المفسّرات الحديثة — عجلات numpy 1.x غير
+#     موجودة لـ 3.13/3.14، و opencv 5.x تشترط numpy>=2. اتركها لمُحلّل
+#     pip يختار المتوافق مع مفسّرك.
 
-PyQt6>=6.5.0
-faster-whisper>=1.0.0
-ctranslate2>=4.0.0
+PyQt6>=6.5.0,<7
+faster-whisper>=1.0.0,<2
+ctranslate2>=4.0.0,<5
 opencv-python>=4.8.0
 Pillow>=10.0.0
 scikit-image>=0.21.0
 numpy>=1.24.0
-python-docx>=1.1.0
-lxml>=4.9.0
-pydantic>=2.0.0
+python-docx>=1.1.0,<2
+lxml>=4.9.0,<7
+pydantic>=2.0.0,<3
 PyYAML>=6.0
+
+# OS credential store; secret_store falls back safely when unavailable.
+keyring>=25.0,<26

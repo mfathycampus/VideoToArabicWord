@@ -134,6 +134,8 @@ class SceneDetector:
         fps_hint: Optional[float] = None,
         duration_hint: Optional[float] = None,
         rotation_plan: Optional[RotationPlan] = None,
+        start_seconds: float = 0.0,
+        end_seconds: Optional[float] = None,
     ) -> List[Scene]:
         """يكتشف المشاهد.
 
@@ -158,9 +160,18 @@ class SceneDetector:
                         else (total_frames / fps if total_frames > 0 else 0.0))
             size = (self.config.analysis_width, self.config.analysis_height)
 
+            # نطاق جزئي: قفزة واحدة إلى البداية بدل قراءة ما قبلها
+            start_index = max(0, int(round(start_seconds * fps)))
+            end_index = (int(round(end_seconds * fps))
+                         if end_seconds is not None else None)
+            if start_index:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, start_index)
+            if end_seconds is not None:
+                duration = min(duration, end_seconds) if duration else end_seconds
+
             samples: List[_Sample] = []
             prev_small: Optional[np.ndarray] = None
-            frame_idx = 0
+            frame_idx = start_index
             last_emit = -1e9   # خنق إشارات التقدّم
 
             # ---- المرور الأول: حساب الدرجات بقراءة تسلسلية ----
@@ -168,6 +179,9 @@ class SceneDetector:
                 if cancel_token:
                     cancel_token.raise_if_cancelled()
                     cancel_token.wait_if_paused()
+
+                if end_index is not None and frame_idx > end_index:
+                    break
 
                 # grab() يتقدّم دون فك تشفير كامل ولا نسخ إلى numpy
                 if not cap.grab():
@@ -202,20 +216,26 @@ class SceneDetector:
         finally:
             cap.release()
 
-        return self._build_scenes(samples, duration)
+        return self._build_scenes(samples, duration, start_seconds)
 
     # ------------------------------------------------------------------
-    def _build_scenes(self, samples: List[_Sample], duration: float) -> List[Scene]:
-        """يحوّل الدرجات إلى مشاهد بتطبيق العتبة والقواعد الزمنية."""
+    def _build_scenes(self, samples: List[_Sample], duration: float,
+                      start_seconds: float = 0.0) -> List[Scene]:
+        """يحوّل الدرجات إلى مشاهد بتطبيق العتبة والقواعد الزمنية.
+
+        ``start_seconds`` حدّ المشهد الأول في نطاق جزئي: التوقيتات تبقى
+        مطلقة بزمن المصدر الأصلي.
+        """
         if not samples:
-            return [Scene(1, 0.0, duration, 0.0, duration / 2.0)]
+            middle = (start_seconds + duration) / 2.0
+            return [Scene(1, start_seconds, duration, 0.0, middle)]
 
         threshold = self.compute_threshold([s.score for s in samples])
         major_threshold = threshold * self.config.major_multiplier
 
         # نقاط القطع
         cuts: List[tuple[float, float, bool]] = []  # (زمن, درجة, حاد؟)
-        last_cut_time = 0.0
+        last_cut_time = start_seconds
         for sample in samples:
             is_major = sample.score >= major_threshold
             gap_ok = (sample.timestamp - last_cut_time) >= self.config.minimum_gap_seconds
@@ -231,7 +251,7 @@ class SceneDetector:
             cuts = sorted(strongest, key=lambda c: c[0])
 
         # بناء المشاهد: كل مشهد يمتد من قطعه حتى القطع التالي
-        boundaries = [(0.0, 0.0, False)] + cuts
+        boundaries = [(start_seconds, 0.0, False)] + cuts
         scenes: List[Scene] = []
         for index, (start, score, is_major) in enumerate(boundaries):
             end = boundaries[index + 1][0] if index + 1 < len(boundaries) else duration

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+
 from pydantic import BaseModel, Field
 
 
@@ -84,6 +85,64 @@ class KeyframeConfig(BaseModel):
     # الفحص المطلق بفارق ضئيل، وتتكيّف مع طبيعة كل فيديو.
     relative_score_floor: float = 0.75
 
+    # OCR على كل لقطة مختارة عبر Tesseract (ثنائي خارجي منفصل يُكتشف
+    # بنفس نمط ffmpeg — انظر video/ocr.py وtools/doctor.py). معطّل
+    # افتراضيًا: يضيف وقت معالجة ملموسًا لكل لقطة، ويتطلّب تثبيتًا
+    # يدويًا لا يملكه كل مستخدم. غيابه لا يوقف المعالجة إطلاقًا — فقط
+    # يترك نص الشاشة فارغًا.
+    enable_ocr: bool = False
+
+
+class ClipRange(BaseModel):
+    """نطاق زمني جزئي من المصدر.
+
+    وجودها يجعل تجربة الإعدادات رخيصة: ضبط النموذج أو القالب أو الصياغة
+    على محاضرة ثلاث ساعات كان يكلّف ساعات انتظار لكل تجربة. خمس دقائق
+    تكفي للحكم.
+
+    التوقيتات في المستند تبقى **مطلقة** (بزمن المصدر الأصلي) لا نسبية
+    للمقطع، وإلا صار الرجوع إلى الفيديو مستحيلًا.
+    """
+    start_seconds: float = Field(0.0, ge=0)
+    end_seconds: float | None = None
+
+    @property
+    def is_partial(self) -> bool:
+        return self.start_seconds > 0 or self.end_seconds is not None
+
+    @property
+    def duration(self) -> float | None:
+        if self.end_seconds is None:
+            return None
+        return max(0.0, self.end_seconds - self.start_seconds)
+
+    def label(self) -> str:
+        """لاحقة قصيرة تميّز مجلد المهمة — نطاقان مختلفان مهمتان مختلفتان."""
+        if not self.is_partial:
+            return ""
+        end = ("end" if self.end_seconds is None
+               else f"{int(self.end_seconds)}")
+        return f"clip-{int(self.start_seconds)}-{end}"
+
+    @classmethod
+    def parse(cls, start: str | float | None,
+              end: str | float | None) -> "ClipRange":
+        """يقبل ثوانيَ أو ``MM:SS`` أو ``HH:MM:SS``."""
+        from utils.timestamps import timestamp_to_seconds
+
+        def to_seconds(value):
+            if value is None or value == "":
+                return None
+            if isinstance(value, (int, float)):
+                return float(value)
+            return timestamp_to_seconds(str(value))
+
+        start_value = to_seconds(start) or 0.0
+        end_value = to_seconds(end)
+        if end_value is not None and end_value <= start_value:
+            raise ValueError("نهاية المقطع يجب أن تكون بعد بدايته.")
+        return cls(start_seconds=start_value, end_seconds=end_value)
+
 
 class ApplicationConfig(BaseModel):
     language: str = "ar"
@@ -91,15 +150,28 @@ class ApplicationConfig(BaseModel):
     keep_temp_on_error: bool = True
     keep_temp_on_success: bool = False
     max_retries: int = 3
+    # تنظيف الصوت قبل التفريغ (مرشّحات ffmpeg، بلا اعتمادية جديدة).
+    # تقرير القبول: «صوت نظيف — الأثر الأكبر منفردًا» على الدقة.
+    denoise_audio: bool = False
 
 
 class TranscriptionConfig(BaseModel):
+    # محرّك التفريغ (ADR-017). القيم: faster-whisper | cohere-arabic
+    engine: str = "faster-whisper"
+    # إظهار المحرّكات الاختيارية في الواجهة.
+    # معطّل افتراضيًا عمدًا: تلك المحرّكات تجرّ PyTorch، ومجرّد فحص
+    # توفّرها كان يُحمّله في العملية فتتنازع بيئتا OpenMP الأنويةَ
+    # ويتضاعف زمن التفريغ — بلا أن يختار المستخدم المحرّك.
+    show_optional_engines: bool = False
     model_size: str = "large-v3-turbo"   # الأدق والأسرع — انظر model_manager
     language: str = "ar"
     device: str = "auto"
     compute_type: str = "auto"
     vad_filter: bool = True
     word_timestamps: bool = True
+    # 5 = بحث شعاعي (أدق)، 1 = جشع (أسرع بمرّة ونصف إلى مرّتين على
+    # المعالج، بكلفة دقة متواضعة). الفارق كبير على محاضرة طويلة:
+    # ساعة ونصف مقابل ثلاث ساعات.
     beam_size: int = 5
     # حاسم للعربية: يمنع حلقات التكرار الهلوسي على فترات الصمت
     condition_on_previous_text: bool = False
@@ -108,8 +180,22 @@ class TranscriptionConfig(BaseModel):
     initial_prompt: str | None = (
         "هذه محاضرة تعليمية باللغة العربية الفصحى. النص مكتوب بعلامات ترقيم صحيحة."
     )
-    cpu_threads: int = 4
+    # مصطلحات مادتك وأسماء الأعلام فيها، مفصولة بفواصل أو أسطر.
+    # تُضاف إلى ``initial_prompt`` فيتعرّف عليها النموذج بدل تخمينها.
+    # تقرير القبول أثبت أن الأخطاء شبه محصورة في أسماء الأعلام المنقولة
+    # («كازا برانكا» ← «كذابرانكا»)، وهذا أرخص علاج لها.
+    glossary: str = ""
+    # 0 = اكتشاف تلقائي من عدد أنوية المعالج. الرقم الثابت 4 كان يترك
+    # نصف الأداء على جهاز بثمانية أنوية، ويُثقِل جهازًا بنواتين.
+    cpu_threads: int = 0
     download_root: Path | None = None
+    # رمز HuggingFace — يلزم للنماذج مقيّدة الوصول (محرّك Cohere مثلًا).
+    # بديل عن متغيّر البيئة HF_TOKEN فلا يحتاج setx ولا إعادة فتح البرنامج.
+    # يُحفظ في ملف الإعداد مشفَّرًا بمفتاح محلي مولَّد على جهازك (انظر
+    # utils/secret_store.py) — لم يعد نصًا صريحًا قابلًا للقراءة المباشرة.
+    # المفتاح ملف منفصل بجواره؛ نسخ الملفين معًا لجهاز آخر يفكّ التشفير
+    # هناك أيضًا، فـ«جهازك الشخصي فقط» يبقى النطاق الآمن الفعلي.
+    hf_token: str = ""
 
 
 class DocumentConfig(BaseModel):
@@ -131,6 +217,12 @@ class DocumentConfig(BaseModel):
     max_image_height_inches: float = 4.0
     enable_page_numbers: bool = True
     footer_text: str = "تقرير تفريغ الفيديو"
+    # ملفات ترجمة بجوار المستند. مجانية عمليًا: توقيت الكلمات محفوظ
+    # أصلًا في transcription.json ولم يكن يُقرأ.
+    export_subtitles: bool = True
+    subtitle_formats: list[str] = Field(default_factory=lambda: ["srt", "vtt"])
+    # فهرس الأشكال بعد جدول المحتويات
+    enable_figure_index: bool = True
 
 
 class RewriteSettings(BaseModel):
@@ -141,8 +233,8 @@ class RewriteSettings(BaseModel):
     base_url: str = ""
     api_key_env: str = ""             # فارغ = افتراضي المزوّد
     # بديل عن متغيّر البيئة: يُقرأ من ملف الإعداد مباشرةً فلا يحتاج
-    # إعادة فتح البرنامج بعد setx. ⚠ يُحفظ نصًا صريحًا — استخدمه على
-    # جهازك الشخصي فقط.
+    # إعادة فتح البرنامج بعد setx. يُحفظ مشفَّرًا بمفتاح محلي — انظر
+    # utils/secret_store.py وتعليق hf_token أعلاه لنفس الحدود والنطاق.
     api_key: str = ""
     # إلزامي للمفاتيح المرتبطة بهوية لدى Anthropic (يبدأ بـ wrkspc_)
     workspace_id: str = ""
@@ -165,23 +257,63 @@ class AppConfig(BaseModel):
     document: DocumentConfig = Field(default_factory=DocumentConfig)
     rewrite: RewriteSettings = Field(default_factory=RewriteSettings)
 
+    # آخر خطأ تحميل — تقرؤه الواجهة لتُعلم المستخدم بدل ابتلاعه
+    load_error: str = ""
+
     @classmethod
     def load(cls, path: Path | None = None) -> "AppConfig":
-        """يحمّل الإعداد من YAML إن وُجد، وإلا يعيد الافتراضيات."""
+        """يحمّل الإعداد من YAML إن وُجد، وإلا يعيد الافتراضيات.
+
+        إعداد تالف يجب ألا يمنع التشغيل — لكن الصمت التام عنه كان يجعل
+        المستخدم يفقد كل خياراته بلا أن يعرف السبب. الآن نواصل بالافتراضيات
+        **ونحتفظ بالسبب** في ``load_error`` لتعرضه الواجهة والسجلّ.
+        """
         if path is None or not Path(path).exists():
             return cls()
         try:
             import yaml
             data = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+
+            from utils.secret_store import decrypt_field
+            config_dir = Path(path).parent
+            whisper_data = data.get("whisper") or {}
+            if whisper_data.get("hf_token"):
+                whisper_data["hf_token"] = decrypt_field(
+                    whisper_data["hf_token"], config_dir)
+            rewrite_data = data.get("rewrite") or {}
+            if rewrite_data.get("api_key"):
+                rewrite_data["api_key"] = decrypt_field(
+                    rewrite_data["api_key"], config_dir)
+
             return cls(**data)
-        except Exception:
-            # إعداد تالف يجب ألا يمنع التشغيل
-            return cls()
+        except Exception as exc:
+            from utils.logger import logger
+            message = (f"تعذّرت قراءة ملف الإعداد {path} ({exc}) — "
+                       "استُخدمت القيم الافتراضية.")
+            logger.warning(message)
+            fallback = cls()
+            fallback.load_error = message
+            return fallback
 
     def save(self, path: Path) -> None:
         import yaml
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            yaml.safe_dump(json.loads(self.model_dump_json()),
-                           allow_unicode=True, sort_keys=False),
-            encoding="utf-8")
+        data = json.loads(self.model_dump_json())
+        data.pop("load_error", None)   # حقل تشخيصي، لا يُحفظ
+
+        # الأسرار تُشفَّر بمفتاح محلي قبل الكتابة — انظر utils/secret_store.
+        # ``self.whisper.hf_token`` و``self.rewrite.api_key`` في الذاكرة
+        # يبقيان نصًا صريحًا؛ التشفير عند حدود التسلسل فقط (هذا القاموس)
+        # فلا يتأثر أي كود آخر يقرأ الإعداد أثناء التشغيل.
+        from utils.secret_store import encrypt_field
+        if data.get("whisper", {}).get("hf_token"):
+            data["whisper"]["hf_token"] = encrypt_field(
+                data["whisper"]["hf_token"], path.parent)
+        if data.get("rewrite", {}).get("api_key"):
+            data["rewrite"]["api_key"] = encrypt_field(
+                data["rewrite"]["api_key"], path.parent)
+
+        serialized = yaml.safe_dump(data, allow_unicode=True, sort_keys=False)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(serialized, encoding="utf-8")
+        tmp.replace(path)

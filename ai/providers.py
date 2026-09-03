@@ -22,7 +22,17 @@ from utils.logger import logger
 
 
 class RewriteUnavailableError(AppBaseException):
-    """المزوّد غير متاح أو غير مُهيّأ."""
+    """المزوّد غير متاح أو غير مُهيّأ.
+
+    ``retryable`` يفرّق بين خطأ عابر يستحق إعادة المحاولة (تحديد معدّل،
+    عطل مؤقت في الخدمة، انقطاع شبكة) وخطأ نهائي لا تنفع معه (مفتاح
+    خاطئ، نموذج غير متاح). بدون هذا التمييز كانت طبقة الصياغة تعامل
+    ``429`` معاملة المفتاح الخاطئ فتُهدر كل الدفعات السابقة.
+    """
+
+    def __init__(self, message: str, retryable: bool = False) -> None:
+        super().__init__(message)
+        self.retryable = retryable
 
 
 def _friendly_error(detail: str) -> str:
@@ -104,7 +114,8 @@ class OllamaProvider(LLMProvider):
                 data = json.loads(response.read())
             return data.get("message", {}).get("content", "")
         except urllib.error.URLError as exc:
-            raise RewriteUnavailableError(f"تعذر الوصول إلى Ollama: {exc}") from exc
+            raise RewriteUnavailableError(
+                f"تعذر الوصول إلى Ollama: {exc}", retryable=True) from exc
 
 
 class OpenAICompatibleProvider(LLMProvider):
@@ -159,9 +170,11 @@ class OpenAICompatibleProvider(LLMProvider):
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", "replace")[:300]
             raise RewriteUnavailableError(
-                f"رفضت الخدمة الطلب ({exc.code}): {detail}") from exc
+                f"رفضت الخدمة الطلب ({exc.code}): {detail}",
+                retryable=exc.code == 429 or exc.code >= 500) from exc
         except urllib.error.URLError as exc:
-            raise RewriteUnavailableError(f"تعذر الاتصال بالخدمة: {exc}") from exc
+            raise RewriteUnavailableError(
+                f"تعذر الاتصال بالخدمة: {exc}", retryable=True) from exc
 
 
 # المزوّدون المتاحون بالترتيب المعروض في الواجهة
@@ -313,7 +326,12 @@ class AnthropicProvider(LLMProvider):
             if exc.code == 429:
                 raise RewriteUnavailableError(
                     "تجاوزت حد الاستخدام لدى Anthropic (429). "
-                    "انتظر قليلًا أو استخدم النموذج المحلي.") from exc
+                    "انتظر قليلًا أو استخدم النموذج المحلي.",
+                    retryable=True) from exc
+            if exc.code >= 500:
+                raise RewriteUnavailableError(
+                    f"عطل مؤقت لدى Anthropic ({exc.code}).",
+                    retryable=True) from exc
             if exc.code == 404:
                 raise RewriteUnavailableError(
                     f"النموذج «{self.model}» غير متاح لحسابك (404). "
@@ -333,7 +351,7 @@ class AnthropicProvider(LLMProvider):
                 f"{_friendly_error(detail)}") from exc
         except urllib.error.URLError as exc:
             raise RewriteUnavailableError(
-                f"تعذر الاتصال بـ Anthropic: {exc}") from exc
+                f"تعذر الاتصال بـ Anthropic: {exc}", retryable=True) from exc
 
         return self._extract_text(data)
 

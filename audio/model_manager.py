@@ -7,6 +7,7 @@ ADR-014: النموذج لا يُنزَّل تلقائيًا. ADR-002 يمنع �
 from __future__ import annotations
 
 import os
+import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -64,6 +65,25 @@ def estimate_processing_seconds(model_name: str, audio_seconds: float,
     return audio_seconds * rtf
 
 
+# مجلدات مخبأ HuggingFace تأخذ الشكل:
+#   models--Systran--faster-whisper-large-v3-turbo/snapshots/<sha>/model.bin
+# وبعض الإعدادات تضع اسم النموذج مجلدًا مباشرًا. النمط يغطي الحالتين.
+_MODEL_DIR_RE = re.compile(r"(?:faster-whisper|whisper)-(?P<name>[a-z0-9.\-]+)$")
+
+
+def _matches_model_dir(path: Path, name: str) -> bool:
+    """هل يعود هذا المسار لنموذج اسمه ``name`` بالضبط؟"""
+    target = name.strip().lower()
+    for part in path.parts:
+        token = part.replace("--", "-").strip("-").lower()
+        if token == target:
+            return True
+        match = _MODEL_DIR_RE.search(token)
+        if match and match.group("name") == target:
+            return True
+    return False
+
+
 def default_cache_root() -> Path:
     env = os.environ.get("VIDEO_AI_DOC_MODELS")
     if env:
@@ -82,14 +102,19 @@ class ModelManager:
         raise ModelUnavailableError(f"نموذج غير معروف: {name}")
 
     def is_available(self, name: str) -> bool:
-        """يفحص وجود النموذج محليًا دون أي اتصال شبكي."""
+        """يفحص وجود النموذج محليًا دون أي اتصال شبكي.
+
+        المطابقة **دقيقة** لا جزئية. المطابقة الجزئية القديمة
+        (``name in str(path)``) كانت تعتبر ``large-v3`` مثبّتًا لمجرد
+        وجود ``large-v3-turbo``، لأن الأول مقطع فرعي من الثاني. النتيجة:
+        تمرّ ``ensure_available`` بلا سؤال، ثم ينزّل faster-whisper
+        3.1 جيجابايت صامتًا — خرقٌ مباشر لـ ADR-014 و ADR-002.
+        """
         root = self.cache_root
         if not root.exists():
             return False
-        for path in root.rglob("model.bin"):
-            if name in str(path.parent).replace("--", "-"):
-                return True
-        return False
+        return any(_matches_model_dir(path.parent, name)
+                   for path in root.rglob("model.bin"))
 
     def free_space_gb(self) -> float:
         root = self.cache_root
