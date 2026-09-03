@@ -13,8 +13,14 @@ import os
 
 import pytest
 
-pytest.importorskip("PyQt6")
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+# ‏importorskip على الحزمة الجذر لا يكفي: ``import PyQt6`` ينجح بلا أي
+# مكتبة نظام، والانهيار يقع عند ``QtWidgets`` التي تحتاج libEGL/libGL —
+# وهي غائبة عن متتبّع ubuntu العاري، فسقطت جمعُ الاختبارات كلها بـ
+# ImportError بدل تخطّي هذا الملف وحده. الحارس على الوحدة الفعلية.
+# (‏CI يثبّت مكتبات Qt فعلًا، فالتخطّي هنا للأجهزة العارية لا لإخفاء عطل.)
+pytest.importorskip("PyQt6.QtWidgets")
 
 from PyQt6.QtWidgets import QApplication, QGroupBox, QScrollArea  # noqa: E402
 

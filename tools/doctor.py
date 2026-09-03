@@ -9,6 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from utils.console import enable_utf8_console  # noqa: E402
 from utils.deps import diagnose, format_report  # noqa: E402
 
 
@@ -38,6 +39,7 @@ def _report_engines() -> None:
 
 
 def main() -> int:
+    enable_utf8_console()
     diagnosis = diagnose()
     print(format_report(diagnosis))
     try:

@@ -26,8 +26,8 @@ from typing import Any, Dict, Optional
 from pydantic import BaseModel, Field
 
 from core.exceptions import ArtifactMissingError
-from utils.logger import bind_job, clear_job, logger
 from utils.fingerprints import source_fingerprint
+from utils.logger import bind_job, clear_job, logger
 from version import JOB_SCHEMA_VERSION
 
 SCHEMA_VERSION = JOB_SCHEMA_VERSION

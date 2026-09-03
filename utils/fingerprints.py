@@ -11,7 +11,6 @@ import json
 from pathlib import Path
 from typing import Any
 
-
 SOURCE_FINGERPRINT_VERSION = "2"
 PROCESSING_FINGERPRINT_VERSION = "1"
 

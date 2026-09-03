@@ -32,7 +32,11 @@ from document.planner import TimelinePlanner
 from document.word_generator import DocumentGenerator
 from utils.cancellation import CancellationToken
 from utils.ffmpeg_service import FFmpegService
-from utils.fingerprints import config_fingerprint, processing_fingerprint, source_fingerprint
+from utils.fingerprints import (
+    config_fingerprint,
+    processing_fingerprint,
+    source_fingerprint,
+)
 from utils.frames import resolve_rotation_plan
 from utils.logger import logger
 from utils.media_probe import extract_video_facts, probe_raw
@@ -495,7 +499,7 @@ class VideoToDocPipeline:
             job.begin_stage(Stage.MATCHING)
             plan = self._build_plan(transcript, keyframes, video_path,
                                     metadata, emit)
-            from document.quality import evaluate, assert_quality_gate
+            from document.quality import assert_quality_gate, evaluate
             quality = evaluate(plan, keyframes)
             # لا نُسقط OCR الاختياري بسبب غيابه، لكن لا نسمح بخطة بنيوية رديئة.
             assert_quality_gate(quality)

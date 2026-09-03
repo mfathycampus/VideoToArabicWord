@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable
 
-from config.schemas import DocumentPlan, TranscriptionResult, KeyframeMetadata
+from config.schemas import DocumentPlan, KeyframeMetadata
 from core.exceptions import QualityGateError
 
 

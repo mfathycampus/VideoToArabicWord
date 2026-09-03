@@ -1,5 +1,6 @@
 """تحويل أخطاء التطبيق إلى رموز ورسائل قابلة للعرض للمستخدم."""
 from __future__ import annotations
+
 from core.exceptions import AppBaseException
 
 

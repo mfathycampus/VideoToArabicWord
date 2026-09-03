@@ -42,7 +42,7 @@ class FasterWhisperEngine(ASREngine):
 
     @keep_model_loaded.setter
     def keep_model_loaded(self, value: bool) -> None:
-        
+
         if self._engine is not None:
             self._engine.keep_model_loaded = value
 
@@ -52,7 +52,7 @@ class FasterWhisperEngine(ASREngine):
 
     @allow_download.setter
     def allow_download(self, value: bool) -> None:
-        
+
         if self._engine is not None:
             self._engine.allow_download = value
 

@@ -21,10 +21,12 @@ if "OMP_NUM_THREADS" not in os.environ:
     os.environ["OMP_NUM_THREADS"] = str(max(1, _cores - 1)
                                         if _cores > 2 else _cores)
 
+from utils.console import enable_utf8_console  # noqa: E402
 from utils.deps import require_ready  # noqa: E402
 
 
 def main() -> int:
+    enable_utf8_console()
     # يُفحص أولًا: استيراد ناقص ينهار برسالة غامضة بدل رسالة مفهومة
     require_ready()
 
