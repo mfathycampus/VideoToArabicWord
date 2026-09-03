@@ -7,7 +7,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from config.settings import AppConfig
+from utils import secret_store
 from utils.secret_store import decrypt_field, encrypt_field
 
 
@@ -41,13 +44,27 @@ def test_tampered_ciphertext_fails_closed_not_open(tmp_path):
     assert decrypt_field(tampered, tmp_path) == ""
 
 
-def test_missing_key_file_fails_closed(tmp_path):
+@pytest.fixture
+def no_keyring(monkeypatch):
+    """يُجبر مسار الاحتياط الملفّي.
+
+    ``_load_or_create_key`` يفضّل مخزن أسرار النظام ولا يكتب ملف مفتاح
+    إطلاقًا حين ينجح. على لينكس في CI لا يوجد backend فيقع الاحتياط
+    تلقائيًا وتمرّ الاختبارات؛ على **ويندوز** يعمل Credential Manager
+    فلا يُنشأ الملف — فسقطت ثلاثة اختبارات تفترض وجوده. الافتراض كان
+    خطأ الاختبار لا خطأ الكود: هذه الاختبارات تخصّ الاحتياط، فعليها أن
+    تطلبه صراحةً بدل أن تتّكل على غياب backend في بيئة بعينها.
+    """
+    monkeypatch.setattr(secret_store, "_keyring", lambda: None)
+
+
+def test_missing_key_file_fails_closed(no_keyring, tmp_path):
     encrypted = encrypt_field("real-secret", tmp_path)
     (tmp_path / ".secret.key").unlink()
     assert decrypt_field(encrypted, tmp_path) == ""
 
 
-def test_key_file_is_created_with_restrictive_permissions(tmp_path):
+def test_key_file_is_created_with_restrictive_permissions(no_keyring, tmp_path):
     import os
     import stat as statmod
 
@@ -59,12 +76,45 @@ def test_key_file_is_created_with_restrictive_permissions(tmp_path):
         assert mode == 0o600
 
 
-def test_two_secrets_in_same_dir_share_one_key_file(tmp_path):
+def test_two_secrets_in_same_dir_share_one_key_file(no_keyring, tmp_path):
     encrypt_field("first-secret", tmp_path)
     key_bytes_after_first = (tmp_path / ".secret.key").read_bytes()
     encrypt_field("second-secret", tmp_path)
     key_bytes_after_second = (tmp_path / ".secret.key").read_bytes()
     assert key_bytes_after_first == key_bytes_after_second
+
+
+def test_fallback_round_trips_without_any_keyring(no_keyring, tmp_path):
+    """الاحتياط وحده كافٍ: تشفير وفك على جهاز بلا مخزن أسرار."""
+    encrypted = encrypt_field("sk-fallback-only", tmp_path)
+    assert decrypt_field(encrypted, tmp_path) == "sk-fallback-only"
+
+
+def test_os_credential_store_is_preferred_over_a_key_file(monkeypatch, tmp_path):
+    """المسار المفضَّل — وهو ما يعمل فعلًا على ويندوز — كان بلا تغطية.
+
+    حين ينجح مخزن النظام يجب ألّا يُكتب مفتاح على القرص إطلاقًا: وجود
+    الملف يعني تسريب المفتاح إلى نسخة احتياطية أو مزامنة سحابية، وهو
+    بالضبط ما وُجد المخزن لتفاديه.
+    """
+    vault: dict[tuple[str, str], str] = {}
+
+    class FakeKeyring:
+        @staticmethod
+        def get_password(service, username):
+            return vault.get((service, username))
+
+        @staticmethod
+        def set_password(service, username, password):
+            vault[(service, username)] = password
+
+    monkeypatch.setattr(secret_store, "_keyring", lambda: FakeKeyring)
+
+    encrypted = encrypt_field("sk-in-os-vault", tmp_path)
+    assert decrypt_field(encrypted, tmp_path) == "sk-in-os-vault"
+    assert vault, "المفتاح لم يصل إلى مخزن النظام"
+    assert not (tmp_path / ".secret.key").exists(), (
+        "كُتب مفتاح على القرص رغم نجاح مخزن النظام")
 
 
 def test_app_config_hf_token_and_api_key_are_not_plaintext_on_disk(tmp_path):

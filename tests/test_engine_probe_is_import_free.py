@@ -18,20 +18,32 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
+#: يسبق كل شيفرة مُشغَّلة: جذر المشروع في المسار، ثم ضبط ترميز الطرفية
+#: تمامًا كما تفعل نقاط الدخول الحقيقية. بدونه كان
+#: ``test_missing_faster_whisper_gives_a_clear_arabic_message`` يسقط على
+#: ويندوز بـ ``UnicodeEncodeError`` عند طباعة الرسالة العربية نفسها التي
+#: يفترض أن يتحقّق منها — العملية الابنة ترث صفحة ترميز cp1252.
+_BOOTSTRAP = (
+    "import sys\n"
+    "sys.path.insert(0, '.')\n"
+    "from utils.console import enable_utf8_console\n"
+    "enable_utf8_console()\n"
+)
+
+
 def _in_clean_process(code: str) -> str:
     """يشغّل الشيفرة في عملية جديدة — الوحيدة التي يصحّ فيها قياس
     ``sys.modules``، لأن حزمة الاختبارات قد تكون استوردت شيئًا قبلها."""
     result = subprocess.run(
-        [sys.executable, "-c", code], cwd=str(ROOT),
-        capture_output=True, text=True, timeout=180)
+        [sys.executable, "-c", _BOOTSTRAP + code], cwd=str(ROOT),
+        capture_output=True, text=True, timeout=180,
+        encoding="utf-8", errors="replace")
     assert result.returncode == 0, result.stderr[-2000:]
     return result.stdout.strip()
 
 
 def test_probing_engines_never_imports_torch():
     output = _in_clean_process(
-        "import sys\n"
-        "sys.path.insert(0, '.')\n"
         "from audio.engines.registry import build_engine\n"
         "build_engine('cohere-arabic').diagnose()\n"
         "print('torch' in sys.modules, 'transformers' in sys.modules)\n")
@@ -41,8 +53,6 @@ def test_probing_engines_never_imports_torch():
 
 def test_probing_the_default_engine_stays_light():
     output = _in_clean_process(
-        "import sys\n"
-        "sys.path.insert(0, '.')\n"
         "from audio.engines.registry import build_engine\n"
         "build_engine('faster-whisper').is_available()\n"
         "print('torch' in sys.modules)\n")
@@ -52,8 +62,6 @@ def test_probing_the_default_engine_stays_light():
 def test_listing_engines_for_the_ui_stays_light():
     """بناء الواجهة يستدعي هذه الدوال عند كل إقلاع."""
     output = _in_clean_process(
-        "import sys\n"
-        "sys.path.insert(0, '.')\n"
         "from audio.engines.registry import available_engines, listed_engines\n"
         "available_engines(include_optional=True)\n"
         "for n in listed_engines(True):\n"
@@ -103,8 +111,6 @@ def test_missing_faster_whisper_gives_a_clear_arabic_message_not_a_raw_traceback
     كان يُسرِّب ``ModuleNotFoundError`` خامًا حتى الواجهة. صار يتحوّل إلى
     ``ModelUnavailableError`` برسالة عربية واضحة وحل مقترح."""
     output = _in_clean_process(
-        "import sys\n"
-        "sys.path.insert(0, '.')\n"
         "sys.modules['faster_whisper'] = None  # يجعل استيراده يفشل\n"
         "from pathlib import Path\n"
         "from config.settings import AppConfig\n"
