@@ -10,6 +10,7 @@
 العطل يقع فعلًا بلا الإصلاح، ولا يقع بعده.
 """
 import io
+import pathlib
 import sys
 
 import pytest
@@ -50,3 +51,30 @@ def test_enable_utf8_console_tolerates_streams_without_reconfigure(monkeypatch):
     monkeypatch.setattr(sys, "stdout", io.StringIO())
     monkeypatch.setattr(sys, "stderr", io.StringIO())
     enable_utf8_console()      # لا استثناء
+
+
+# ── حارس ضد تكرار العطل في أداة جديدة ────────────────────────────────
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+ENTRY_POINTS = sorted(
+    [p for p in (ROOT / "tools").glob("*.py") if p.name != "__init__.py"]
+    + [ROOT / "app.py"]
+)
+
+
+@pytest.mark.parametrize("path", ENTRY_POINTS, ids=lambda p: p.name)
+def test_every_cli_entry_point_enables_utf8_console(path):
+    """كل أداة سطر أوامر تستدعي enable_utf8_console.
+
+    الإصلاح الأول غطّى doctor.py وrun_pipeline.py وapp.py فقط، فانتقل
+    العطل نفسه إلى make_test_corpus.py في التشغيل التالي لـ CI. الرسائل
+    هنا عربية في كل مكان، فالقاعدة تخصّ كل نقطة دخول لا بعضها — وهذا
+    الاختبار يمنع أن تولد أداة جديدة بالثغرة نفسها.
+    """
+    source = path.read_text(encoding="utf-8")
+    if '__name__ == "__main__"' not in source:
+        pytest.skip("ليست نقطة دخول تُشغَّل مباشرة")
+    assert "enable_utf8_console()" in source, (
+        f"{path.name}: نقطة دخول بلا enable_utf8_console() — "
+        "ستنهار على طرفية ويندوز غير UTF-8 عند أول رسالة عربية"
+    )

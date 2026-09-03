@@ -34,13 +34,15 @@ jobs:
         # بلا أي منها، لكن ``QtWidgets`` يحتاج libEGL/libGL فينهار جمعُ
         # الاختبارات كلها. بدونها يُتخطّى الاختبار بصمت — وهو بالضبط ما
         # يفترض أن يمسك انهيار التخطيط.
+        #
+        # القائمة مقصورة على ما يحتاجه منصّة ``offscreen`` فعلًا. حزم
+        # ‏xcb-* ليست مطلوبة بلا خادم عرض، وإدراجها أسقط الوظيفة على
+        # ‏ubuntu 24.04 (noble) بـ ``E: Unable to locate package
+        # libxcb-xinerama4`` — حزمة أُزيلت من هذا الإصدار.
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg \
-            libegl1 libgl1 libxkbcommon-x11-0 libdbus-1-3 \
-            libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 \
-            libxcb-render-util0 libxcb-shape0 libxcb-xinerama4 libxcb-xkb1
+          sudo apt-get install -y ffmpeg libegl1 libgl1 libxkbcommon0 libdbus-1-3
 
       - name: تثبيت ffmpeg (Windows)
         if: runner.os == 'Windows'

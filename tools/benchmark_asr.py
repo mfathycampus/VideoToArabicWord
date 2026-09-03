@@ -138,4 +138,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    from utils.console import enable_utf8_console
+    enable_utf8_console()
     raise SystemExit(main())

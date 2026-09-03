@@ -14,6 +14,12 @@ from typing import Any
 SOURCE_FINGERPRINT_VERSION = "2"
 PROCESSING_FINGERPRINT_VERSION = "1"
 
+#: Hex characters kept from every digest. Job directory names carry a
+#: source fingerprint as a ``__<hex>`` suffix, and ``utils.timestamps.
+#: strip_source_fingerprint`` must strip exactly that many — it is
+#: imported from here so the two can never drift apart again.
+FINGERPRINT_LENGTH = 20
+
 
 def _stable_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
@@ -29,7 +35,7 @@ def config_fingerprint(config: Any, *, exclude: set[str] | None = None) -> str:
         value = config
     if exclude and isinstance(value, dict):
         value = {k: v for k, v in value.items() if k not in exclude}
-    return hashlib.sha256(_stable_json(value).encode("utf-8")).hexdigest()[:20]
+    return hashlib.sha256(_stable_json(value).encode("utf-8")).hexdigest()[:FINGERPRINT_LENGTH]
 
 
 def source_fingerprint(path: Path) -> str:
@@ -47,7 +53,7 @@ def source_fingerprint(path: Path) -> str:
         # report a friendly "file not found" error instead of failing while
         # constructing the job identity.
         digest.update(f"v{SOURCE_FINGERPRINT_VERSION}|missing|{path.resolve()}".encode("utf-8"))
-        return digest.hexdigest()[:20]
+        return digest.hexdigest()[:FINGERPRINT_LENGTH]
 
     size = stat.st_size
     sample_size = min(1 << 20, size)
@@ -58,10 +64,10 @@ def source_fingerprint(path: Path) -> str:
             if size > sample_size:
                 handle.seek(max(0, size - sample_size))
                 digest.update(handle.read(sample_size))
-    return digest.hexdigest()[:20]
+    return digest.hexdigest()[:FINGERPRINT_LENGTH]
 
 
 def processing_fingerprint(*parts: Any) -> str:
     """Hash stage inputs/configuration into a compact reusable identifier."""
     payload = [PROCESSING_FINGERPRINT_VERSION, *parts]
-    return hashlib.sha256(_stable_json(payload).encode("utf-8")).hexdigest()[:20]
+    return hashlib.sha256(_stable_json(payload).encode("utf-8")).hexdigest()[:FINGERPRINT_LENGTH]
