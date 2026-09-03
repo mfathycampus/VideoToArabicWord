@@ -3,7 +3,9 @@
 ## الخطوات (Windows / PowerShell)
 
 ```powershell
-cd "C:\Users\Admin\Desktop\Video Converter DOC\VideoToArabicWord"
+# استنساخ المستودع (أول مرة فقط)
+git clone https://github.com/mfathycampus/VideoToArabicWord.git
+cd VideoToArabicWord
 
 # 1) بيئة معزولة — تمنع تعارض الحزم مع بقية النظام
 python -m venv .venv

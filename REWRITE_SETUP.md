@@ -39,7 +39,7 @@
 
 **الأسهل: ملف الإعداد** (يعمل فورًا بلا إعادة تشغيل)
 
-أنشئ الملف `C:\Users\Admin\.config\video_ai_doc\config.yaml`:
+أنشئ الملف `C:\Users\<اسمك>\.config\video_ai_doc\config.yaml`:
 
 ```yaml
 rewrite:
