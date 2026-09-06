@@ -10,7 +10,10 @@ faster-whisper>=1.0.0
 ctranslate2>=4.0.0          # محرك faster-whisper الفعلي (لا PyTorch — ADR-012)
 opencv-python>=4.8.0        # عجلات abi3
 Pillow>=10.0.0
-scikit-image>=0.21.0
+# ‏scikit-image أُسقطت: كان استعمالها الوحيد دالة SSIM في
+# ``video/scene_detector``، واستُبدلت بمرشّحات OpenCV بنفس القيمة
+# بالضبط وبسرعة 2.6×. إسقاطها يوفّر 144 ميغابايت من الحزمة
+# (‏scikit-image 32 + scipy 112) ويحذف تبعيتين من سطح التغليف.
 numpy>=1.24.0               # بلا سقف — انظر ملاحظة التوافق أعلاه
 python-docx>=1.1.0          # ⚠ ليست «docx» — انظر التحذير أدناه
 lxml>=4.9.0

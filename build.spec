@@ -41,6 +41,12 @@ logo = PROJECT / "assets" / "logo.png"
 if logo.is_file():
     datas.append((str(logo), "assets"))
 
+# أيقونة الملف التنفيذي. ‏PyInstaller على ويندوز يقبل ``.ico`` فقط —
+# تمرير PNG يُتجاهَل بصمت، فيخرج التطبيق بأيقونة Python الافتراضية، وهي
+# أول ما يراه المستخدم في قائمة ابدأ. تُولَّد بـ ``tools/make_icon.py``
+# ومستبعَدة من المستودع (مُشتقّة من الشعار).
+icon = PROJECT / "assets" / "logo.ico"
+
 # tokenizers الخاص بـ faster-whisper يحمّل موارد بالاسم وقت التشغيل
 hiddenimports = collect_submodules("faster_whisper") + [
     "ctranslate2",
@@ -84,7 +90,7 @@ exe = EXE(
     upx=False,                 # UPX يفسد بعض مكتبات ctranslate2
     console=False,             # تطبيق نافذة؛ السجلّ في app.log
     disable_windowed_traceback=False,
-    icon=str(logo) if logo.is_file() else None,
+    icon=str(icon) if icon.is_file() else None,
 )
 
 coll = COLLECT(

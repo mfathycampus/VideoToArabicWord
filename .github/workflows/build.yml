@@ -2,10 +2,16 @@ name: بناء الحزمة التنفيذية
 
 # PyInstaller مع PyQt6 و ctranslate2 وثنائيات ffmpeg هو أكبر مجهول في
 # المشروع. تشغيله في كل دفعة يكشف أعطال التغليف يوم حدوثها لا يوم التسليم.
+#
+# كان يعمل على الوسوم فقط، فبقيت الحزمة بلا فحص بين إصدار وإصدار — وفي
+# تلك الفجوة بالضبط دخل عطلٌ منع الحزمة من الإقلاع كليًا. البناء الآن
+# على كل دفعة إلى main وعلى كل طلب دمج.
 
 on:
   push:
+    branches: [main]
     tags: ["v*"]
+  pull_request:
   workflow_dispatch:
 
 jobs:
@@ -16,20 +22,55 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
       - run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt pyinstaller
       - name: تعبئة bin/ بـ ffmpeg و ffprobe
         run: python tools/setup_ffmpeg.py
+      - name: توليد أيقونة ويندوز
+        # مُشتقّة من الشعار ومستبعَدة من المستودع. بلا هذه الخطوة يخرج
+        # التطبيق بأيقونة Python الافتراضية في قائمة ابدأ.
+        run: python tools/make_icon.py
       - name: البناء
         run: pyinstaller build.spec --noconfirm
-      - name: تشغيل تجريبي للحزمة
-        # لا واجهة في العدّاء، فنكتفي بأن التنفيذي موجود ويستجيب
+
+      - name: فحص الحزمة — تخطيط وإقلاع فعليّان
+        # الفحص السابق كان ``Test-Path`` على الملف التنفيذي فقط. الوجود
+        # لا يعني الإقلاع: حزمة لا تفتح إطلاقًا كانت تمرّ منه. الآن
+        # ``build_smoke`` يشغّل ``--selftest`` داخل الحزمة نفسها،
+        # فيفحص مساراتها المجمّدة وثنائياتها المشحونة.
+        run: python tools/build_smoke.py dist/VideoToArabicWord
+
+      - name: تأكيد أن غياب ffmpeg من PATH لا يمنع الإقلاع
+        # هذا هو جهاز المعلّم بالضبط: ويندوز نظيف بلا ffmpeg مثبَّت.
+        # الحزمة يجب أن تعتمد على ثنائياتها المشحونة وحدها. لولا هذه
+        # الخطوة لبقي العطل الأصلي غير مرئي: عدّاء GitHub يملك ffmpeg
+        # في PATH بعد خطوة setup_ffmpeg، فيمرّ الفحص على حزمة معطوبة.
+        shell: pwsh
         run: |
-          if (-not (Test-Path "dist/VideoToArabicWord/VideoToArabicWord.exe")) {
-            throw "لم يُنتَج الملف التنفيذي"
-          }
+          $env:PATH = "$env:SystemRoot;$env:SystemRoot\System32"
+          python tools/build_smoke.py dist/VideoToArabicWord
+
       - uses: actions/upload-artifact@v4
         with:
           name: VideoToArabicWord-windows
           path: dist/VideoToArabicWord
+
+      # ── المثبِّت: على الوسوم فقط ───────────────────────────────────
+      # بناؤه في كل دفعة يضيف دقائق بلا فائدة؛ ما يُسلَّم للمعلّمين هو
+      # الإصدار الموسوم.
+      - name: بناء المثبِّت
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart("v")
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" `
+            /DAppVersion=$version packaging\installer.iss
+        shell: pwsh
+
+      - name: رفع المثبِّت
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v4
+        with:
+          name: VideoToArabicWord-installer
+          path: dist/*-setup.exe

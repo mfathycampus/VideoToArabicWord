@@ -10,6 +10,8 @@ __pycache__/
 # ثنائيات مشحونة — تُجلب بـ tools/setup_ffmpeg.py ولا تدخل المستودع
 bin/
 models/
+# مُشتقّة من الشعار — تُولَّد بـ tools/make_icon.py
+assets/logo.ico
 
 # نواتج التشغيل
 logs/

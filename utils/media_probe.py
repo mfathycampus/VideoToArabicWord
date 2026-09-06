@@ -26,15 +26,19 @@ from core.exceptions import (
     FFprobeNotFoundError,
     MediaValidationError,
 )
+from utils.bundle import bundled_dir
 
 _CREATE_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
 
 def _bundled_dir() -> Path:
-    """مجلد الثنائيات المشحونة مع التطبيق (يعمل داخل PyInstaller أيضًا)."""
-    if getattr(sys, "frozen", False):
-        return Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
-    return Path(__file__).resolve().parents[1] / "bin"
+    """مجلد الثنائيات المشحونة مع التطبيق.
+
+    المنطق انتقل إلى ``utils.bundle`` ليكون مصدرًا واحدًا: كان مكتوبًا
+    هنا صحيحًا وفي ``utils/deps.py`` خطأً، فمرّ فحص البيئة على حزمة لا
+    تعمل. انظر ``utils/bundle.py``.
+    """
+    return bundled_dir()
 
 
 @lru_cache(maxsize=1)

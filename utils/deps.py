@@ -21,6 +21,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List
 
+from utils.bundle import binary_name, bundled_dir, is_frozen
+
 MIN_PYTHON = (3, 10)
 
 
@@ -50,8 +52,20 @@ def _pip_command() -> str:
 
     كتابة ``pip install`` في PowerShell قد تصيب مفسّرًا آخر تمامًا،
     وهو سبب شائع لـ "ثبّتُّ الحزمة ولا تزال مفقودة".
+
+    داخل حزمة مجمّدة ``sys.executable`` هو ``VideoToArabicWord.exe``،
+    فيصير الأمر ``"VideoToArabicWord.exe" -m pip install …`` — سطر بلا
+    معنى يُملى على معلّم غير تقني. الحزمة تحمل تبعياتها معها، فأي نقص
+    فيها عطبُ بناء لا يصلحه المستخدم بـ pip إطلاقًا.
     """
+    if is_frozen():
+        return ""
     return f'"{sys.executable}" -m pip'
+
+
+def _reinstall_hint() -> str:
+    """نصيحة الإصلاح حين يكون المستخدم أمام حزمة لا أمام مستودع."""
+    return "نسخة التطبيق ناقصة — أعد تنزيل المثبِّت وثبّته من جديد"
 
 
 def check_python_version() -> CheckResult:
@@ -106,7 +120,6 @@ _REQUIRED = [
     ("PyQt6", "PyQt6", "الواجهة الرسومية"),
     ("cv2", "opencv-python", "معالجة الفيديو"),
     ("numpy", "numpy", "الحسابات العددية"),
-    ("skimage", "scikit-image", "مقاييس تشابه الصور"),
     ("PIL", "Pillow", "حفظ الصور"),
     ("lxml", "lxml", "توليد OOXML"),
     ("pydantic", "pydantic", "عقود البيانات"),
@@ -122,23 +135,36 @@ def check_imports() -> List[CheckResult]:
         if importlib.util.find_spec(module) is not None:
             results.append(CheckResult(package, True, purpose))
         else:
+            fix = (_reinstall_hint() if is_frozen()
+                   else f"{_pip_command()} install {package}")
             results.append(CheckResult(
-                package, False, f"مفقودة — {purpose}",
-                f"{_pip_command()} install {package}"))
+                package, False, f"مفقودة — {purpose}", fix))
     return results
 
 
 def check_binaries() -> List[CheckResult]:
+    """يبحث عن ffmpeg وffprobe: المشحون مع التطبيق أولًا، ثم ``PATH``.
+
+    الترتيب مقصود ومطابق لما يفعله ``utils/media_probe.py`` وقت التشغيل:
+    الثنائي المشحون هو ما سيُستعمل فعلًا، فهو ما يجب أن يُفحَص.
+
+    كان الفحص يبني المسار من موقع هذا الملف، فيصير داخل الحزمة
+    ``_internal/bin`` — مجلد لا وجود له، لأن ``build.spec`` يضع
+    الثنائيات في جذر ``_internal``. فيفشل على كل جهاز بلا ffmpeg في
+    ``PATH``، ويمنع الإقلاع كليًا وبصمت. انظر ``utils/bundle.py``.
+    """
     results: List[CheckResult] = []
-    bundled = Path(__file__).resolve().parents[1] / "bin"
+    bundled = bundled_dir()
     for name in ("ffmpeg", "ffprobe"):
-        found = shutil.which(name) or shutil.which(f"{name}.exe")
+        candidate = bundled / binary_name(name)
+        found = (str(candidate) if candidate.is_file()
+                 else shutil.which(name) or shutil.which(f"{name}.exe"))
+        fix = ""
         if not found:
-            candidate = bundled / (f"{name}.exe" if sys.platform == "win32" else name)
-            found = str(candidate) if candidate.is_file() else None
+            fix = (_reinstall_hint() if is_frozen()
+                   else f'"{sys.executable}" tools/setup_ffmpeg.py')
         results.append(CheckResult(
-            name, bool(found), found or "غير موجود",
-            "" if found else f'"{sys.executable}" tools/setup_ffmpeg.py'))
+            name, bool(found), found or "غير موجود", fix))
     return results
 
 
