@@ -48,3 +48,59 @@ def collapse_hallucinated_repeats(text: str) -> str:
 
 def clean_segment_text(text: str) -> str:
     return collapse_hallucinated_repeats(normalize_arabic(text))
+
+
+# ── التكرار الممتدّ عبر المقاطع ───────────────────────────────────────
+#
+# ``collapse_hallucinated_repeats`` أعلاه تعمل داخل المقطع الواحد، وهذا
+# لا يكفي: حلقة Whisper على الصمت لا تقع داخل مقطع، بل **تُنتج مقاطع**.
+# النمط الحقيقي ثمانية مقاطع متتالية نصّ كلٍّ منها «شكرًا لكم» — فلا
+# تكرار داخل أيٍّ منها، فينجو كلّه إلى المستند صفحةً كاملة.
+#
+# لا أثر على صوت نظيف إطلاقًا؛ وعلى ملف فيه موسيقى أو تصفيق أو صمت طويل
+# يزيل أوضح عيب يراه القارئ.
+
+#: أقصى طول للعبارة المكرّرة. الحلقات الهلوسية قصيرة («شكرًا لكم»،
+#: «الحمد لله»)؛ فقرة طويلة تتكرّر حرفيًا شيء آخر لا نجرؤ على طيّه.
+MAX_LOOP_PHRASE_CHARS = 60
+
+#: أقلّ عدد مقاطع متتالية يُعدّ حلقة. ثلاثة تطابق سياسة الطيّ داخل
+#: المقطع، وتترك التكرار البلاغي المقصود (مرّتان) سليمًا.
+MIN_LOOP_SEGMENTS = 3
+
+_COMPARISON_STRIP = re.compile(r"[^\w\s]", re.UNICODE)
+
+
+def _loop_key(text: str) -> str:
+    """صورة مبسّطة للمقارنة: تتجاهل الترقيم والتشكيل والمسافات.
+
+    ‏Whisper يُنتج الحلقة بصياغات متفاوتة قليلًا («شكرا لكم» و«شكرًا
+    لكم.») — المقارنة الحرفية تفوّتها، وهي الحلقة نفسها.
+    """
+    text = _DIACRITICS.sub("", unicodedata.normalize("NFC", text))
+    return _MULTISPACE.sub(" ", _COMPARISON_STRIP.sub("", text)).strip()
+
+
+def find_repeated_runs(texts: list[str],
+                       min_repeats: int = MIN_LOOP_SEGMENTS,
+                       max_chars: int = MAX_LOOP_PHRASE_CHARS
+                       ) -> list[tuple[int, int]]:
+    """يعيد نطاقات ``[بداية, نهاية)`` لمقاطع متتالية نصّها واحد.
+
+    منفصلة عن التطبيق لتُختبَر وحدها، ولأن الـpipeline قد يحتاج التبليغ
+    عن الحلقة دون طيّها.
+    """
+    runs: list[tuple[int, int]] = []
+    index = 0
+    while index < len(texts):
+        key = _loop_key(texts[index])
+        if not key or len(key) > max_chars:
+            index += 1
+            continue
+        end = index + 1
+        while end < len(texts) and _loop_key(texts[end]) == key:
+            end += 1
+        if end - index >= min_repeats:
+            runs.append((index, end))
+        index = max(end, index + 1)
+    return runs

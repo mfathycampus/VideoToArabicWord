@@ -146,15 +146,31 @@ def test_audio_extraction_without_options_is_unchanged(tmp_path):
 # ---------------------------------------------------------------------
 # 2 · قاموس المصطلحات
 # ---------------------------------------------------------------------
-def test_glossary_reaches_the_initial_prompt():
+def test_glossary_goes_to_hotwords_not_the_initial_prompt():
+    """العطل الأصلي: كانت المصطلحات تُدمج في ``initial_prompt``.
+
+    ‏faster-whisper يقرأ ``initial_prompt`` من ``previous_tokens``، ثم
+    يُصفّر ``prompt_reset_since`` بعد **كل** نافذة لأن إعدادنا
+    ``condition_on_previous_text=False``. فكان القاموس يصل نافذة واحدة
+    (~30 ثانية) ثم يُهمَل: 0.3٪ من محاضرة ثلاث ساعات — ميزة معطّلة لا
+    ميزة ضعيفة.
+
+    ‏``hotwords`` تُحقَن في موجّه كل نافذة بلا شرط. هذا الاختبار يثبّت
+    أن المصطلحات هناك، و**ليست** في الموجّه.
+    """
     pytest.importorskip("faster_whisper")
     from audio.transcriber import TranscriptionEngine
 
     config = AppConfig().whisper.model_copy(
         update={"glossary": "بوذا، اليوغا، PowerSchool"})
-    prompt = TranscriptionEngine(config)._effective_prompt()
-    assert "بوذا" in prompt and "PowerSchool" in prompt
-    assert "محاضرة تعليمية" in prompt        # الموجّه الأساسي باقٍ
+    engine = TranscriptionEngine(config)
+
+    hotwords = engine._effective_hotwords()
+    assert "بوذا" in hotwords and "PowerSchool" in hotwords
+
+    prompt = engine._effective_prompt()
+    assert "محاضرة تعليمية" in prompt          # الموجّه الأساسي باقٍ
+    assert "بوذا" not in prompt, "عادت المصطلحات إلى الموجّه — تصل أول نافذة فقط"
 
 
 def test_empty_glossary_leaves_the_prompt_alone():
@@ -163,17 +179,78 @@ def test_empty_glossary_leaves_the_prompt_alone():
 
     engine = TranscriptionEngine(AppConfig().whisper)
     assert engine._effective_prompt() == AppConfig().whisper.initial_prompt
+    assert engine._effective_hotwords() is None
 
 
-def test_long_glossary_is_truncated():
-    """حدّ Whisper 224 رمزًا — قاموس ضخم يزيح الموجّه الأساسي."""
+def test_long_glossary_is_truncated_on_word_boundaries():
+    """حدّ ``hotwords`` في المكتبة ``max_length // 2 - 1`` = 223 رمزًا.
+
+    القصّ على حدود الكلمات مقصود: قطع مصطلح في منتصفه يُدخل ضجيجًا في
+    موجّه كل نافذة بدل أن يمنعه.
+    """
     pytest.importorskip("faster_whisper")
     from audio.transcriber import TranscriptionEngine
 
     config = AppConfig().whisper.model_copy(
-        update={"glossary": "مصطلح " * 500})
-    prompt = TranscriptionEngine(config)._effective_prompt()
-    assert len(prompt) < 700
+        update={"glossary": "مصطلحات " * 500})
+    hotwords = TranscriptionEngine(config)._effective_hotwords()
+
+    assert len(hotwords) <= 400
+    assert not hotwords.endswith("مصطلحا"), "قُصَّ المصطلح في منتصفه"
+    assert all(word == "مصطلحات" for word in hotwords.split())
+
+
+def test_transcribe_is_called_with_hotwords_and_the_silence_guard():
+    """العقد الفعلي مع المكتبة — لا يكفي أن تكون الدالة صحيحة وحدها.
+
+    يُثبِّت أيضًا ``hallucination_silence_threshold``: المعامل كان
+    معطّلًا (``None``) رغم أن شرطه (``word_timestamps``) مُفعَّل عندنا،
+    وهو ما يمنع حلقة «شكرًا لكم» تملأ صفحة فوق الصمت.
+    """
+    pytest.importorskip("faster_whisper")
+    from audio.transcriber import TranscriptionEngine
+
+    captured = {}
+
+    class FakeModel:
+        def transcribe(self, _audio, **kwargs):
+            captured.update(kwargs)
+            return iter(()), type("Info", (), {"duration": 0.0})()
+
+    # ``batch_size=1`` يُبقي المسار المتسلسل، فيصل النموذج المزيّف كما هو.
+    config = AppConfig().whisper.model_copy(
+        update={"glossary": "الفيدا", "batch_size": 1})
+    engine = TranscriptionEngine(config)
+    engine._load_model = lambda *_a, **_k: FakeModel()
+    engine._run(Path("x.wav"), "cpu", "int8", None, None, False)
+
+    assert captured["hotwords"] == "الفيدا"
+    assert captured["hallucination_silence_threshold"] == 2.0
+    assert "الفيدا" not in (captured["initial_prompt"] or "")
+
+
+def test_the_batched_path_receives_the_same_options():
+    """الخيارات نفسها تمامًا في المسارين — لا يجوز أن يتفرّعا في السلوك."""
+    pytest.importorskip("faster_whisper")
+    from audio.transcriber import TranscriptionEngine
+
+    captured = {}
+
+    class FakeBatched:
+        def transcribe(self, _audio, **kwargs):
+            captured.update(kwargs)
+            return iter(()), type("Info", (), {"duration": 0.0})()
+
+    config = AppConfig().whisper.model_copy(
+        update={"glossary": "الفيدا", "batch_size": 8})
+    engine = TranscriptionEngine(config)
+    engine._load_model = lambda *_a, **_k: object()
+    engine._batched = staticmethod(lambda _model: FakeBatched())
+    engine._run(Path("x.wav"), "cpu", "int8", None, None, False)
+
+    assert captured["batch_size"] == 8
+    assert captured["hotwords"] == "الفيدا"
+    assert captured["hallucination_silence_threshold"] == 2.0
 
 
 # ---------------------------------------------------------------------
