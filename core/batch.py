@@ -76,13 +76,25 @@ def process_folder(
     results: List[BatchResult] = []
     total = len(sources)
 
+    # ‏pipeline واحد للدفعة كلها. كان يُبنى واحدٌ لكل ملف، ومعه محرّك
+    # تفريغ جديد، فيُعاد تحميل 1.7GB من القرص مع كل ملف: 35 ثانية باردة
+    # لكل واحد — دفعةٌ من عشرين ملفًا تهدر ثلاث إلى عشر دقائق في إعادة
+    # قراءة الأوزان نفسها. مجلد المهمة يُشتقّ من المصدر لا من الـpipeline
+    # (``job_dir_for``)، فلا حالة تتسرّب بين الملفات.
+    pipeline = VideoToDocPipeline(output_dir, config)
+    # يُبقي الأوزان في الذاكرة بين ملف وآخر — الغرض من مشاركة الـpipeline.
+    # ‏getattr لأن المحرّكات تُحقَن (ADR-008): بديلٌ — أو بديل اختبار —
+    # قد لا يعرض ``transcriber`` أصلًا، وذلك ليس خطأ يستحقّ إسقاط الدفعة.
+    transcriber = getattr(pipeline, "transcriber", None)
+    if transcriber is not None:
+        transcriber.keep_model_loaded = True
+
     for index, source in enumerate(sources, start=1):
         if cancel_token and cancel_token.is_cancelled():
             logger.info("أُلغيت الدفعة بطلب المستخدم.")
             break
 
         logger.info(f"[{index}/{total}] {source.name}")
-        pipeline = VideoToDocPipeline(output_dir, config)
         job_dir = pipeline.job_dir_for(source, clip)
 
         def progress(pct: float, _message: str, _name=source.name,

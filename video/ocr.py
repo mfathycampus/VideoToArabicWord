@@ -16,10 +16,12 @@ Tesseract ثنائي خارجي منفصل بالضبط مثل ffmpeg (ADR-013):
 """
 from __future__ import annotations
 
+import csv
 import shutil
 import subprocess
 import sys
 import tempfile
+from collections import OrderedDict
 from pathlib import Path
 from typing import Optional
 
@@ -28,6 +30,27 @@ from utils.logger import logger
 # عربي + إنجليزي: شرائح كثيرة تخلط مصطلحات إنجليزية أو كودًا برمجيًا
 # وسط نص عربي (نفس ملاحظة قاموس المصطلحات في TranscriptionConfig).
 LANGUAGES = "ara+eng"
+
+#: أدنى ثقة (0–100) يقبلها سطرٌ مقروء. Tesseract يعطي ثقة لكل كلمة،
+#: ومتوسّطها على السطر يفصل القراءة الناجحة عن الفاشلة فصلًا حادًّا.
+#:
+#: **مقيسة على الخمس عشرة لقطة المستخرَجة من تسجيل حقيقي**، وهي أوّل
+#: رقم في هذا الملف ليس تقديرًا:
+#:
+#:   91  Enter password                     ← صحيح
+#:   93  Import Classes                     ← صحيح
+#:   93  Social Studies - Section 3         ← صحيح
+#:   90  How many days are in your rotation?← صحيح
+#:   80  Maarif- Grade 7 - Computer Studios ← صحيح
+#:   ───────────────────────── الحدّ ─────────────────────────
+#:   72  This Week ) € > f} Week of August  ← مشوّش
+#:   63  Bi Lessons | Chalk - Googke Chrome ← شريط متصفّح
+#:   51  CAD Loder days with numbers CB     ← فاشل
+#:   33  ston. © Freee (ease text ner Al    ← فاشل
+#:
+#: قبل هذا الفحص كان كل ما سبق يُكتب تعليقًا تحت الصور بلا تمييز،
+#: وينال من بوابة الجودة 100٪ لأن شرطها كان «هل قرأ Tesseract شيئًا؟».
+MIN_LINE_CONFIDENCE = 75.0
 
 _cached_exe: Optional[str] = ""   # "" = لم يُفحص بعد، None = غير موجود
 
@@ -68,10 +91,12 @@ def extract_text(image_path: Path, timeout_seconds: float = 20.0) -> str:
 
     with tempfile.TemporaryDirectory(prefix="ocr_") as tmp:
         out_base = Path(tmp) / "out"
+        # ``tsv`` بدل النصّ الخام: يعطي إحداثيات كل كلمة **وثقتها**،
+        # وهي ما يفصل السطر المقروء عن الضوضاء. الأمر نفسه والزمن نفسه.
         try:
             result = subprocess.run(
                 [exe, str(image_path), str(out_base),
-                 "-l", LANGUAGES, "--psm", "3"],
+                 "-l", LANGUAGES, "--psm", "3", "tsv"],
                 capture_output=True, text=True, encoding="utf-8",
                 errors="replace", timeout=timeout_seconds)
         except subprocess.TimeoutExpired:
@@ -87,14 +112,44 @@ def extract_text(image_path: Path, timeout_seconds: float = 20.0) -> str:
                 f"{result.stderr.strip()[:300]}")
             return ""
 
-        out_file = out_base.with_suffix(".txt")
+        out_file = out_base.with_suffix(".tsv")
         if not out_file.exists():
             return ""
         try:
-            text = out_file.read_text(encoding="utf-8", errors="replace")
+            raw = out_file.read_text(encoding="utf-8", errors="replace")
         except OSError:
             return ""
-        return _clean(text)
+        return _clean(_confident_lines(raw))
+
+
+def _confident_lines(tsv_text: str) -> str:
+    """يجمع كلمات كل سطر ويُسقط ما متوسّط ثقته دون الحدّ.
+
+    الترتيب يبقى ترتيب الشاشة لا ترتيب الثقة: هذا النصّ يُطبع تحت
+    الصورة في المستند، فترتيبه بالثقة يجعله غير مقروء.
+    """
+    reader = csv.DictReader(tsv_text.splitlines(), delimiter="\t",
+                            quoting=csv.QUOTE_NONE)
+    lines: "OrderedDict[tuple, list]" = OrderedDict()
+    for row in reader:
+        word = (row.get("text") or "").strip()
+        if not word:
+            continue
+        try:
+            confidence = float(row.get("conf") or -1)
+        except ValueError:
+            continue
+        if confidence < 0:                      # ‏-1 = ليس كلمة
+            continue
+        key = (row.get("block_num"), row.get("par_num"), row.get("line_num"))
+        lines.setdefault(key, []).append((word, confidence))
+
+    kept = []
+    for words in lines.values():
+        mean = sum(c for _, c in words) / len(words)
+        if mean >= MIN_LINE_CONFIDENCE:
+            kept.append(" ".join(w for w, _ in words))
+    return "\n".join(kept)
 
 
 def _clean(text: str) -> str:

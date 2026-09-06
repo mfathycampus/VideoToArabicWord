@@ -12,6 +12,7 @@ from typing import Callable, List, Optional
 
 from audio.engines.base import ASREngine
 from audio.model_manager import ModelManager
+from config.profiles import apply_profile
 from config.schemas import (
     DocumentPlan,
     KeyframeMetadata,
@@ -114,7 +115,12 @@ class VideoToDocPipeline:
         document_generator: Optional[DocumentGenerator] = None,
         model_manager: Optional[ModelManager] = None,
     ) -> None:
-        self.config = config or AppConfig()
+        # ملفّ المحتوى يُطبَّق هنا، مرّة واحدة وفي أبكر موضع ممكن: كل ما
+        # بعده — المحرّكات وبصمات المراحل — يُبنى من القيم المُطبَّقة،
+        # فتغيير الملفّ يُبطل المشاهد والصور المخزّنة تلقائيًا. وهو
+        # السلوك الصحيح، لأن الملفّ يغيّرها فعلًا.
+        base = config or AppConfig()
+        self.config = apply_profile(base, base.application.content_profile)
         self.output_base_dir = output_base_dir
         self.ffmpeg = ffmpeg or FFmpegService()
         self.transcriber = transcriber or self._build_transcriber()
@@ -123,7 +129,8 @@ class VideoToDocPipeline:
         self.planner = planner or TimelinePlanner(
             section_minutes=self.config.document.section_minutes,
             paragraph_max_chars=self.config.document.paragraph_max_chars,
-            adaptive_sections=self.config.document.adaptive_sections)
+            adaptive_sections=self.config.document.adaptive_sections,
+            screen_text_titles=self.config.document.screen_text_titles)
         self.document_generator = document_generator or DocumentGenerator(self.config.document)
         self.model_manager = model_manager or ModelManager(self.config.whisper.download_root)
 
@@ -501,7 +508,10 @@ class VideoToDocPipeline:
                                     metadata, emit)
             from document.quality import assert_quality_gate, evaluate
             quality = evaluate(plan, keyframes)
-            # لا نُسقط OCR الاختياري بسبب غيابه، لكن لا نسمح بخطة بنيوية رديئة.
+            # البوابة تفشل على الخلل البنيوي وحده. درجة قابلية القراءة
+            # تُسجَّل وتُتابَع ولا تُفرَض بعد: المخرج الحالي ضعيف فيها
+            # بحكم تصميمه، ففرض عتبة اليوم يُسقط كل مهمة عقابًا على عيب
+            # لم يُصلَح. انظر ``document/quality.assert_quality_gate``.
             assert_quality_gate(quality)
             plan.quality_score = quality.overall
             plan.quality_warnings = list(quality.warnings)
@@ -512,7 +522,12 @@ class VideoToDocPipeline:
                               processing_fingerprint=plan_fp)
             if quality.warnings:
                 logger.warning("بوابة الجودة: " + " | ".join(quality.warnings))
-            logger.info(f"درجة جودة الخطة: {quality.overall:.1f}%")
+            if quality.overall is not None:
+                readable = ", ".join(
+                    f"{m.name}={m.value:.0f}%"
+                    for m in quality.metrics if m.applicable)
+                logger.info("قابلية القراءة: %.1f%%  (%s)",
+                            quality.overall, readable)
             job.complete_stage(Stage.MATCHING)
         cancel_token.raise_if_cancelled()
 
@@ -707,13 +722,19 @@ class VideoToDocPipeline:
         # الإذن يُمرَّر إلى المحرّك أيضًا، لا إلى مدير النماذج وحده:
         # هو الحاجز الذي يمنع التنزيل فعليًا داخل faster-whisper.
         self.transcriber.allow_download = allow_model_download
-        self.model_manager.ensure_available(
-            self.config.whisper.model_size,
-            allow_download=allow_model_download,
-            progress_callback=lambda m: emit(Stage.TRANSCRIPTION, 0.03, m))
 
         engine_label = getattr(getattr(self.transcriber, "info", None),
                                "name", "faster-whisper")
+        # أوزان Whisper تخصّ محرّك Whisper وحده. كان هذا الفحص يُنفَّذ
+        # بلا شرط، فأيّ محرّك آخر — أو محرّك مُحقَن في اختبار — يسقط
+        # بـ ``ModelUnavailableError`` يطالب بـ 1.7GB لا يستعملها.
+        # الشرط على المحرّك لا على الإعداد: ``engine_label`` هو ما يعمل
+        # فعلًا، بينما ``config.engine`` قد يكون قديمًا بعد حقن محرّك.
+        if engine_label.startswith("faster-whisper"):
+            self.model_manager.ensure_available(
+                self.config.whisper.model_size,
+                allow_download=allow_model_download,
+                progress_callback=lambda m: emit(Stage.TRANSCRIPTION, 0.03, m))
         logger.info(f"محرّك التفريغ: {engine_label} · "
                     f"النموذج {self.config.whisper.model_size}")
         transcript = self._transcribe_with_fallback(

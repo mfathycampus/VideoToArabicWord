@@ -32,6 +32,7 @@ from audio.model_manager import (
     ModelManager,
     estimate_processing_seconds,
 )
+from config.profiles import PROFILES, profile_choices
 from config.settings import AppConfig
 from core.pipeline import VideoToDocPipeline
 from ui.worker import PipelineWorker, ProviderTestWorker
@@ -186,6 +187,29 @@ class MainWindow(QMainWindow):
             model_layout.addLayout(engine_row)
         else:
             self.engine_combo.hide()
+
+        # ── نوع المحتوى ──────────────────────────────────────────
+        # أهمّ اختيار في الشاشة، ولذلك يسبق كل ما يتعلّق بالنموذج:
+        # مجموعة إعدادات واحدة معايرة على محاضرة بشرائح كانت تُطبَّق على
+        # كل شيء. تسجيل شرح برنامج مدّته 8.5 دقائق أعطى 131 مشهدًا و35
+        # صورة بها؛ وبملفّه الصحيح 30 مشهدًا و15 صورة، ودرجة قابلية
+        # القراءة من 13 إلى 39.
+        profile_row = QHBoxLayout()
+        self.profile_combo = QComboBox()
+        for key, label in profile_choices():
+            profile = PROFILES[key]
+            suffix = "" if profile.measured else "  (قيم مبدئية)"
+            self.profile_combo.addItem(f"{label}{suffix}", key)
+            self.profile_combo.setItemData(
+                self.profile_combo.count() - 1,
+                profile.description, Qt.ItemDataRole.ToolTipRole)
+        index = self.profile_combo.findData(
+            self.config.application.content_profile)
+        self.profile_combo.setCurrentIndex(index if index >= 0 else 0)
+        self.profile_combo.currentIndexChanged.connect(self._on_profile_changed)
+        profile_row.addWidget(QLabel("نوع التسجيل:"))
+        profile_row.addWidget(self.profile_combo, 1)
+        model_layout.addLayout(profile_row)
 
         model_row = QHBoxLayout()
         self.model_combo = QComboBox()
@@ -560,6 +584,15 @@ class MainWindow(QMainWindow):
     def _on_model_changed(self) -> None:
         self.config.whisper.model_size = self.model_combo.currentData()
         self._refresh_estimate()
+
+    def _on_profile_changed(self) -> None:
+        """نوع التسجيل يغيّر كشف المشاهد واختيار الصور — لا التفريغ.
+
+        تغييره يُبطل المشاهد والصور المخزّنة عبر بصمة المرحلة، فمهمة
+        سبق تشغيلها تُعاد معالجتها بصريًا عند التبديل. وهو المطلوب.
+        """
+        self.config.application.content_profile = (
+            self.profile_combo.currentData() or "slides")
 
     def _on_beam_changed(self) -> None:
         self.config.whisper.beam_size = int(self.beam_combo.currentData() or 5)

@@ -7,6 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from config.profiles import profile_choices        # noqa: E402
 from utils.console import enable_utf8_console     # noqa: E402
 from utils.deps import require_ready              # noqa: E402
 from utils.error_reporting import format_error_for_user  # noqa: E402
@@ -54,6 +55,11 @@ def main() -> int:
                         help="أخرج النص وSRT وVTT وMarkdown بلا مستند Word")
     parser.add_argument("--denoise", action="store_true",
                         help="نظّف الصوت بمرشّحات ffmpeg قبل التفريغ")
+    parser.add_argument(
+        "--profile", default=None,
+        choices=[key for key, _ in profile_choices()],
+        help="نوع المحتوى: يحدّد كشف المشاهد واختيار الصور "
+             "(انظر config/profiles.py)")
     parser.add_argument("--glossary", default=None,
                         help="مصطلحات المادة، مفصولة بفواصل")
     parser.add_argument("--allow-download", action="store_true",
@@ -79,6 +85,8 @@ def main() -> int:
         config.rewrite.enabled = True
     if args.denoise:
         config.application.denoise_audio = True
+    if args.profile:
+        config.application.content_profile = args.profile
     if args.glossary:
         config.whisper.glossary = args.glossary
     config.whisper.device = args.device
