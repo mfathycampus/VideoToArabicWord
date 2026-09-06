@@ -90,6 +90,7 @@ class MainWindow(QMainWindow):
         self._test_thread: Optional[QThread] = None
         self._test_worker: Optional[ProviderTestWorker] = None
         self._build_ui()
+        self._refresh_profile_notice()
         self._warn_if_config_failed_to_load()
 
     # ------------------------------------------------------------------
@@ -211,6 +212,13 @@ class MainWindow(QMainWindow):
         profile_row.addWidget(QLabel("نوع التسجيل:"))
         profile_row.addWidget(self.profile_combo, 1)
         model_layout.addLayout(profile_row)
+
+        # تحذير OCR يظهر تحت القائمة مباشرةً — عند الاختيار لا بعد ساعة.
+        self.profile_notice = QLabel("")
+        self.profile_notice.setWordWrap(True)
+        self.profile_notice.setStyleSheet("color: #a15c00;")
+        self.profile_notice.setVisible(False)
+        model_layout.addWidget(self.profile_notice)
 
         model_row = QHBoxLayout()
         self.model_combo = QComboBox()
@@ -594,6 +602,37 @@ class MainWindow(QMainWindow):
         """
         self.config.application.content_profile = (
             self.profile_combo.currentData() or "slides")
+        self._refresh_profile_notice()
+
+    def _refresh_profile_notice(self) -> None:
+        """يقول عند الاختيار إن كان الملفّ يحتاج Tesseract وهو غائب.
+
+        عطلٌ حقيقي وقع على تشغيل فعلي: اختار المستخدم «شرح برنامج»،
+        وهو الملفّ الوحيد الذي يفعّل OCR، وانتظر المعالجة كاملة، ثم
+        لم يجد تحت الصور إلا «لقطة عند 00:00:17» — و``figure_captioning``
+        صفرًا. والسبب كان سطرًا **في السجلّ**: «OCR مفعَّل في الإعداد
+        لكن Tesseract غير مثبَّت». والمعلّم لا يقرأ السجلّات.
+
+        الوقت الصحيح للقول هو لحظة الاختيار، لا بعد ساعة من المعالجة.
+        وليس منعًا: المستند يخرج صحيحًا بلا OCR، وينقصه وصف الصور فقط.
+        """
+        from config.profiles import PROFILES
+        from video.ocr import install_hint, is_available
+
+        key = self.profile_combo.currentData() or ""
+        profile = PROFILES.get(key)
+        wants_ocr = bool(profile and profile.overrides
+                         .get("frames", {}).get("enable_ocr"))
+
+        if not wants_ocr or is_available():
+            self.profile_notice.setVisible(False)
+            return
+
+        self.profile_notice.setText(
+            f"⚠ «{profile.label}» يقرأ نصّ الشاشة، و‏Tesseract غير مثبَّت. "
+            "المعالجة تعمل، لكن الصور ستخرج بلا تعليق يصفها.\n"
+            f"للتثبيت: {install_hint()}")
+        self.profile_notice.setVisible(True)
 
     def _on_beam_changed(self) -> None:
         self.config.whisper.beam_size = int(self.beam_combo.currentData() or 5)
