@@ -17,6 +17,7 @@ Tesseract ثنائي خارجي منفصل بالضبط مثل ffmpeg (ADR-013):
 from __future__ import annotations
 
 import csv
+import os
 import shutil
 import subprocess
 import sys
@@ -55,24 +56,127 @@ MIN_LINE_CONFIDENCE = 75.0
 _cached_exe: Optional[str] = ""   # "" = لم يُفحص بعد، None = غير موجود
 
 
+def _windows_install_dirs() -> list[Path]:
+    """مواضع تثبيت Tesseract المعتادة على ويندوز، بترتيب الأرجحية.
+
+    مثبِّت UB-Mannheim **لا يضيف Tesseract إلى PATH افتراضيًّا**: الخيار
+    موجود لكنه غير مؤشَّر، ومن يثبّت بالضغط على «التالي» — أي كل معلّم —
+    ينتهي بـTesseract مثبَّتًا وغير مرئيّ لـ``shutil.which``.
+
+    وقع هذا فعلًا: ثبّته المستخدم كما طُلب منه، ثم فتح البرنامج فوجد
+    التحذير كما هو. أن نطلب من معلّم تحرير متغيّرات البيئة ليعمل
+    البرنامج هو تحميلٌ لعطبنا عليه.
+    """
+    candidates: list[Path] = []
+    for variable in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"):
+        base = os.environ.get(variable)
+        if base:
+            candidates.append(Path(base) / "Tesseract-OCR")
+    local = os.environ.get("LOCALAPPDATA")
+    if local:
+        candidates.append(Path(local) / "Programs" / "Tesseract-OCR")
+    return candidates
+
+
+def _from_windows_registry() -> Optional[str]:
+    """مجلد التثبيت كما سجّله المثبِّت — الأدقّ حين يُختار مسار غير معتاد."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import winreg
+    except ImportError:                                     # ليس ويندوز
+        return None
+
+    for root in (getattr(winreg, "HKEY_LOCAL_MACHINE", None),
+                 getattr(winreg, "HKEY_CURRENT_USER", None)):
+        if root is None:
+            continue
+        try:
+            with winreg.OpenKey(root, r"SOFTWARE\Tesseract-OCR") as key:
+                install_dir, _ = winreg.QueryValueEx(key, "InstallDir")
+        except OSError:
+            continue
+        candidate = Path(str(install_dir)) / "tesseract.exe"
+        if candidate.exists():
+            return str(candidate)
+    return None
+
+
 def tesseract_executable() -> Optional[str]:
-    """مسار ثنائي Tesseract، أو ``None`` إن لم يكن مثبَّتًا. يُخزَّن
-    الفحص مؤقتًا (‏``shutil.which`` يمسح PATH في كل استدعاء)."""
+    """مسار ثنائي Tesseract، أو ``None`` إن لم يكن مثبَّتًا.
+
+    ثلاثة مصادر بالترتيب: ‏PATH، ثم مواضع التثبيت المعتادة، ثم سجلّ
+    ويندوز. الاعتماد على PATH وحده كان يجعل تثبيتًا صحيحًا يبدو غيابًا.
+
+    يُخزَّن الفحص مؤقتًا (‏``shutil.which`` يمسح PATH في كل استدعاء)،
+    ولذلك ``refresh=True``: من يثبّت Tesseract والبرنامج مفتوح يستحقّ
+    أن يراه بلا إعادة تشغيل.
+    """
     global _cached_exe
-    if _cached_exe == "":
-        _cached_exe = shutil.which("tesseract") or shutil.which("tesseract.exe")
+    if _cached_exe != "":
+        return _cached_exe
+
+    found = shutil.which("tesseract") or shutil.which("tesseract.exe")
+
+    if found is None and sys.platform == "win32":
+        for directory in _windows_install_dirs():
+            candidate = directory / "tesseract.exe"
+            if candidate.exists():
+                found = str(candidate)
+                break
+        if found is None:
+            found = _from_windows_registry()
+        if found:
+            logger.info(f"عُثر على Tesseract خارج PATH: {found}")
+
+    _cached_exe = found
     return _cached_exe
+
+
+def refresh() -> Optional[str]:
+    """يُبطل الفحص المخزَّن ويعيده — بعد تثبيتٍ والبرنامج مفتوح."""
+    global _cached_exe
+    _cached_exe = ""
+    return tesseract_executable()
 
 
 def is_available() -> bool:
     return tesseract_executable() is not None
 
 
+def languages() -> list[str]:
+    """اللغات المثبَّتة فعلًا، أو قائمة فارغة إن تعذّر السؤال.
+
+    وجود ``tesseract.exe`` لا يعني وجود العربية: حزم اللغات اختيارية في
+    المثبِّت، ومن يتخطّاها يحصل على OCR يقرأ الإنجليزية وحدها ويُخرج
+    من الشرائح العربية حروفًا مبعثرة.
+    """
+    exe = tesseract_executable()
+    if exe is None:
+        return []
+    try:
+        result = subprocess.run([exe, "--list-langs"], capture_output=True,
+                                text=True, encoding="utf-8", errors="replace",
+                                timeout=15.0)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if result.returncode != 0:
+        return []
+    # أول سطر عنوان («List of available languages…») ثم لغة في كل سطر
+    return [line.strip() for line in result.stdout.splitlines()[1:]
+            if line.strip()]
+
+
+def has_arabic() -> bool:
+    installed = languages()
+    return not installed or "ara" in installed
+
+
 def install_hint() -> str:
     if sys.platform == "win32":
         return ("ثبّت Tesseract OCR من "
-                "https://github.com/UB-Mannheim/tesseract/wiki — اختر حزمة "
-                "اللغة العربية ضمن خيارات التثبيت، ثم أضِفه إلى PATH.")
+                "https://github.com/UB-Mannheim/tesseract/wiki — واختر حزمة "
+                "اللغة العربية (Arabic) ضمن خيارات التثبيت.")
     if sys.platform == "darwin":
         return "brew install tesseract tesseract-lang"
     return "sudo apt install tesseract-ocr tesseract-ocr-ara"

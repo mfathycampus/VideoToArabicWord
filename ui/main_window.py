@@ -617,22 +617,38 @@ class MainWindow(QMainWindow):
         وليس منعًا: المستند يخرج صحيحًا بلا OCR، وينقصه وصف الصور فقط.
         """
         from config.profiles import PROFILES
-        from video.ocr import install_hint, is_available
+        from video.ocr import has_arabic, install_hint, refresh
 
         key = self.profile_combo.currentData() or ""
         profile = PROFILES.get(key)
         wants_ocr = bool(profile and profile.overrides
                          .get("frames", {}).get("enable_ocr"))
-
-        if not wants_ocr or is_available():
+        if not wants_ocr:
             self.profile_notice.setVisible(False)
             return
 
-        self.profile_notice.setText(
-            f"⚠ «{profile.label}» يقرأ نصّ الشاشة، و‏Tesseract غير مثبَّت. "
-            "المعالجة تعمل، لكن الصور ستخرج بلا تعليق يصفها.\n"
-            f"للتثبيت: {install_hint()}")
-        self.profile_notice.setVisible(True)
+        # ``refresh`` لا ``is_available``: من ثبّت Tesseract والبرنامج
+        # مفتوح يستحقّ أن يراه فور تبديل نوع التسجيل، بلا إعادة تشغيل.
+        if refresh() is None:
+            self.profile_notice.setText(
+                f"⚠ «{profile.label}» يقرأ نصّ الشاشة، و‏Tesseract غير "
+                "مثبَّت. المعالجة تعمل، لكن الصور ستخرج بلا تعليق يصفها.\n"
+                f"للتثبيت: {install_hint()}")
+            self.profile_notice.setVisible(True)
+            return
+
+        if not has_arabic():
+            # ثنائيّ موجود بلا حزمة عربية: يقرأ الإنجليزية وحدها ويُخرج
+            # من الشرائح العربية حروفًا مبعثرة — عطبٌ أخفى من الغياب.
+            self.profile_notice.setText(
+                "⚠ ‏Tesseract مثبَّت لكن بلا حزمة اللغة العربية. نصّ "
+                "الشرائح العربية سيخرج مبعثرًا.\n"
+                "أعد تشغيل المثبِّت واختر Arabic ضمن Additional language "
+                "data.")
+            self.profile_notice.setVisible(True)
+            return
+
+        self.profile_notice.setVisible(False)
 
     def _on_beam_changed(self) -> None:
         self.config.whisper.beam_size = int(self.beam_combo.currentData() or 5)

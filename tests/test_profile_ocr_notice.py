@@ -31,7 +31,11 @@ def window(app, monkeypatch, request):
     """نافذة مع حالة Tesseract مضبوطة (``available`` من المُعلَّم)."""
     available = getattr(request, "param", False)
     import video.ocr as ocr
-    monkeypatch.setattr(ocr, "is_available", lambda: available)
+    # ``refresh`` لا ``is_available``: الواجهة تُعيد الفحص عند كل تبديل
+    # كي ترى تثبيتًا وقع والبرنامج مفتوح.
+    monkeypatch.setattr(ocr, "refresh",
+                        lambda: "/usr/bin/tesseract" if available else None)
+    monkeypatch.setattr(ocr, "has_arabic", lambda: True)
     monkeypatch.setattr(ocr, "install_hint",
                         lambda: "sudo apt install tesseract-ocr-ara")
 
@@ -42,13 +46,15 @@ def window(app, monkeypatch, request):
 
 
 def _select(window, key):
+    """‏``isHidden`` لا ``isVisible``: النافذة نفسها غير معروضة في وضع
+    offscreen، فـ``isVisible`` صفرٌ دائمًا ولا يقيس شيئًا."""
     window.profile_combo.setCurrentIndex(window.profile_combo.findData(key))
 
 
 @pytest.mark.parametrize("window", [False], indirect=True)
 def test_choosing_screencast_without_tesseract_warns(window):
     _select(window, "screencast")
-    assert window.profile_notice.isVisibleTo(window.profile_notice.parent())
+    assert not window.profile_notice.isHidden()
     text = window.profile_notice.text()
     assert "Tesseract" in text
     assert "tesseract-ocr-ara" in text, "التحذير بلا طريقة تثبيت"
@@ -65,13 +71,13 @@ def test_the_warning_says_processing_still_works(window):
 def test_profiles_that_do_not_need_ocr_say_nothing(window):
     for key in ("slides", "whiteboard", "talking_head"):
         _select(window, key)
-        assert not window.profile_notice.isVisible(), key
+        assert window.profile_notice.isHidden(), key
 
 
 @pytest.mark.parametrize("window", [True], indirect=True)
 def test_no_warning_when_tesseract_is_installed(window):
     _select(window, "screencast")
-    assert not window.profile_notice.isVisible()
+    assert window.profile_notice.isHidden()
 
 
 def test_only_the_screencast_profile_enables_ocr():
@@ -79,3 +85,20 @@ def test_only_the_screencast_profile_enables_ocr():
     enabling = {key for key, profile in PROFILES.items()
                 if profile.overrides.get("frames", {}).get("enable_ocr")}
     assert enabling == {"screencast"}
+
+
+@pytest.mark.parametrize("window", [True], indirect=True)
+def test_tesseract_without_the_arabic_pack_is_its_own_warning(window, monkeypatch):
+    """ثنائيّ موجود بلا عربية: يقرأ الإنجليزية وحده ويُخرج من الشرائح
+    العربية حروفًا مبعثرة — عطبٌ أخفى من الغياب، ورسالته غير رسالته."""
+    import video.ocr as ocr
+    monkeypatch.setattr(ocr, "has_arabic", lambda: False)
+
+    _select(window, "slides")
+    _select(window, "screencast")
+
+    text = window.profile_notice.text()
+    assert not window.profile_notice.isHidden()
+    assert "حزمة اللغة العربية" in text
+    assert "Arabic" in text, "التحذير بلا اسم الخيار في المثبِّت"
+    assert "غير مثبَّت" not in text, "خلطٌ بين الغياب ونقص حزمة اللغة"
