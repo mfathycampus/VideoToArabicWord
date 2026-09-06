@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
@@ -91,6 +92,22 @@ def default_cache_root() -> Path:
     return Path.home() / ".cache" / "video_ai_doc" / "whisper"
 
 
+def _directory_bytes(root: Path) -> int:
+    """مجموع أحجام الملفات تحت مجلد — بما فيها ملفّات ``.incomplete``.
+
+    ‏``snapshot_download`` يكتب الأجزاء الجارية بامتداد ``.incomplete``
+    ثم يعيد تسميتها، فالمجموع ينمو باطّراد أثناء التنزيل.
+    """
+    total = 0
+    for path in root.rglob("*"):
+        try:
+            if path.is_file():
+                total += path.stat().st_size
+        except OSError:                 # ملف اختفى بين المسح والقياس
+            continue
+    return total
+
+
 class ModelManager:
     def __init__(self, cache_root: Optional[Path] = None) -> None:
         self.cache_root = cache_root or default_cache_root()
@@ -155,16 +172,69 @@ class ModelManager:
         logger.info(f"تنزيل النموذج {name} إلى {self.cache_root}")
         self.cache_root.mkdir(parents=True, exist_ok=True)
 
-        try:
-            from faster_whisper import WhisperModel
-            # التحميل نفسه يجلب النموذج ويخزّنه في download_root
-            model = WhisperModel(name, device="cpu", compute_type="int8",
-                                 download_root=str(self.cache_root))
-            del model
-        except Exception as exc:
-            raise ModelUnavailableError(
-                f"فشل تنزيل النموذج {name}: {exc}") from exc
+        self._download_with_progress(name, spec, progress_callback)
 
         if progress_callback:
             progress_callback("اكتمل تنزيل النموذج.")
         return self.cache_root
+
+    # ------------------------------------------------------------------
+    def _download(self, name: str) -> None:
+        """التنزيل الفعلي — نقطة واحدة تُستبدل في الاختبار."""
+        from faster_whisper import WhisperModel
+        # التحميل نفسه يجلب النموذج ويخزّنه في download_root
+        model = WhisperModel(name, device="cpu", compute_type="int8",
+                             download_root=str(self.cache_root))
+        del model
+
+    def _download_with_progress(self, name, spec, progress_callback,
+                                poll_seconds: float = 1.0) -> None:
+        """ينزّل في خيط جانبي ويبلّغ التقدّم من نموّ مجلد التخزين.
+
+        **لماذا القياس بحجم المجلد لا بخطّاف من المكتبة:** تنزيل
+        ‏faster-whisper يمرّ عبر ``huggingface_hub.snapshot_download``،
+        و``download_model`` تثبّت ``tqdm_class=disabled_tqdm`` في كودها
+        ولا تمرّر وسائط إضافية. فلا سبيل إلى خطّاف تقدّم إلا بمناداة
+        ‏``snapshot_download`` مباشرةً بمعرّف المستودع المأخوذ من
+        ``faster_whisper.utils._MODELS`` — اسمٌ خاصّ يتغيّر بلا إشعار،
+        وربطُ برنامجٍ يعمل بلا إنترنت بمفصل داخلي كهذا مقايضةٌ سيّئة.
+        ونموّ المجلد يعمل مع أي محرّك ومع أي إصدار.
+
+        **وما لا يقدّمه هذا:** الإلغاء أثناء التنزيل. إيقاف الطلب في
+        منتصفه يحتاج التحكّم في التدفّق نفسه، وهو ما تخلّينا عنه أعلاه
+        عمدًا. والمستخدم يملك إغلاق النافذة — وهي الآن تسأله قبل أن
+        توقف شيئًا. أمّا الفراغ الطويل بلا إشارة، وهو ما كان يجعل
+        المعلّم يظنّ البرنامج معلّقًا فيقتله بعد نصف تنزيل، فهذا ما
+        يعالجه القياس هنا.
+        """
+        expected = max(1, int(spec.approx_size_gb * (1024 ** 3)))
+        started = _directory_bytes(self.cache_root)
+        failure: list[BaseException] = []
+
+        def _worker() -> None:
+            try:
+                self._download(name)
+            except BaseException as exc:                 # noqa: BLE001
+                failure.append(exc)
+
+        thread = threading.Thread(target=_worker, name="model-download",
+                                  daemon=True)
+        thread.start()
+
+        last_reported = -1
+        while thread.is_alive():
+            thread.join(poll_seconds)
+            if not progress_callback:
+                continue
+            grown = max(0, _directory_bytes(self.cache_root) - started)
+            # الحجم المتوقّع تقريبي، فلا نعلن 100٪ قبل أن ينتهي الخيط
+            percent = min(99, int(100 * grown / expected))
+            if percent > last_reported:
+                last_reported = percent
+                progress_callback(
+                    f"تنزيل «{spec.label_ar}» — {grown / (1024 ** 2):,.0f} "
+                    f"من ~{expected / (1024 ** 2):,.0f} ميجابايت ({percent}٪)")
+
+        if failure:
+            raise ModelUnavailableError(
+                f"فشل تنزيل النموذج {name}: {failure[0]}") from failure[0]

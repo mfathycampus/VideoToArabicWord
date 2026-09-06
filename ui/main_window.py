@@ -90,6 +90,7 @@ class MainWindow(QMainWindow):
         self._test_thread: Optional[QThread] = None
         self._test_worker: Optional[ProviderTestWorker] = None
         self._build_ui()
+        self._warn_if_config_failed_to_load()
 
     # ------------------------------------------------------------------
     def _build_ui(self) -> None:
@@ -1104,12 +1105,46 @@ class MainWindow(QMainWindow):
         else:
             subprocess.run(["xdg-open", str(self.result_path)])
 
+    def _warn_if_config_failed_to_load(self) -> None:
+        """إعدادٌ تالف يُعاد إلى الافتراضيات — والمستخدم يستحقّ أن يعرف.
+
+        ``AppConfig.load`` تحتفظ بالسبب في ``load_error`` منذ جولة سابقة،
+        وكان **سطر الأوامر وحده** يعرضه (``tools/run_pipeline.py:78``).
+        والمعلّم لا يستعمل سطر الأوامر: يفتح البرنامج فيجد نموذجه ومحرّكه
+        ومفاتيحه عادت إلى الافتراضي بلا سبب ظاهر، ويظنّ البرنامج نسي.
+        """
+        message = getattr(self.config, "load_error", "")
+        if not message:
+            return
+        QMessageBox.warning(self, "تعذّرت قراءة الإعدادات", message)
+
+    def _confirm_close_while_running(self) -> bool:
+        """هل يؤكّد المستخدم إغلاق النافذة ومهمّة جارية؟
+
+        كان الإغلاق يُلغي بصمت. محاضرة ثلاث ساعات تُفرَّغ في نحو ساعة،
+        ونقرةٌ على «×» كانت تُلغيها بلا سؤال. والمراحل المكتملة محفوظة
+        فعلًا، فالسؤال يقول ذلك بدل أن يخوّف.
+        """
+        answer = QMessageBox.question(
+            self, "المعالجة ما تزال جارية",
+            "هناك معالجة جارية. الإغلاق الآن يوقفها.\n\n"
+            "المراحل المكتملة محفوظة، وإعادة التشغيل على الملف نفسه "
+            "تُكمل من حيث توقّفت.\n\nهل تريد الإغلاق؟",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        return answer == QMessageBox.StandardButton.Yes
+
     def closeEvent(self, event) -> None:
-        """إغلاق نظيف: حفظ الإعداد، ثم إلغاء تعاوني، لا terminate()."""
+        """إغلاق نظيف: تأكيد، ثم حفظ الإعداد، ثم إلغاء تعاوني."""
+        running = self.thread is not None and self.thread.isRunning()
+        if running and not self._confirm_close_while_running():
+            event.ignore()
+            return
+
         # الإعداد كان يُحفظ في موضع واحد فقط (بعد نجاح اختبار المفتاح)،
         # فتضيع كل خيارات المستخدم — النموذج والمحرّك والمزوّد — عند الإغلاق.
         self._save_config()
-        if self.thread is not None and self.thread.isRunning():
+        if running:
             if self.cancel_token is not None:
                 self.cancel_token.cancel()
             self.thread.quit()

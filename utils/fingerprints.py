@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-SOURCE_FINGERPRINT_VERSION = "2"
+SOURCE_FINGERPRINT_VERSION = "3"
 PROCESSING_FINGERPRINT_VERSION = "1"
 
 #: Hex characters kept from every digest. Job directory names carry a
@@ -39,10 +39,34 @@ def config_fingerprint(config: Any, *, exclude: set[str] | None = None) -> str:
 
 
 def source_fingerprint(path: Path) -> str:
-    """Fingerprint a source without reading an entire multi-GB video.
+    r"""Fingerprint a source without reading an entire multi-GB video.
 
-    Identity uses absolute path, size, nanosecond mtime, plus hashes of the
-    beginning and end of the file. Small files are hashed completely.
+    Identity is **content-based**: file name, size, and hashes of the first
+    and last megabyte. Small files are hashed completely.
+
+    Version 3 dropped the absolute path and the nanosecond mtime, and that
+    was a bug fix, not a tidy-up. Both change under OneDrive for reasons
+    that have nothing to do with the file:
+
+    * Folder redirection moves ``C:\Users\x\Desktop`` to
+      ``C:\Users\x\OneDrive\Desktop``. Same file, new absolute path.
+    * Files On-Demand evicts a file to the cloud and rehydrates it on next
+      read, which rewrites mtime. Same bytes, new mtime.
+
+    Either one changed the fingerprint, which changed the job directory,
+    which discarded every cached stage — so a three-hour lecture was
+    transcribed again from zero. School tenants redirect Desktop and
+    Documents by default, so this hit the intended audience hardest.
+
+    What is lost: a file edited in place to *exactly* the same size with an
+    identical first and last megabyte is now treated as unchanged. For
+    video that is not a realistic edit. What is gained: moving or renaming
+    a folder, or letting OneDrive do its job, no longer throws away hours
+    of work — and the same source in two folders now resumes instead of
+    starting over.
+
+    The file name is kept so ``Lecture.mp4`` and ``Lecture.mkv`` stay
+    distinct even when one is a container remux of the other.
     """
     path = Path(path)
     digest = hashlib.sha256()
@@ -52,12 +76,12 @@ def source_fingerprint(path: Path) -> str:
         # The pipeline still needs a stable job directory so validation can
         # report a friendly "file not found" error instead of failing while
         # constructing the job identity.
-        digest.update(f"v{SOURCE_FINGERPRINT_VERSION}|missing|{path.resolve()}".encode("utf-8"))
+        digest.update(f"v{SOURCE_FINGERPRINT_VERSION}|missing|{path.name}".encode("utf-8"))
         return digest.hexdigest()[:FINGERPRINT_LENGTH]
 
     size = stat.st_size
     sample_size = min(1 << 20, size)
-    digest.update(f"v{SOURCE_FINGERPRINT_VERSION}|{path.resolve()}|{size}|{stat.st_mtime_ns}".encode("utf-8"))
+    digest.update(f"v{SOURCE_FINGERPRINT_VERSION}|{path.name}|{size}".encode("utf-8"))
     with path.open("rb") as handle:
         if sample_size:
             digest.update(handle.read(sample_size))

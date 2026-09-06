@@ -41,6 +41,7 @@ from utils.fingerprints import (
 from utils.frames import resolve_rotation_plan
 from utils.logger import logger
 from utils.media_probe import extract_video_facts, probe_raw
+from utils.power import keep_awake
 from utils.timestamps import humanize_title, seconds_to_display
 from video.keyframe_selector import KeyframeSelector
 from video.scene_detector import Scene, SceneDetector
@@ -336,9 +337,12 @@ class VideoToDocPipeline:
         emit = self._make_emitter(progress_callback)
 
         try:
-            result = self._execute(job, video_path, cancel_token, emit,
-                                   allow_model_download, allow_audio_only,
-                                   clip, transcript_only)
+            # ساعةٌ من المعالجة بلا لمس لوحة المفاتيح تُنيم ويندوز
+            # بسياسته الافتراضية، فيقف التنفيذ بلا خطأ ولا تفسير.
+            with keep_awake(f"معالجة {video_path.name}"):
+                result = self._execute(job, video_path, cancel_token, emit,
+                                       allow_model_download, allow_audio_only,
+                                       clip, transcript_only)
             job.finish()
             if not self.config.application.keep_temp_on_success:
                 self._cleanup_temp(job_dir)
