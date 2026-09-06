@@ -35,8 +35,9 @@ from audio.model_manager import (
 from config.profiles import PROFILES, profile_choices
 from config.settings import AppConfig
 from core.pipeline import VideoToDocPipeline
-from ui.worker import PipelineWorker, ProviderTestWorker
+from ui.worker import PipelineWorker, ProviderTestWorker, ScreenTermsWorker
 from utils.cancellation import CancellationToken
+from utils.error_reporting import format_error_for_user
 from utils.gpu_manager import GPUManager
 from utils.media_probe import extract_video_facts, probe_raw
 from utils.timestamps import humanize_duration
@@ -89,6 +90,8 @@ class MainWindow(QMainWindow):
         self.result_path: Optional[Path] = None
         self._test_thread: Optional[QThread] = None
         self._test_worker: Optional[ProviderTestWorker] = None
+        self._terms_thread: Optional[QThread] = None
+        self._terms_worker: Optional[ScreenTermsWorker] = None
         self._build_ui()
         self._refresh_profile_notice()
         self._warn_if_config_failed_to_load()
@@ -358,6 +361,20 @@ class MainWindow(QMainWindow):
         self.glossary_input.setPlainText(self.config.whisper.glossary)
         self.glossary_input.textChanged.connect(self._on_glossary_changed)
         advanced_layout.addWidget(self.glossary_input)
+
+        # اقتراح المصطلحات من الشاشة — انظر ``video/screen_terms.py``
+        # لسبب أنه يقترح ولا يحقن.
+        terms_row = QHBoxLayout()
+        self.scan_terms_button = QPushButton("اقترح مصطلحات من الشاشة")
+        self.scan_terms_button.setToolTip(
+            "يقرأ نصّ الشاشة من إطارات موزّعة على الفيديو ويقترح ما وجده "
+            "من أسماء قوائم وأزرار. راجِعها واحذف ما لا يُنطق في التسجيل.")
+        self.scan_terms_button.clicked.connect(self._scan_screen_terms)
+        terms_row.addWidget(self.scan_terms_button)
+        self.scan_terms_status = QLabel("")
+        self.scan_terms_status.setStyleSheet("color: #555; font-size: 11px;")
+        terms_row.addWidget(self.scan_terms_status, 1)
+        advanced_layout.addLayout(terms_row)
 
         toggles = QHBoxLayout()
         self.denoise_check = QCheckBox("تنظيف الصوت قبل التفريغ")
@@ -656,6 +673,76 @@ class MainWindow(QMainWindow):
 
     def _on_hf_token_typed(self, text: str) -> None:
         self.config.whisper.hf_token = text.strip()
+
+    def _scan_screen_terms(self) -> None:
+        """يقترح مصطلحات من نصّ شاشة الفيديو، ويتركها للمراجعة.
+
+        **يُدمج ولا يستبدل.** ما كتبه المستخدم بيده أثمن مما يقرؤه
+        الـOCR، فالمقترَح يُضاف بعده ولا يمحوه.
+        """
+        if self._terms_thread is not None and self._terms_thread.isRunning():
+            return
+        if self.video_path is None:
+            QMessageBox.information(
+                self, "لا ملف", "اختر ملف الفيديو أولًا.")
+            return
+
+        from video.ocr import install_hint, refresh
+        if refresh() is None:
+            QMessageBox.information(
+                self, "‏Tesseract غير مثبَّت",
+                "قراءة نصّ الشاشة تحتاج Tesseract.\n\n" + install_hint())
+            return
+
+        try:
+            duration = extract_video_facts(self.video_path).duration_seconds
+        except Exception as exc:                            # noqa: BLE001
+            QMessageBox.warning(self, "تعذّر قراءة الملف",
+                                format_error_for_user(exc))
+            return
+
+        self.scan_terms_button.setEnabled(False)
+        self.scan_terms_status.setText("جارٍ المسح…")
+
+        self._terms_thread = QThread(self)
+        self._terms_worker = ScreenTermsWorker(self.video_path, duration)
+        self._terms_worker.moveToThread(self._terms_thread)
+        self._terms_thread.started.connect(self._terms_worker.run)
+        self._terms_worker.progressed.connect(self._on_terms_progress)
+        self._terms_worker.succeeded.connect(self._on_terms_found)
+        self._terms_worker.failed.connect(
+            lambda message: self.scan_terms_status.setText(message[:80]))
+        self._terms_worker.finished.connect(self._terms_thread.quit)
+        self._terms_thread.finished.connect(
+            lambda: self.scan_terms_button.setEnabled(True))
+        self._terms_thread.start()
+
+    def _on_terms_progress(self, done: int, total: int) -> None:
+        self.scan_terms_status.setText(f"جارٍ المسح… {done} من {total} إطارًا")
+
+    def _on_terms_found(self, terms: list) -> None:
+        if not terms:
+            self.scan_terms_status.setText(
+                "لم يُعثر على مصطلحات إنجليزية على الشاشة.")
+            return
+
+        from video.screen_terms import as_glossary
+        suggested = as_glossary(terms)
+        existing = self.glossary_input.toPlainText().strip()
+        if existing:
+            known = {part.strip().lower()
+                     for part in existing.replace(",", "،").split("،")}
+            fresh = [phrase for phrase, _n in terms
+                     if phrase.lower() not in known]
+            if not fresh:
+                self.scan_terms_status.setText("لا جديد فوق ما كتبتَه.")
+                return
+            suggested = existing + "، " + as_glossary(
+                [(phrase, 0) for phrase in fresh])
+
+        self.glossary_input.setPlainText(suggested)
+        self.scan_terms_status.setText(
+            f"اقتُرح {len(terms)} مصطلحًا — احذف ما لا يُنطق في التسجيل.")
 
     def _on_glossary_changed(self) -> None:
         self.config.whisper.glossary = \

@@ -110,6 +110,16 @@ def _words(text: str) -> List[str]:
     return [_normalize_word(w) for w in re.findall(r"[^\W\d_]+", text, re.UNICODE)]
 
 
+def looks_like_url(text: str) -> bool:
+    """مسار إنترنت أو عنوان موقع."""
+    return bool(_URL_LIKE.search(text or ""))
+
+
+def looks_like_browser_chrome(text: str) -> bool:
+    """شريط عنوان نافذة متصفّح — «… - Google Chrome»."""
+    return bool(_BROWSER_CHROME.search(text or ""))
+
+
 def title_defects(candidate: str, min_chars: int = JUDGE_MIN_CHARS) -> List[str]:
     """أسباب رفض هذا النصّ عنوانًا — قائمة فارغة تعني أنه مقبول.
 

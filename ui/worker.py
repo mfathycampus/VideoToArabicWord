@@ -141,3 +141,37 @@ class PipelineWorker(QObject):
             self.failed.emit(format_error_for_user(exc))
         finally:
             self.finished.emit()
+
+
+class ScreenTermsWorker(QObject):
+    """مسح إطارات الفيديو لاقتراح مصطلحات — خارج خيط الواجهة.
+
+    المسح يستغرق نحو دقيقة (‏14 إطارًا × OCR)، وتنفيذه في خيط الواجهة
+    تجميدٌ يخالف ADR-001. والسبب نفسه الذي أخرج ``ProviderTestWorker``.
+    """
+
+    progressed = pyqtSignal(int, int)
+    succeeded = pyqtSignal(list)
+    failed = pyqtSignal(str)
+    finished = pyqtSignal()
+
+    def __init__(self, video_path, duration_seconds: float) -> None:
+        super().__init__()
+        self.video_path = video_path
+        self.duration_seconds = duration_seconds
+
+    @pyqtSlot()
+    def run(self) -> None:
+        try:
+            from utils.ffmpeg_service import FFmpegService
+            from video.screen_terms import scan_video
+
+            terms = scan_video(
+                self.video_path, FFmpegService(), self.duration_seconds,
+                progress=lambda done, total: self.progressed.emit(done, total))
+            self.succeeded.emit(terms)
+        except Exception as exc:                            # noqa: BLE001
+            logger.exception("فشل مسح مصطلحات الشاشة")
+            self.failed.emit(format_error_for_user(exc))
+        finally:
+            self.finished.emit()

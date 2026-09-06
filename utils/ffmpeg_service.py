@@ -97,6 +97,40 @@ class FFmpegService:
                 f"{result.stderr.strip()[:300]}")
         return output_path
 
+    def extract_frames_evenly(self, video_path: Path, output_dir: Path,
+                              count: int, duration_seconds: float,
+                              width: Optional[int] = None) -> list[Path]:
+        """يستخرج ``count`` إطارًا موزّعة على الفيديو في **تمريرة واحدة**.
+
+        بديلٌ عن نداء ``extract_frame`` لكل إطار، ولذلك سببان:
+
+        * **الدقّة.** ``-ss`` قبل ``-i`` بحثٌ سريع يقف عند أقرب إطار
+          مفتاحي **قبل** الزمن المطلوب، وقد يبعد ثوانيَ في تسجيل قليل
+          الإطارات المفتاحية. ومرشّح ``fps`` يأخذ من التدفّق المفكوك،
+          فيقع حيث يُفترض. قياس: المسح بالبحث السريع فوّت قائمةً ظهرت
+          في التسجيل أربع مرّات، والتقطها المرشّح.
+        * **الزمن.** نداء واحد يفتح الملف مرّة بدل ``count`` مرّة.
+
+        يُعيد المسارات الموجودة فعلًا: ‏ffmpeg قد يُخرج إطارًا أقلّ أو
+        أكثر بواحد حسب التقريب، وهذا لا يُعدّ فشلًا.
+        """
+        output_dir.mkdir(parents=True, exist_ok=True)
+        if count <= 0 or duration_seconds <= 0:
+            return []
+
+        filters = [f"fps={count}/{duration_seconds:.3f}"]
+        if width:
+            filters.append(f"scale={width}:-2")
+        pattern = output_dir / "scan_%04d.jpg"
+        result = self._run(["-i", str(video_path), "-vf", ",".join(filters),
+                            "-q:v", "3", "-frames:v", str(count + 2),
+                            str(pattern)], timeout=600)
+        frames = sorted(output_dir.glob("scan_*.jpg"))
+        if result.returncode != 0 and not frames:
+            raise FFmpegExecutionError(
+                f"فشل مسح الإطارات: {result.stderr.strip()[:300]}")
+        return frames
+
     def validate_readable(self, media_path: Path,
                           expect_video: bool = True) -> None:
         """يتحقق من إمكانية فك ترميز المصدر فعليًا قبل بدء الـ pipeline.
