@@ -202,9 +202,23 @@ class TranscriptionConfig(BaseModel):
     vad_threshold: float = 0.5
     vad_max_speech_duration_s: float = 0.0
     word_timestamps: bool = True
-    # 5 = بحث شعاعي (أدق)، 1 = جشع (أسرع بمرّة ونصف إلى مرّتين على
-    # المعالج، بكلفة دقة متواضعة). الفارق كبير على محاضرة طويلة:
-    # ساعة ونصف مقابل ثلاث ساعات.
+    # 5 = بحث شعاعي، 1 = جشع. **والرقم الذي كان هنا خطأ**: قال
+    # «أسرع بمرّة ونصف إلى مرّتين… ساعة ونصف مقابل ثلاث ساعات»، وهو
+    # ادّعاء لم يُقَس على مادّة عربية بنموذج الإنتاج.
+    #
+    # القياس (‏tools/bench_beam.py، دقيقتان من شرح عربي حقيقي،
+    # ‏large-v3-turbo/int8، ثلاث تكرارات، والمحرّك محمَّل قبل التوقيت):
+    #
+    #     beam=5   وسيط 83.1 ث   تشتّت 4.0 ث   RTF 0.692
+    #     beam=1   وسيط 66.8 ث   تشتّت 2.5 ث   RTF 0.557
+    #
+    # أي **×1.24 لا ×2**. على محاضرة ثلاث ساعات: 4.4 ساعة بدل 5.5،
+    # لا 2.75. والفرق في النصّ 3.7٪ من الكلمات (نحو كلمة من كل 27)،
+    # ولا مرجع مصحَّح يقول أيّهما أصحّ — فالافتراض يبقى على البحث
+    # الشعاعي، وهو ما وُجد ليختار تسلسلًا أفضل.
+    #
+    # ملاحظة على نطاق القياس: جرى على آلة تدعم AVX-512؛ توزّع الوقت
+    # على آلة AVX2 قد يختلف، والنسبة وحدها هي المنقولة.
     beam_size: int = 5
     # حاسم للعربية: يمنع حلقات التكرار الهلوسي على فترات الصمت
     condition_on_previous_text: bool = False
@@ -315,6 +329,51 @@ class RewriteSettings(BaseModel):
     timeout_seconds: int = 180
 
 
+#: قيمٌ كانت افتراضياتٍ ثم استُبدلت بأفضل منها.
+#:
+#: سبب وجود هذا الجدول عطلٌ صامت رأيتُه في سجلّ المستخدم: التفريغ يعمل
+#: على **أربعة خيوط** على معالج بأربع أنوية وثمانية خيوط. والافتراضي في
+#: الشيفرة صار ``0`` (اشتقاق من عدد الأنوية) منذ دفعة 582b812 — لكن ملف
+#: الإعداد المحفوظ يحمل ``4`` من قبلها، والمحفوظ يفوز على الافتراضي.
+#:
+#: أي أن كل ضبطٍ أحسّنتُه لا يصل إلى **من يستعمل البرنامج أصلًا**، ويصل
+#: إلى المستخدم الجديد وحده. وهذا معكوس الترتيب الصحيح.
+#:
+#: **والحدّ هنا ضيّق عمدًا:** نُسقط فقط ما يساوي افتراضًا سابقًا بعينه
+#: مذكورًا هنا بقيمته. أي قيمة أخرى — حتى لو بدت سيّئة — اختيارُ
+#: المستخدم ولا تُمسّ. والثمن المقبول أن من اختار ``4`` بيده يعود إلى
+#: التلقائي؛ يراه في السجلّ ويعيده إن أراد.
+SUPERSEDED_DEFAULTS: dict[str, dict[str, list]] = {
+    "whisper": {
+        "cpu_threads": [4],
+    },
+}
+
+
+def drop_superseded_defaults(data: dict) -> list[str]:
+    """يُسقط من بيانات الملف كل قيمة موروثة من افتراضٍ قديم.
+
+    يُعيد أسماء ما أُسقط ليُسجَّل — تغييرٌ صامت في إعداد المستخدم لا
+    يجوز أن يمرّ بلا أثر يمكن الرجوع إليه.
+    """
+    dropped: list[str] = []
+    for section, fields in SUPERSEDED_DEFAULTS.items():
+        saved = data.get(section)
+        if not isinstance(saved, dict):
+            continue
+        for field, old_values in fields.items():
+            if field in saved and saved[field] in old_values:
+                saved.pop(field)
+                dropped.append(f"{section}.{field}")
+    return dropped
+
+
+#: كم يوفّر فكّ التشفير الجشع (``beam_size=1``) من الزمن. **مقيس** —
+#: انظر تعليق ``beam_size`` أعلاه. كان 1.7 مُقدَّرًا في حاسبة التقدير،
+#: فكان التقدير المعروض للمستخدم أقصر من الواقع بنحو الثلث.
+GREEDY_SPEEDUP = 1.24
+
+
 def default_config_path() -> Path:
     """مسار ملف الإعداد — مصدر واحد للحقيقة لكل من يحتاجه."""
     return Path.home() / ".config" / "video_ai_doc" / "config.yaml"
@@ -356,6 +415,13 @@ class AppConfig(BaseModel):
             if rewrite_data.get("api_key"):
                 rewrite_data["api_key"] = decrypt_field(
                     rewrite_data["api_key"], config_dir)
+
+            dropped = drop_superseded_defaults(data)
+            if dropped:
+                from utils.logger import logger
+                logger.info(
+                    "أُعيدت إلى التلقائي قيمٌ موروثة من افتراضات قديمة: "
+                    + "، ".join(dropped))
 
             return cls(**data)
         except Exception as exc:

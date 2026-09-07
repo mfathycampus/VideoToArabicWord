@@ -40,6 +40,7 @@ from ui.worker import PipelineWorker, ProviderTestWorker, ScreenTermsWorker
 from utils.cancellation import CancellationToken
 from utils.error_reporting import format_error_for_user
 from utils.gpu_manager import GPUManager
+from config.settings import GREEDY_SPEEDUP
 from utils.media_probe import extract_video_facts, probe_raw
 from utils.timestamps import humanize_duration
 from version import APP_VERSION
@@ -240,7 +241,13 @@ class MainWindow(QMainWindow):
         model_row.addWidget(QLabel("فكّ التشفير:"))
         self.beam_combo = QComboBox()
         self.beam_combo.addItem("دقيق (بحث شعاعي)", 5)
-        self.beam_combo.addItem("سريع (جشع) — أسرع ~2×", 1)
+        self.beam_combo.addItem(
+            f"سريع (جشع) — أسرع ~{GREEDY_SPEEDUP:.2f}×", 1)
+        self.beam_combo.setToolTip(
+            "مقيس على شرح عربي بنموذج الإنتاج، لا مُقدَّر:\n"
+            f"الجشع أسرع بـ{GREEDY_SPEEDUP:.2f}× ويغيّر 3.7٪ من الكلمات.\n"
+            "لا يوجد مرجع مصحَّح يقول أيّهما أصحّ، والبحث الشعاعي هو\n"
+            "ما وُجد ليختار تسلسلًا أفضل — فهو الافتراضي.")
         index = self.beam_combo.findData(self.config.whisper.beam_size)
         self.beam_combo.setCurrentIndex(index if index >= 0 else 0)
         self.beam_combo.currentIndexChanged.connect(self._on_beam_changed)
@@ -1011,8 +1018,7 @@ class MainWindow(QMainWindow):
         seconds = estimate_processing_seconds(
             self.model_combo.currentData(), duration, on_gpu=on_gpu)
         if int(self.beam_combo.currentData() or 5) == 1:
-            # فكّ التشفير الجشع أسرع بمرّة ونصف إلى مرّتين على المعالج
-            seconds /= 1.7
+            seconds /= GREEDY_SPEEDUP
         if self.transcript_only_check.isChecked():
             # بلا تحليل بصري ولا بناء مستند
             seconds *= 0.9
