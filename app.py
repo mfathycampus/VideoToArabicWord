@@ -142,6 +142,10 @@ def main() -> int:
                 "حزمة مجمّدة" if is_frozen() else "تشغيل من المصدر")
 
     app = QApplication(sys.argv)
+    # الثيم على التطبيق لا على النافذة: الحوارات نوافذ مستقلّة،
+    # وتطبيقه على النافذة وحدها يترك حوارًا بلون النظام وسطها.
+    from ui.theme import stylesheet
+    app.setStyleSheet(stylesheet())
     app.setApplicationName(APP_TITLE)
     app.setApplicationVersion(APP_VERSION)
     window = MainWindow(config, config_path)

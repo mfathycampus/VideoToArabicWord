@@ -56,15 +56,39 @@ def square_canvas(image, padding_ratio: float = PADDING_RATIO):
     return canvas
 
 
-def main() -> int:
-    if not SOURCE.is_file():
-        print(f"لا شعار في {SOURCE}")
-        return 1
+#: تحت هذا الحجم تُستعمل العلامة المختصرة. القياس: عند 24 بكسل تصير
+#: أسطر النصّ ثلاث بقع رمادية ويختفي مثلّث التشغيل داخل الحلقة.
+#: أيقونةٌ لا تُقرأ في شريط المهام أسوأ من أيقونة أبسط.
+SMALL_SIZE_THRESHOLD = 32
 
+
+def main() -> int:
     from PIL import Image
 
-    canvas = square_canvas(Image.open(SOURCE))
-    canvas.save(TARGET, format="ICO", sizes=ICON_SIZES)
+    try:
+        from tools.make_logo import render, render_mark
+    except ImportError:
+        render = render_mark = None
+
+    if render is None:
+        # سقوط إلى الشعار المُودَع: البناء لا يتوقّف على استيراد.
+        if not SOURCE.is_file():
+            print(f"لا شعار في {SOURCE}")
+            return 1
+        frames = {size: square_canvas(Image.open(SOURCE))
+                  for size, _ in ICON_SIZES}
+    else:
+        frames = {
+            size: square_canvas(
+                (render_mark if size < SMALL_SIZE_THRESHOLD else render)(256))
+            for size, _ in ICON_SIZES}
+
+    # ‏Pillow تكتب ICO من صورة واحدة بأحجام مشتقّة، فنكتب كل حجم بمصدره
+    # ثم ندمج — وإلا ضاع تمييز الصغير عن الكبير.
+    largest = frames[max(frames)]
+    largest.save(TARGET, format="ICO", sizes=ICON_SIZES,
+                 append_images=[frames[size].resize((size, size), Image.LANCZOS)
+                                for size, _ in ICON_SIZES])
 
     written = sorted(Image.open(TARGET).info.get("sizes", []))
     print(f"{TARGET}  —  {len(written)} حجمًا: {written}")

@@ -35,12 +35,14 @@ from audio.model_manager import (
 from config.profiles import PROFILES, profile_choices
 from config.settings import AppConfig
 from core.pipeline import VideoToDocPipeline
+from ui import theme
 from ui.worker import PipelineWorker, ProviderTestWorker, ScreenTermsWorker
 from utils.cancellation import CancellationToken
 from utils.error_reporting import format_error_for_user
 from utils.gpu_manager import GPUManager
 from utils.media_probe import extract_video_facts, probe_raw
 from utils.timestamps import humanize_duration
+from version import APP_VERSION
 
 
 def _engine_status(name: str) -> tuple[bool, str]:
@@ -113,6 +115,7 @@ class MainWindow(QMainWindow):
         # كثيرة. التمرير يجعل الانهيار مستحيلًا مهما أُضيف لاحقًا.
         root = QWidget()
         layout = QVBoxLayout(root)
+        layout.addWidget(self._build_header())
         layout.setContentsMargins(18, 18, 18, 18)
         layout.setSpacing(12)
 
@@ -150,7 +153,7 @@ class MainWindow(QMainWindow):
         output_row.addWidget(QLabel("مجلد الحفظ:"))
         self.output_label = QLabel(str(self.config.application.output_dir))
         self.output_label.setWordWrap(True)
-        self.output_label.setStyleSheet("color: #444;")
+        self.output_label.setStyleSheet(f"color: {theme.MUTED};")
         change_output = QPushButton("تغيير…")
         change_output.clicked.connect(self.choose_output_dir)
         output_row.addWidget(self.output_label, 1)
@@ -219,7 +222,7 @@ class MainWindow(QMainWindow):
         # تحذير OCR يظهر تحت القائمة مباشرةً — عند الاختيار لا بعد ساعة.
         self.profile_notice = QLabel("")
         self.profile_notice.setWordWrap(True)
-        self.profile_notice.setStyleSheet("color: #a15c00;")
+        self.profile_notice.setStyleSheet(f"color: {theme.WARNING};")
         self.profile_notice.setVisible(False)
         model_layout.addWidget(self.profile_notice)
 
@@ -265,7 +268,7 @@ class MainWindow(QMainWindow):
 
         self.engine_note = QLabel("")
         self.engine_note.setWordWrap(True)
-        self.engine_note.setStyleSheet("color: #555; font-size: 11px;")
+        self.engine_note.setStyleSheet(f"color: {theme.MUTED}; font-size: 11px;")
         model_layout.addWidget(self.engine_note)
         layout.addWidget(model_box)
 
@@ -323,7 +326,7 @@ class MainWindow(QMainWindow):
 
         self.rewrite_note = QLabel("")
         self.rewrite_note.setWordWrap(True)
-        self.rewrite_note.setStyleSheet("color: #555; font-size: 11px;")
+        self.rewrite_note.setStyleSheet(f"color: {theme.MUTED}; font-size: 11px;")
         rewrite_layout.addWidget(self.rewrite_note)
         layout.addWidget(rewrite_box)
         self._update_rewrite_note()
@@ -345,7 +348,7 @@ class MainWindow(QMainWindow):
         self.clip_end_input.setMaximumWidth(190)
         clip_row.addWidget(self.clip_end_input)
         clip_hint = QLabel("لتجربة الإعدادات بسرعة قبل معالجة الملف كاملًا")
-        clip_hint.setStyleSheet("color: #555; font-size: 11px;")
+        clip_hint.setStyleSheet(f"color: {theme.MUTED}; font-size: 11px;")
         clip_row.addWidget(clip_hint, 1)
         for field in (self.clip_start_input, self.clip_end_input):
             field.textChanged.connect(self._refresh_estimate)
@@ -372,9 +375,24 @@ class MainWindow(QMainWindow):
         self.scan_terms_button.clicked.connect(self._scan_screen_terms)
         terms_row.addWidget(self.scan_terms_button)
         self.scan_terms_status = QLabel("")
-        self.scan_terms_status.setStyleSheet("color: #555; font-size: 11px;")
+        self.scan_terms_status.setStyleSheet(f"color: {theme.MUTED}; font-size: 11px;")
         terms_row.addWidget(self.scan_terms_status, 1)
         advanced_layout.addLayout(terms_row)
+
+        # شعار ترويسة المستند — الافتراضي شعار البرنامج.
+        logo_row = QHBoxLayout()
+        logo_row.addWidget(QLabel("شعار ترويسة المستند:"))
+        self.logo_label = QLabel("")
+        self.logo_label.setStyleSheet(f"color: {theme.MUTED}; font-size: 11px;")
+        logo_row.addWidget(self.logo_label, 1)
+        choose_logo = QPushButton("اختيار…")
+        choose_logo.clicked.connect(self._choose_logo)
+        clear_logo = QPushButton("العودة للافتراضي")
+        clear_logo.clicked.connect(self._clear_logo)
+        logo_row.addWidget(choose_logo)
+        logo_row.addWidget(clear_logo)
+        advanced_layout.addLayout(logo_row)
+        self._refresh_logo_label()
 
         toggles = QHBoxLayout()
         self.denoise_check = QCheckBox("تنظيف الصوت قبل التفريغ")
@@ -413,6 +431,8 @@ class MainWindow(QMainWindow):
         run_layout = QVBoxLayout(run_box)
         buttons = QHBoxLayout()
         self.start_button = QPushButton("ابدأ المعالجة")
+        # زرٌّ أساسي واحد في النافذة كلها — انظر ``ui/theme.py``.
+        self.start_button.setProperty("primary", "true")
         self.start_button.clicked.connect(self.start)
         self.start_button.setEnabled(False)
         self.pause_button = QPushButton("إيقاف مؤقت")
@@ -463,7 +483,7 @@ class MainWindow(QMainWindow):
 
         self.estimate_label = QLabel("")
         self.estimate_label.setWordWrap(True)
-        self.estimate_label.setStyleSheet("color: #555; font-size: 11px;")
+        self.estimate_label.setStyleSheet(f"color: {theme.MUTED}; font-size: 11px;")
         run_layout.addWidget(self.estimate_label)
         layout.addWidget(run_box)
 
@@ -743,6 +763,69 @@ class MainWindow(QMainWindow):
         self.glossary_input.setPlainText(suggested)
         self.scan_terms_status.setText(
             f"اقتُرح {len(terms)} مصطلحًا — احذف ما لا يُنطق في التسجيل.")
+
+    def _build_header(self) -> QWidget:
+        """شريط علوي يحمل شعار البرنامج واسمه.
+
+        ليس زينة: هو ما يفرّق البرنامج عن نافذة أدوات عامّة، وما يجعل
+        المعلّم يتعرّف عليه بين نوافذه. والشعار نفسه هو أيقونة شريط
+        المهام وترويسة المستند — مصدر واحد في ``assets/logo.png``.
+        """
+        from PyQt6.QtGui import QPixmap
+
+        bar = QWidget()
+        bar.setStyleSheet(f"background: {theme.INK}; border-radius: 10px;")
+        row = QHBoxLayout(bar)
+        row.setContentsMargins(16, 11, 16, 11)
+        row.setSpacing(12)
+
+        mark = QLabel()
+        logo = Path(__file__).resolve().parents[1] / "assets" / "logo.png"
+        if logo.is_file():
+            mark.setPixmap(QPixmap(str(logo)).scaledToHeight(
+                34, Qt.TransformationMode.SmoothTransformation))
+        row.addWidget(mark)
+
+        titles = QVBoxLayout()
+        titles.setSpacing(1)
+        name = QLabel("محوّل المحاضرات")
+        name.setStyleSheet("color: #F7FAF9; font-size: 15px; font-weight: 600;")
+        note = QLabel("يعمل على جهازك بالكامل — بلا إنترنت")
+        note.setStyleSheet("color: #9DBAB4; font-size: 11px;")
+        titles.addWidget(name)
+        titles.addWidget(note)
+        row.addLayout(titles)
+        row.addStretch(1)
+
+        version = QLabel(APP_VERSION)
+        version.setStyleSheet("color: #6E938C; font-size: 11px;")
+        row.addWidget(version)
+        return bar
+
+    def _choose_logo(self) -> None:
+        """شعار ترويسة المستند.
+
+        ``DocumentConfig.logo_path`` موجود منذ البداية ويستعمله
+        ``document/template.py``، ولم يكن له أي عنصر في الواجهة — أي
+        أن تغييره كان يحتاج تحرير ملف YAML بيد المستخدم. الافتراضي
+        شعار البرنامج، ومَن أراد شعار مدرسته يضعه من هنا.
+        """
+        path, _ = QFileDialog.getOpenFileName(
+            self, "اختر شعار ترويسة المستند", "",
+            "الصور (*.png *.jpg *.jpeg)")
+        if not path:
+            return
+        self.config.document.logo_path = Path(path)
+        self._refresh_logo_label()
+
+    def _clear_logo(self) -> None:
+        self.config.document.logo_path = None
+        self._refresh_logo_label()
+
+    def _refresh_logo_label(self) -> None:
+        chosen = self.config.document.logo_path
+        self.logo_label.setText(
+            chosen.name if chosen else "شعار البرنامج (الافتراضي)")
 
     def _on_glossary_changed(self) -> None:
         self.config.whisper.glossary = \

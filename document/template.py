@@ -43,17 +43,23 @@ DEFAULT_LOGO = Path(__file__).resolve().parents[1] / "assets" / "logo.png"
 class Theme:
     """هوية بصرية واحدة للمستند كله.
 
-    الألوان الافتراضية مأخوذة من شعار المشروع (#2D2E82) ليخرج المستند
-    متسقًا مع الهوية بدل ألوان عامة.
+    الألوان مشتقّة من شعار البرنامج، وهي نفسها ألوان الواجهة في
+    ``ui/theme.py``: حبر حرف الواو ``#0B2E2A`` ولون مثلّث التشغيل
+    ``#0F766E``. فالمعلّم يرى الهوية نفسها في شريط المهام وفي النافذة
+    وفي ترويسة المستند.
+
+    **الكحليّ السابق ``#2D2E82`` كان لون شعار مدرسة** لا لون البرنامج:
+    كل مستند كان يخرج بعلامة جهة بعينها، وهو خطأ داخلها وخارجها.
+    ومن أراد شعار مؤسّسته يضعه من الواجهة (``logo_path``).
     """
     font: str = "Arial"
     heading_font: str = "Arial"
     body_pt: float = 12.0
-    accent: RGBColor = RGBColor(0x2D, 0x2E, 0x82)      # كحلي الشعار
-    accent_soft: RGBColor = RGBColor(0x5C, 0x5D, 0xA8)
-    muted: RGBColor = RGBColor(0x6B, 0x72, 0x80)
-    rule: str = "D2D4E6"
-    accent_hex: str = "2D2E82"
+    accent: RGBColor = RGBColor(0x0B, 0x2E, 0x2A)      # حبر الشعار
+    accent_soft: RGBColor = RGBColor(0x0F, 0x76, 0x6E)  # مثلّث التشغيل
+    muted: RGBColor = RGBColor(0x5A, 0x70, 0x6C)
+    rule: str = "DCE8E5"
+    accent_hex: str = "0B2E2A"
     logo_path: Optional[Path] = None
     logo_width_inches: float = 2.1
 
