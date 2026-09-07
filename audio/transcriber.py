@@ -26,7 +26,8 @@ from audio.text_cleaner import (
     clean_segment_text,
     find_repeated_runs,
 )
-from config.schemas import AudioSegment, TranscriptionResult, WordTimestamp
+from config.schemas import (AudioSegment, TranscriptionCheckpoint,
+                            TranscriptionResult, WordTimestamp)
 from config.settings import TranscriptionConfig
 from core.exceptions import ResourceAllocationError
 from utils.cancellation import CancellationToken
@@ -68,6 +69,17 @@ MAX_INTERNAL_GAP_SECONDS = 2.5
 #: رمزًا. العربية تُرمَّز بكثافة أعلى من اللاتينية، فنبقى دون الحدّ
 #: بهامش واسع بالحروف بدل محاولة عدّ الرموز خارج المُرمِّز.
 _HOTWORDS_CHAR_LIMIT = 400
+
+#: كل كم ثانية من زمن **المعالجة** تُحفظ نقطة استئناف.
+#:
+#: الحدّ على زمن المعالجة لا على زمن الصوت، لأن ما يهمّ المستخدم هو ما
+#: يخسره الانقطاع بالدقائق — لا كم ثانية صوت فُرّغت. وستّون ثانية تعني
+#: أن أسوأ خسارة دقيقةٌ واحدة من أربع ساعات ونصف.
+#:
+#: والكتابة رخيصة أمام ذلك: مقاطع محاضرة ثلاث ساعات نحو 3–5 ميغابايت
+#: من JSON، تُكتب كتابةً ذرّية كل دقيقة. أي أقل من واحد بالألف من زمن
+#: المعالجة على القرص.
+CHECKPOINT_SECONDS = 60.0
 
 # أنماط أخطاء تستدعي السقوط إلى CPU
 _GPU_ERROR_MARKERS = (
@@ -401,14 +413,25 @@ class TranscriptionEngine:
         audio_path: Path,
         cancel_token: Optional[CancellationToken] = None,
         progress_callback: Optional[Callable[[float, str], None]] = None,
+        checkpoint: Optional[Callable[[List[AudioSegment],
+                                       List[WordTimestamp], float],
+                                      None]] = None,
+        resume: Optional[TranscriptionCheckpoint] = None,
     ) -> TranscriptionResult:
+        """``checkpoint`` يُستدعى دوريًّا بما اكتمل حتى الآن.
+
+        ``resume`` مقاطعُ تشغيلٍ سابق انقطع؛ حين يُمرَّر يكون
+        ``audio_path`` هو **بقيّة** الصوت وحدها، وتُزاح توقيتات المقاطع
+        الجديدة بـ ``resume.resume_at`` لتبقى بزمن الصوت الكامل.
+        """
         device, compute_type = GPUManager.resolve_device_config(
             self.config.device, self.config.compute_type)
         fallback_used = False
 
         try:
             return self._run(audio_path, device, compute_type,
-                             cancel_token, progress_callback, fallback_used)
+                             cancel_token, progress_callback, fallback_used,
+                             checkpoint, resume)
         except Exception as exc:
             # الإلغاء ليس خطأ عتاد — يُمرَّر كما هو
             from core.exceptions import PipelineCancelledError
@@ -424,7 +447,8 @@ class TranscriptionEngine:
             if progress_callback:
                 progress_callback(0.0, "تعذّر استخدام كرت الشاشة — التحويل إلى المعالج.")
             return self._run(audio_path, device, compute_type,
-                             cancel_token, progress_callback, fallback_used)
+                             cancel_token, progress_callback, fallback_used,
+                             checkpoint, resume)
 
     # ------------------------------------------------------------------
     def _run(
@@ -435,6 +459,8 @@ class TranscriptionEngine:
         cancel_token: Optional[CancellationToken],
         progress_callback: Optional[Callable[[float, str], None]],
         fallback_used: bool,
+        checkpoint: Optional[Callable] = None,
+        resume: Optional[TranscriptionCheckpoint] = None,
     ) -> TranscriptionResult:
         model: Optional[WhisperModel] = None
         try:
@@ -465,18 +491,33 @@ class TranscriptionEngine:
             else:
                 segments_iter, info = model.transcribe(str(audio_path), **options)
 
-            total = float(getattr(info, "duration", 0.0) or 0.0)
+            # ``offset`` زمنُ ما فُرّغ في تشغيلٍ سابق. الصوت المُمرَّر
+            # هنا بقيّةٌ تبدأ من الصفر، فتوقيتاتها تُزاح لتبقى بزمن
+            # الصوت الكامل — وإلا حملت الصورُ والترجمة توقيتًا خاطئًا.
+            offset = resume.resume_at if resume else 0.0
+            remaining_total = float(getattr(info, "duration", 0.0) or 0.0)
+            # المقام هو الصوت **الكامل**: بعد استئنافٍ عند الساعة الرابعة
+            # يجب أن يبدأ الشريط من 80٪ لا من الصفر.
+            total = ((resume.audio_seconds if resume else 0.0)
+                     or (remaining_total + offset))
             started_at = time.monotonic()
-            if total > 0:
-                logger.info(f"مدة الصوت {humanize_duration(total)} — بدء التفريغ")
-            segments: List[AudioSegment] = []
-            words: List[WordTimestamp] = []
+            if remaining_total > 0:
+                if offset > 0:
+                    logger.info(
+                        f"استئناف التفريغ من {humanize_duration(offset)} — "
+                        f"بقي {humanize_duration(remaining_total)}")
+                else:
+                    logger.info(
+                        f"مدة الصوت {humanize_duration(total)} — بدء التفريغ")
+            segments: List[AudioSegment] = list(resume.segments) if resume else []
+            words: List[WordTimestamp] = list(resume.words) if resume else []
             raw_parts: List[str] = []
             clean_parts: List[str] = []
             last_emit = -1.0
+            last_checkpoint = time.monotonic()
 
             # استهلاك المولّد داخل try — هنا تقع أخطاء CUDA فعليًا
-            for index, seg in enumerate(segments_iter, start=1):
+            for index, seg in enumerate(segments_iter, start=len(segments) + 1):
                 if cancel_token:
                     cancel_token.raise_if_cancelled()
                     cancel_token.wait_if_paused()
@@ -488,20 +529,32 @@ class TranscriptionEngine:
                     clean_parts.append(clean)
 
                 seg_words = [
-                    WordTimestamp(word=w.word.strip(), start=w.start, end=w.end,
+                    WordTimestamp(word=w.word.strip(),
+                                  start=w.start + offset, end=w.end + offset,
                                   probability=getattr(w, "probability", None))
                     for w in (seg.words or [])
                 ]
                 words.extend(seg_words)
                 segments.append(AudioSegment(
-                    id=index, start=seg.start, end=seg.end,
+                    id=index, start=seg.start + offset, end=seg.end + offset,
                     text_raw=raw, text_clean=clean, words=seg_words,
                 ))
 
+                # نقطة الحفظ: كل ``CHECKPOINT_SECONDS`` من زمن **المعالجة**
+                # لا من زمن الصوت. الحدّ على الأول لأن المطلوب تحديد ما
+                # يُفقد بالانقطاع، وهو يُقاس بالدقائق الضائعة لا بالثواني
+                # المُفرَّغة. وتُمرَّر المقاطع الخام قبل إعادة التشكيل.
+                now = time.monotonic()
+                if checkpoint and now - last_checkpoint >= CHECKPOINT_SECONDS:
+                    last_checkpoint = now
+                    checkpoint(list(segments), list(words),
+                               segments[-1].end)
+
                 # خنق التحديثات: مرة كل ثانيتين من زمن الفيديو، لا كل مقطع
-                if progress_callback and total > 0 and seg.end - last_emit >= 2.0:
-                    last_emit = seg.end
-                    fraction = min(1.0, seg.end / total)
+                if (progress_callback and total > 0
+                        and seg.end + offset - last_emit >= 2.0):
+                    last_emit = seg.end + offset
+                    fraction = min(1.0, (seg.end + offset) / total)
                     # الوقت المتبقي: بدونه تبدو النسبة الزاحفة وكأن
                     # البرنامج متجمد، والمستخدم يلغي عملًا سليمًا
                     remaining = estimate_remaining(
@@ -511,7 +564,8 @@ class TranscriptionEngine:
                     progress_callback(
                         fraction,
                         f"التفريغ {fraction * 100:.1f}% "
-                        f"({seg.end / 60:.0f} من {total / 60:.0f} دقيقة){eta}")
+                        f"({(seg.end + offset) / 60:.0f} من "
+                        f"{total / 60:.0f} دقيقة){eta}")
 
             # ترتيب مقصود: الطيّ أولًا ثم القسمة. حلقة التكرار تُطوى
             # إلى مقطع واحد قد يكون طويلًا، فتقسمه الخطوة التالية.

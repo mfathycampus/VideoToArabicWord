@@ -68,14 +68,20 @@ class FasterWhisperEngine(ASREngine):
             return False, "حزمة faster-whisper غير مثبّتة في هذا المفسّر."
         return True, "جاهز — faster-whisper / CTranslate2"
 
+    #: المحرّك الوحيد الذي يستأنف اليوم — المولّد يسلّم المقاطع تباعًا،
+    #: فيمكن حفظ ما وصل. المحرّكات التي تُعيد النصّ دفعةً واحدة لا تملك
+    #: نقطةً وسطى تُحفظ أصلًا.
+    supports_resume = True
+
     def transcribe(self, audio_path: Path,
                    cancel_token: Optional[CancellationToken] = None,
-                   progress_callback: Optional[ProgressFn] = None
+                   progress_callback: Optional[ProgressFn] = None,
+                   checkpoint=None, resume=None
                    ) -> TranscriptionResult:
         if self._engine is None:
             raise RuntimeError("faster-whisper غير مثبّت. شغّل Doctor للتشخيص.")
         return self._engine.transcribe(audio_path, cancel_token,
-                                       progress_callback)
+                                       progress_callback, checkpoint, resume)
 
     def release(self) -> None:
         if self._engine is not None:

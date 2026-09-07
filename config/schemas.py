@@ -91,6 +91,30 @@ class AudioSegment(BaseModel):
         return v
 
 
+class TranscriptionCheckpoint(BaseModel):
+    """تقدّمُ تفريغٍ لم يكتمل، محفوظًا على القرص.
+
+    سبب وجوده مقيس: التفريغ 85٪ من زمن التشغيل، ومحاضرة ثلاث ساعات
+    تستغرق نحو أربع ساعات ونصف على جهاز المستخدم. والاستئناف اليوم على
+    مستوى **المرحلة** لا داخلها — أي أن انقطاع كهرباء أو إعادة تشغيل
+    ويندوز في الساعة الرابعة يُضيع الأربع كلّها ويبدأ من الصفر.
+
+    ما يُحفظ هو المقاطع **الخام قبل إعادة التشكيل**: الطيّ والقسمة
+    يُطبَّقان على القائمة المجموعة في النهاية لا على كل جزء وحده، وإلا
+    فاتت حلقةُ تكرار تقع على حدّ الاستئناف بالضبط.
+
+    ``resume_at`` نهاية آخر مقطع محفوظ، وهي حدّ قطعٍ **دقيق**: الصوت
+    يُقصّ عندها تمامًا، فلا يتكرّر مقطع ولا يسقط — وهو شرط ADR-010.
+    """
+    schema_version: str = SCHEMA_VERSION
+    processing_fingerprint: str = ""
+    #: مدة الصوت الكاملة — التقدّم بعد الاستئناف يُحسب عليها لا على البقية.
+    audio_seconds: float = 0.0
+    resume_at: float = 0.0
+    segments: List[AudioSegment] = Field(default_factory=list)
+    words: List[WordTimestamp] = Field(default_factory=list)
+
+
 class TranscriptionResult(BaseModel):
     schema_version: str = SCHEMA_VERSION
     language: str

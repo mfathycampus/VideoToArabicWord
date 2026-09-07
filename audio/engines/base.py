@@ -10,7 +10,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Any, Callable, List, Optional
 
 from config.schemas import TranscriptionResult
 from utils.cancellation import CancellationToken
@@ -40,6 +40,14 @@ class ASREngine(ABC):
     # موجودة هنا حتى يقبل ضبطَها كلُّ محرّك، ولو تجاهلها.
     allow_download: bool = False
 
+    #: هل يحفظ هذا المحرّك تقدّمه ويستأنف من حيث انقطع؟
+    #:
+    #: رايةٌ صريحة لا استنتاج من التوقيع: محرّكٌ يقبل الوسيطين ثم
+    #: يتجاهلهما بصمت أسوأ من محرّك يعلن أنه لا يدعمهما — لأن الـ
+    #: pipeline سيكتب نقاط حفظ لا يقرؤها أحد، ثم يستأنف من الصفر
+    #: بينما يقول للمستخدم إنه استأنف.
+    supports_resume: bool = False
+
     @abstractmethod
     def is_available(self) -> bool:
         """جاهزية المحرّك دون تنزيل أو تشغيل فعلي."""
@@ -60,8 +68,16 @@ class ASREngine(ABC):
         audio_path: Path,
         cancel_token: Optional[CancellationToken] = None,
         progress_callback: Optional[ProgressFn] = None,
+        checkpoint: Optional[Callable] = None,
+        resume: Optional[Any] = None,
     ) -> TranscriptionResult:
-        """يفرّغ ملفًا صوتيًا (16kHz أحادي) ويعيد العقد الموحّد."""
+        """يفرّغ ملفًا صوتيًا (16kHz أحادي) ويعيد العقد الموحّد.
+
+        ``checkpoint`` و``resume`` اختياريان، ويجوز تجاهلهما تمامًا —
+        وهما موجودان في التوقيع الأساسي حتى يبقى نداء الـ pipeline
+        واحدًا لكل المحرّكات. من يتجاهلهما يترك ``supports_resume``
+        على ``False``، فلا يُمرَّر إليه شيء أصلًا.
+        """
 
     def release(self) -> None:  # noqa: B027
         """تحرير الذاكرة — يُستدعى بعد كل مهمة.

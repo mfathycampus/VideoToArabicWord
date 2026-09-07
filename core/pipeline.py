@@ -16,6 +16,7 @@ from config.profiles import apply_profile
 from config.schemas import (
     DocumentPlan,
     KeyframeMetadata,
+    TranscriptionCheckpoint,
     TranscriptionResult,
     VideoMetadata,
 )
@@ -28,7 +29,7 @@ from core.exceptions import (
     ModelUnavailableError,
     PipelineCancelledError,
 )
-from core.job_state import JobManager, Stage
+from core.job_state import JobManager, Stage, atomic_write_text
 from document.planner import TimelinePlanner
 from document.word_generator import DocumentGenerator
 from utils.cancellation import CancellationToken
@@ -741,19 +742,117 @@ class VideoToDocPipeline:
                 progress_callback=lambda m: emit(Stage.TRANSCRIPTION, 0.03, m))
         logger.info(f"محرّك التفريغ: {engine_label} · "
                     f"النموذج {self.config.whisper.model_size}")
+
+        # ── الاستئناف داخل التفريغ ────────────────────────────────────
+        # المرحلة تستغرق 85٪ من زمن التشغيل — أربع ساعات ونصف على
+        # محاضرة ثلاث ساعات. وكان الاستئناف على مستوى المرحلة وحدها:
+        # انقطاعٌ في الساعة الرابعة يبدأ من الصفر.
+        full = metadata.duration_seconds
+        end = clip.end_seconds if clip.end_seconds is not None else full
+        audio_seconds = max(0.0, min(end, full) - clip.start_seconds)
+
+        resume = self._load_checkpoint(job, transcription_fp)
+        transcribe_from = audio_path
+        if resume is not None:
+            emit(Stage.TRANSCRIPTION, 0.04,
+                 f"استئناف التفريغ من {seconds_to_display(resume.resume_at)}…")
+            logger.info(
+                f"استئناف تفريغ محفوظ: {len(resume.segments)} مقطعًا حتى "
+                f"{seconds_to_display(resume.resume_at)}.")
+            # قصٌّ دقيق عند حدّ المقطع: ملف PCM، فـ``-ss`` عليه ليس
+            # بحثًا تقريبيًّا إلى إطار مفتاحي. لا تكرار ولا سقوط.
+            transcribe_from = temp_dir / "audio_resume.wav"
+            self.ffmpeg.extract_audio(audio_path, transcribe_from,
+                                      start_seconds=resume.resume_at)
+
         transcript = self._transcribe_with_fallback(
-            audio_path, cancel_token, emit, engine_label)
+            transcribe_from, cancel_token, emit, engine_label,
+            checkpoint=self._checkpoint_writer(
+                job, transcription_fp, audio_seconds),
+            resume=resume)
         # الصوت المستخرج يبدأ من الصفر؛ توقيتات المستند يجب أن تبقى
         # مطلقة بزمن المصدر الأصلي وإلا تعذّر الرجوع إلى الفيديو.
         transcript = _shift_transcript(transcript, clip.start_seconds)
         job.save_artifact("transcription", "transcription.json",
                           transcript.model_dump_json(indent=2),
                           processing_fingerprint=transcription_fp)
+        # اكتمل، فلا معنى لبقاء نقطة الحفظ: وجودها بعد النجاح يعني
+        # استئنافًا من منتصف عملٍ تامّ عند إعادة تشغيل لاحقة.
+        self._checkpoint_path(job).unlink(missing_ok=True)
         job.complete_stage(Stage.TRANSCRIPTION)
         return transcript
 
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _checkpoint_path(job) -> Path:
+        return job.job_dir / "transcription.partial.json"
+
+    def _load_checkpoint(self, job, fingerprint: str
+                         ) -> Optional[TranscriptionCheckpoint]:
+        """نقطة حفظٍ صالحة، أو ``None``.
+
+        ثلاثة أسباب للرفض، وكلّها تُسجَّل ولا يفشل بها التشغيل — نقطة
+        الحفظ تسريعٌ لا شرطُ صحّة:
+
+        * المحرّك لا يستأنف (``supports_resume``).
+        * البصمة مختلفة: تغيّر الإعداد أو المصدر، فالمقاطع المحفوظة
+          نتاج إعدادٍ آخر ولا يجوز خلطها بمقاطع الإعداد الجديد.
+        * الملف تالف أو مقطوع — وهو ما يحدث بالضبط عند الانقطاع الذي
+          وُجدت له نقطة الحفظ.
+        """
+        if not getattr(self.transcriber, "supports_resume", False):
+            return None
+        path = self._checkpoint_path(job)
+        if not path.is_file():
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            checkpoint = TranscriptionCheckpoint(**data)
+        except Exception as exc:                            # noqa: BLE001
+            logger.info(f"نقطة حفظ التفريغ غير صالحة ({exc}) — تُتجاهَل.")
+            path.unlink(missing_ok=True)
+            return None
+
+        if checkpoint.processing_fingerprint != fingerprint:
+            logger.info("نقطة حفظ التفريغ لإعدادٍ مختلف — تُتجاهَل.")
+            path.unlink(missing_ok=True)
+            return None
+        if checkpoint.resume_at <= 0 or not checkpoint.segments:
+            path.unlink(missing_ok=True)
+            return None
+        return checkpoint
+
+    def _checkpoint_writer(self, job, fingerprint: str, audio_seconds: float):
+        """يُعيد دالّةً تكتب نقطة الحفظ، أو ``None`` إن كان المحرّك لا يستأنف.
+
+        ``None`` صريحة لا دالّة فارغة: كتابة نقاطٍ لا يقرؤها أحد تُوهم
+        المستخدم بأمانٍ لا وجود له.
+        """
+        if not getattr(self.transcriber, "supports_resume", False):
+            return None
+
+        path = self._checkpoint_path(job)
+
+        def write(segments, words, resume_at: float) -> None:
+            checkpoint = TranscriptionCheckpoint(
+                processing_fingerprint=fingerprint,
+                audio_seconds=audio_seconds,
+                resume_at=resume_at,
+                segments=segments,
+                words=words,
+            )
+            try:
+                atomic_write_text(path, checkpoint.model_dump_json())
+            except Exception as exc:                        # noqa: BLE001
+                # قرصٌ ممتلئ أو مجلّد مقفل لا يجوز أن يُسقط تفريغًا
+                # جاريًا منذ ساعات — أسوأ ما يحدث فقدان الاستئناف.
+                logger.debug(f"تعذّرت كتابة نقطة حفظ التفريغ: {exc}")
+
+        return write
+
     def _transcribe_with_fallback(self, audio_path, cancel_token, emit,
-                                  engine_label: str):
+                                  engine_label: str, checkpoint=None,
+                                  resume=None):
         """يفرّغ بالمحرّك المختار، ويسقط إلى الافتراضي إن فشل **أثناء التنفيذ**.
 
         فحص ``is_available`` يغطي وجود الحزم فقط. المحرّك الاختياري قد
@@ -766,9 +865,15 @@ class VideoToDocPipeline:
         المهمة). المحرّك الاختياري يتبع القاعدة نفسها الآن.
         """
         progress = lambda f, m: emit(Stage.TRANSCRIPTION, f, m)  # noqa: E731
+        # الوسيطان يُمرَّران **فقط** لمن أعلن أنه يستأنف. محرّك قديم أو
+        # مُحقَن في اختبار يبقى بتوقيعه الثلاثي ولا ينكسر — وهو ما
+        # انكسر فعلًا عند أول تمرير غير مشروط.
+        extra = {}
+        if getattr(self.transcriber, "supports_resume", False):
+            extra = {"checkpoint": checkpoint, "resume": resume}
         try:
             return self.transcriber.transcribe(audio_path, cancel_token,
-                                               progress)
+                                               progress, **extra)
         except PipelineCancelledError:
             raise
         except Exception as exc:
@@ -787,6 +892,10 @@ class VideoToDocPipeline:
                                     config=self.config.whisper)
             fallback.allow_download = self.transcriber.allow_download
             self.transcriber = fallback
+            # بلا نقطة حفظ ولا استئناف هنا عن قصد: هذا المسار لا يُبلَغ
+            # إلا من محرّك لا يستأنف، فـ``resume`` صفرٌ حتمًا و
+            # ``audio_path`` الصوت كاملًا. تمريرُ نقطة حفظ لمحرّكٍ بديل
+            # بدأ من الصفر يكتب تقدّمًا لا يطابق ما على القرص.
             return fallback.transcribe(audio_path, cancel_token, progress)
 
     def _stage_scenes(self, job, video_path, metadata, cancel_token, emit,

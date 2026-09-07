@@ -214,8 +214,12 @@ class CohereArabicEngine(ASREngine):
     # ------------------------------------------------------------------
     def transcribe(self, audio_path: Path,
                    cancel_token: Optional[CancellationToken] = None,
-                   progress_callback: Optional[ProgressFn] = None
+                   progress_callback: Optional[ProgressFn] = None,
+                   checkpoint=None, resume=None
                    ) -> TranscriptionResult:
+        # ``checkpoint`` و``resume`` مقبولان ومُتجاهَلان: ``supports_resume``
+        # يبقى ``False`` هنا، فلا يمرّرهما الـ pipeline أصلًا. وجودهما في
+        # التوقيع يُبقي نداءً واحدًا لكل المحرّكات.
         import librosa
         import torch
 
