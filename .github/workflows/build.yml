@@ -47,10 +47,21 @@ jobs:
         # الحزمة يجب أن تعتمد على ثنائياتها المشحونة وحدها. لولا هذه
         # الخطوة لبقي العطل الأصلي غير مرئي: عدّاء GitHub يملك ffmpeg
         # في PATH بعد خطوة setup_ffmpeg، فيمرّ الفحص على حزمة معطوبة.
+        #
+        # وتفريغ PATH يُخفي ffmpeg — ويُخفي **المفسّر نفسه**. سقط
+        # البناء ثلاث مرّات متتالية بـ«python is not recognized» قبل
+        # أن يبدأ الفحص أصلًا، فبقي المثبِّت غير مُنتَج. الحلّ: نلتقط
+        # مسار المفسّر قبل التفريغ ونستدعيه بمساره المطلق.
         shell: pwsh
         run: |
+          $python = (Get-Command python).Source
           $env:PATH = "$env:SystemRoot;$env:SystemRoot\System32"
-          python tools/build_smoke.py dist/VideoToArabicWord
+          # حارس: بلا هذا السطر يصير الفحص بلا معنى إن عاد ffmpeg
+          # إلى PATH يومًا — يمرّ على حزمة معطوبة كما مرّ من قبل.
+          if (Get-Command ffmpeg -ErrorAction SilentlyContinue) {
+            throw "ffmpeg ما زال في PATH — هذه الخطوة لا تفحص شيئًا"
+          }
+          & $python tools/build_smoke.py dist/VideoToArabicWord
 
       - uses: actions/upload-artifact@v4
         with:

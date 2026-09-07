@@ -36,6 +36,19 @@ BORDER_SOFT = "#DCE8E5"
 SURFACE = "#FFFFFF"
 BACKGROUND = "#F7FAF9"
 
+#: ألوان فوق الأرضيّة الداكنة — شريط الترويسة أرضيّته ``INK`` نفسه.
+#: وجودها هنا سببه عطلٌ رآه المستخدم: الشعار كان يُرسم بـ``INK`` فوق
+#: ``INK``، فاختفى تمامًا. والنِّسَب مقيسة على ``INK`` لا مُقدَّرة:
+#:     ‏ON_INK        14.0:1
+#:     ‏ACCENT_LIGHT   9.9:1
+#:     ‏ON_INK_MUTED   7.0:1
+#:     ‏ON_INK_FAINT   5.4:1
+#: و``ACCENT`` نفسه يعطي 1.9:1 فوق ``INK`` — لذلك لا يصلح هناك.
+ON_INK = "#F7FAF9"
+ON_INK_MUTED = "#9DBAB4"
+ON_INK_FAINT = "#7FA49D"
+ACCENT_LIGHT = "#5EEAD4"
+
 #: حالات. الثلاثة مفحوصة على أرضيّاتها الفاتحة بنفس الطريقة.
 WARNING = "#B45309"
 WARNING_BG = "#FEF6EC"

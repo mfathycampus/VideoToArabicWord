@@ -707,6 +707,15 @@ class MainWindow(QMainWindow):
                 self, "لا ملف", "اختر ملف الفيديو أولًا.")
             return
 
+        # الملف الصوتي لا شاشة فيه. بلا هذا السطر يمسح البرنامج
+        # أربعة عشر إطارًا سوداء ثم يقول «لم يُعثر على مصطلحات» —
+        # جوابٌ صحيح لسؤال خاطئ.
+        if self.audio_only:
+            QMessageBox.information(
+                self, "ملف صوتي",
+                "المصطلحات تُقرأ من صورة الفيديو، ولا صورة في ملف صوتي.")
+            return
+
         from video.ocr import install_hint, refresh
         if refresh() is None:
             QMessageBox.information(
@@ -715,7 +724,7 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            duration = extract_video_facts(self.video_path).duration_seconds
+            duration = self._source_duration_seconds()
         except Exception as exc:                            # noqa: BLE001
             QMessageBox.warning(self, "تعذّر قراءة الملف",
                                 format_error_for_user(exc))
@@ -780,7 +789,13 @@ class MainWindow(QMainWindow):
         row.setSpacing(12)
 
         mark = QLabel()
-        logo = Path(__file__).resolve().parents[1] / "assets" / "logo.png"
+        # النسخة الفاتحة، والعلامة وحدها بلا أسطر النصّ. عطلان كانا
+        # هنا وقد رآهما المستخدم معًا: الشعار مرسوم بلون الشريط نفسه
+        # فلا يُرى، وأسطر النصّ عند 34 بكسل بقعٌ رمادية لا تُقرأ.
+        assets = Path(__file__).resolve().parents[1] / "assets"
+        logo = assets / "logo_light.png"
+        if not logo.is_file():
+            logo = assets / "logo.png"
         if logo.is_file():
             mark.setPixmap(QPixmap(str(logo)).scaledToHeight(
                 34, Qt.TransformationMode.SmoothTransformation))
@@ -789,16 +804,17 @@ class MainWindow(QMainWindow):
         titles = QVBoxLayout()
         titles.setSpacing(1)
         name = QLabel("محوّل المحاضرات")
-        name.setStyleSheet("color: #F7FAF9; font-size: 15px; font-weight: 600;")
+        name.setStyleSheet(
+            f"color: {theme.ON_INK}; font-size: 15px; font-weight: 600;")
         note = QLabel("يعمل على جهازك بالكامل — بلا إنترنت")
-        note.setStyleSheet("color: #9DBAB4; font-size: 11px;")
+        note.setStyleSheet(f"color: {theme.ON_INK_MUTED}; font-size: 11px;")
         titles.addWidget(name)
         titles.addWidget(note)
         row.addLayout(titles)
         row.addStretch(1)
 
         version = QLabel(APP_VERSION)
-        version.setStyleSheet("color: #6E938C; font-size: 11px;")
+        version.setStyleSheet(f"color: {theme.ON_INK_FAINT}; font-size: 11px;")
         row.addWidget(version)
         return bar
 
@@ -931,6 +947,21 @@ class MainWindow(QMainWindow):
         self._refresh_estimate()
         self._refresh_rebuild_button()
 
+    def _source_duration_seconds(self) -> float:
+        """مدة الملف المختار بالثواني.
+
+        دالّة واحدة لأن نسختين افترقتا: ``_refresh_estimate`` كانت
+        تستدعي ``extract_video_facts(probe_raw(path))`` صحيحةً، ونسخة
+        ``_scan_screen_terms`` مرّرت المسار نفسه — فانفجر الزرّ عند
+        أوّل ضغطة بـ``'WindowsPath' object has no attribute 'get'``.
+        ``extract_video_facts`` تأخذ خرج ffprobe لا مسارًا.
+        """
+        if self.video_path is None:
+            raise ValueError("لم يُختَر ملف بعد.")
+        facts = extract_video_facts(probe_raw(self.video_path),
+                                    allow_audio_only=self.audio_only)
+        return float(facts["duration_seconds"])
+
     def _refresh_estimate(self) -> None:
         """يعرض المدة المتوقعة قبل الضغط على «ابدأ».
 
@@ -941,13 +972,11 @@ class MainWindow(QMainWindow):
             self.estimate_label.setText("")
             return
         try:
-            facts = extract_video_facts(probe_raw(self.video_path),
-                                        allow_audio_only=self.audio_only)
+            full_duration = self._source_duration_seconds()
         except Exception:
             self.estimate_label.setText("")
             return
 
-        full_duration = facts["duration_seconds"]
         duration = full_duration
         clip_note = ""
         try:

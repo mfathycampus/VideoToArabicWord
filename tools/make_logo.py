@@ -28,6 +28,12 @@ if TYPE_CHECKING:                       # للتلميحات فقط — لا ا�
 ROOT = Path(__file__).resolve().parents[1]
 TARGET = ROOT / "assets" / "logo.png"
 
+#: نسخة فاتحة للأرضيّات الداكنة. سببها عطلٌ رآه المستخدم: شريط
+#: الواجهة العلوي أرضيّته ``#0B2E2A`` — وهو **لون حبر الشعار نفسه**.
+#: فكان الشعار يُرسم بلون أرضيّته، أي لا يُرى إطلاقًا. تفتيحُه بمرشّح
+#: عند العرض غير ممكن في ``QPixmap`` بلا رسمٍ يدوي، فنُودِع نسخة.
+LIGHT_TARGET = ROOT / "assets" / "logo_light.png"
+
 #: حجم الإخراج. 512 يكفي ترويسة المستند (تُدرَج بعرض 0.95 بوصة) وكل
 #: أحجام أيقونة ويندوز التي يشتقّها ``make_icon.py``.
 SIZE = 512
@@ -38,6 +44,34 @@ SUPERSAMPLE = 4
 
 INK = (0x0B, 0x2E, 0x2A, 255)        # #0B2E2A — حبر أخضر داكن
 ACCENT = (0x0F, 0x76, 0x6E, 255)     # #0F766E — مثلّث التشغيل
+
+#: ألوان النسخة الفاتحة، وهي **مقيسة على الأرضيّة الداكنة** لا مختارة:
+#:     ‏#F7FAF9 على #0B2E2A  →  14.0:1  (يتجاوز AAA)
+#:     ‏#5EEAD4 على #0B2E2A  →   9.9:1  (يتجاوز AAA)
+#: و``#0F766E`` — لون المثلّث الأصلي — يعطي 1.9:1 على الأرضيّة نفسها،
+#: أي أقلّ من نصف الحدّ الأدنى. لذلك لا يكفي قلبُ الحبر وحده.
+ON_INK = (0xF7, 0xFA, 0xF9, 255)     # #F7FAF9
+ACCENT_LIGHT = (0x5E, 0xEA, 0xD4, 255)  # #5EEAD4
+
+# ── هندسة الشكل، بإحداثيات الـviewBox 96×96 ──────────────────────────
+#
+# ثوابت مسمّاة لا أرقامًا داخل النداءات، لأن بينها علاقةً يجب أن تصمد:
+# ‏**Pillow ترسم حدّ الدائرة إلى الداخل**، فنصف القطر الداخلي هو
+# ``RING_RADIUS - stroke`` — ورأس المثلّث يجب أن يبقى دونه. تجاهُل هذه
+# العلاقة هو ما جعل المثلّث يخترق الحلقة فيصير الشكل بقعةً لا حرفًا،
+# وهو نصف شكوى «اللوجو غير واضح». يحرسها ``tests/test_brand_assets.py``.
+RING_CENTRE = (34.0, 36.0)
+RING_RADIUS = 22.0
+
+#: سُمك النسخة الكاملة (مع أسطر النصّ) والنسخة المختصرة. المختصرة
+#: أعرض لأنها تُصغَّر إلى 16–34 بكسل، والرفيع يختفي هناك.
+FULL_STROKE = 9.0
+MARK_STROKE = 11.0
+
+#: مثلّث التشغيل داخل الحلقة — لكل سُمك مثلّثه، لأن السُمك يحدّد
+#: المساحة الداخلية المتاحة.
+FULL_TRIANGLE = ((29.0, 28.0), (45.0, 36.0), (29.0, 44.0))
+TRIANGLE = ((29.0, 29.0), (43.0, 36.0), (29.0, 43.0))
 
 
 def _quad(start, control, end, steps: int = 14):
@@ -58,12 +92,16 @@ def _round_cap(draw, point, radius, colour):
     draw.ellipse([x - radius, y - radius, x + radius, y + radius], fill=colour)
 
 
-def render_mark(size: int = SIZE) -> "Image.Image":
+def render_mark(size: int = SIZE, ink=INK, accent=ACCENT) -> "Image.Image":
     """العلامة وحدها — بلا أسطر النصّ، وبسُمك أعرض.
 
     مقيس لا مُقدَّر: صُغِّر الشعار الكامل إلى 16 و24 بكسل فصارت الأسطر
     ثلاث بقع رمادية لا تُقرأ، واختفى مثلّث التشغيل داخل الحلقة. الحرف
-    وحده يبقى مميّزًا، وهو ما تعرضه ويندوز في شريط المهام.
+    وحده يبقى مميّزًا، وهو ما تعرضه ويندوز في شريط المهام — وهو أيضًا
+    ما يصلح لشريط الواجهة العلوي بارتفاع 34 بكسل، وهو في المدى نفسه.
+
+    ‏``ink`` و``accent`` وسيطان لتُبنى النسخة الفاتحة من **نفس** رسم
+    النسخة الداكنة: نسخةٌ ثانية مرسومة بيدها تفترق عند أوّل تعديل.
     """
     from PIL import Image, ImageDraw
 
@@ -74,17 +112,18 @@ def render_mark(size: int = SIZE) -> "Image.Image":
     def s(value: float) -> float:
         return value * scale
 
-    stroke = s(12)                     # أعرض: الرفيع يختفي عند التصغير
-    draw.ellipse([s(34 - 22), s(36 - 22), s(34 + 22), s(36 + 22)],
-                 outline=INK, width=int(round(stroke)))
+    stroke = s(MARK_STROKE)
+    cx, cy = RING_CENTRE
+    draw.ellipse([s(cx - RING_RADIUS), s(cy - RING_RADIUS),
+                  s(cx + RING_RADIUS), s(cy + RING_RADIUS)],
+                 outline=ink, width=int(round(stroke)))
     tail = ([(s(34), s(58)), (s(34), s(70))]
             + [(s(x), s(y)) for x, y in _quad((34, 70), (34, 78), (44, 78))]
             + [(s(88), s(78))])
-    draw.line(tail, fill=INK, width=int(round(stroke)), joint="curve")
-    _round_cap(draw, (s(34), s(58)), stroke / 2, INK)
-    _round_cap(draw, (s(88), s(78)), stroke / 2, INK)
-    draw.polygon([(s(28), s(27)), (s(48), s(36)), (s(28), s(45))],
-                 fill=ACCENT)
+    draw.line(tail, fill=ink, width=int(round(stroke)), joint="curve")
+    _round_cap(draw, (s(34), s(58)), stroke / 2, ink)
+    _round_cap(draw, (s(88), s(78)), stroke / 2, ink)
+    draw.polygon([(s(x), s(y)) for x, y in TRIANGLE], fill=accent)
     return canvas.resize((size, size), Image.LANCZOS)
 
 
@@ -98,10 +137,12 @@ def render(size: int = SIZE) -> "Image.Image":
     def s(value: float) -> float:
         return value * scale
 
-    stroke = s(9)
+    stroke = s(FULL_STROKE)
+    cx, cy = RING_CENTRE
 
     # حلقة الواو
-    draw.ellipse([s(34 - 22), s(36 - 22), s(34 + 22), s(36 + 22)],
+    draw.ellipse([s(cx - RING_RADIUS), s(cy - RING_RADIUS),
+                  s(cx + RING_RADIUS), s(cy + RING_RADIUS)],
                  outline=INK, width=int(round(stroke)))
 
     # الذَيل: عمودي، ثم زاوية، ثم أفقي إلى سطر النصّ
@@ -113,8 +154,7 @@ def render(size: int = SIZE) -> "Image.Image":
     _round_cap(draw, (s(88), s(78)), stroke / 2, INK)
 
     # مثلّث التشغيل داخل الحلقة
-    draw.polygon([(s(29), s(28)), (s(47), s(36)), (s(29), s(44))],
-                 fill=ACCENT)
+    draw.polygon([(s(x), s(y)) for x, y in FULL_TRIANGLE], fill=ACCENT)
 
     # أسطر النصّ التي يخرج إليها الذيل — شفافية متدرّجة
     # تبدأ عند 66: حافة الحلقة اليمنى عند 60.5 (34+22+نصف السُمك)،
@@ -139,6 +179,13 @@ def main() -> int:
     TARGET.parent.mkdir(parents=True, exist_ok=True)
     render().save(TARGET)
     print(f"كُتب {TARGET.relative_to(ROOT)} بحجم {SIZE}×{SIZE}")
+    # مقصوصة على حدود الرسم لا مربّعة: شريط الواجهة يُصغّرها
+    # **بالارتفاع**، والهوامش الشفّافة في المربّع تأكل نحو ثُلث الارتفاع
+    # فتخرج العلامة أصغر مما يسمح به الشريط. الأيقونة وحدها هي التي
+    # تحتاج مربّعًا (ويندوز يمطّط غيره).
+    light = render_mark(ink=ON_INK, accent=ACCENT_LIGHT)
+    light.crop(light.getbbox()).save(LIGHT_TARGET)
+    print(f"كُتب {LIGHT_TARGET.relative_to(ROOT)} بحجم {SIZE}×{SIZE}")
     return 0
 
 

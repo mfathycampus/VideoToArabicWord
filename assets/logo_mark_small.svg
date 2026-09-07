@@ -1,7 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" width="96" height="96" role="img" aria-label="محوّل المحاضرات">
   <title>محوّل المحاضرات — العلامة المختصرة</title>
-  <!-- بلا أسطر النصّ: تسقط تحت 24 بكسل فتصير ضوضاء -->
-  <circle cx="34" cy="36" r="22" fill="none" stroke="#0B2E2A" stroke-width="12"/>
-  <path d="M34 58 L34 70 Q34 78 44 78 L88 78" fill="none" stroke="#0B2E2A" stroke-width="12" stroke-linecap="round"/>
-  <path d="M28 27 L48 36 L28 45 Z" fill="#0F766E"/>
+  <!-- بلا أسطر النصّ: تسقط تحت 24 بكسل فتصير ضوضاء.
+       ‏16.5 + 11/2 = 22 — الحافة الخارجية نفسها. -->
+  <circle cx="34" cy="36" r="16.5" fill="none" stroke="#0B2E2A" stroke-width="11"/>
+  <path d="M34 58 L34 70 Q34 78 44 78 L88 78" fill="none" stroke="#0B2E2A" stroke-width="11" stroke-linecap="round"/>
+  <path d="M29 29 L43 36 L29 43 Z" fill="#0F766E"/>
 </svg>
