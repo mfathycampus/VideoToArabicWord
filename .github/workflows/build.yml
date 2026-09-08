@@ -71,6 +71,21 @@ jobs:
       # ── المثبِّت: على الوسوم فقط ───────────────────────────────────
       # بناؤه في كل دفعة يضيف دقائق بلا فائدة؛ ما يُسلَّم للمعلّمين هو
       # الإصدار الموسوم.
+      - name: تطابق الوسم مع version.py
+        # وسمٌ لا يطابق ``version.py`` يُنتج مثبِّتًا اسمه 1.5.0 لبرنامجٍ
+        # يعرض 1.4.0 في ترويسته — وهو ما حدث فعلًا في أوّل إصدار موسوم،
+        # ولاحظه المستخدم لا أنا. رقمان لشيء واحد يفترقان بصمت، وهذا
+        # الحارس يُسقط البناء بدل أن يُسلّم التناقض.
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}".TrimStart("v")
+          $app = (python -c "import version; print(version.APP_VERSION)").Trim()
+          if ($tag -ne $app) {
+            throw "الوسم v$tag لا يطابق version.py ($app). حدّث version.py ثم أعد الوسم."
+          }
+          Write-Host "الوسم و version.py متطابقان: $app"
+
       - name: بناء المثبِّت
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
