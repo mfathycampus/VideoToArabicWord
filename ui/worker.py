@@ -101,6 +101,29 @@ class ProviderTestWorker(QObject):
             self.finished.emit()
 
 
+class UpdateCheckWorker(QObject):
+    """فحص وجود إصدار أحدث خارج خيط الواجهة.
+
+    ست ثوانٍ مهلةً داخل معالج الزرّ تجميدٌ للواجهة تمامًا كنداء المزوّد
+    الذي أنتج ``ProviderTestWorker`` — والمهلة تُستهلك كاملةً بالضبط في
+    الحال الذي نتوقّعه: جهازٌ بلا إنترنت.
+    """
+
+    done = pyqtSignal(object)       # utils.updater.UpdateCheck
+    finished = pyqtSignal()
+
+    @pyqtSlot()
+    def run(self) -> None:
+        from utils.updater import check_for_update
+
+        try:
+            self.done.emit(check_for_update())
+        except Exception as exc:            # حزامٌ فوق حمّالة
+            logger.info("فحص التحديث: استثناء غير متوقّع — %s", exc)
+        finally:
+            self.finished.emit()
+
+
 class PipelineWorker(QObject):
     progress = pyqtSignal(float, str)
     completed = pyqtSignal(str)

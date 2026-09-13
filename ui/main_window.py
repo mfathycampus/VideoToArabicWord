@@ -33,14 +33,18 @@ from audio.model_manager import (
     estimate_processing_seconds,
 )
 from config.profiles import PROFILES, profile_choices
-from config.settings import AppConfig
+from config.settings import GREEDY_SPEEDUP, AppConfig
 from core.pipeline import VideoToDocPipeline
 from ui import theme
-from ui.worker import PipelineWorker, ProviderTestWorker, ScreenTermsWorker
+from ui.worker import (
+    PipelineWorker,
+    ProviderTestWorker,
+    ScreenTermsWorker,
+    UpdateCheckWorker,
+)
 from utils.cancellation import CancellationToken
 from utils.error_reporting import format_error_for_user
 from utils.gpu_manager import GPUManager
-from config.settings import GREEDY_SPEEDUP
 from utils.media_probe import extract_video_facts, probe_raw
 from utils.timestamps import humanize_duration
 from version import APP_VERSION
@@ -95,6 +99,8 @@ class MainWindow(QMainWindow):
         self._test_worker: Optional[ProviderTestWorker] = None
         self._terms_thread: Optional[QThread] = None
         self._terms_worker: Optional[ScreenTermsWorker] = None
+        self._update_thread: Optional[QThread] = None
+        self._update_worker: Optional[UpdateCheckWorker] = None
         self._build_ui()
         self._refresh_profile_notice()
         self._warn_if_config_failed_to_load()
@@ -823,7 +829,76 @@ class MainWindow(QMainWindow):
         version = QLabel(APP_VERSION)
         version.setStyleSheet(f"color: {theme.ON_INK_FAINT}; font-size: 11px;")
         row.addWidget(version)
+
+        # زرّ لا فحصٌ تلقائي. الإصلاحات كانت تصل إلى المستخدم الجديد
+        # وحده لأن القديم لا وسيلة له يعلم بها أن إصدارًا صدر — وهذا
+        # أرخص ما يسدّ الفجوة بلا أن يُخلف وعد الواجهة فوقه مباشرة:
+        # «يعمل على جهازك بالكامل — بلا إنترنت» يبقى صحيحًا ما دام
+        # الاتصال لا يقع إلا حين يطلبه المستخدم بيده (ADR-014).
+        self.update_button = QPushButton("تحقّق من التحديثات")
+        self.update_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.update_button.setToolTip(
+            "يسأل GitHub عن أحدث إصدار — ولا يُرسل أي شيء عن جهازك "
+            "أو ملفاتك.")
+        self.update_button.setStyleSheet(
+            f"QPushButton {{ background: transparent; border: none;"
+            f" color: {theme.ON_INK_MUTED}; font-size: 11px;"
+            f" text-decoration: underline; padding: 0 4px; }}"
+            f"QPushButton:hover {{ color: {theme.ON_INK}; }}"
+            f"QPushButton:disabled {{ color: {theme.ON_INK_FAINT}; }}")
+        self.update_button.clicked.connect(self.check_for_updates)
+        row.addWidget(self.update_button)
         return bar
+
+    # ------------------------------------------------------------------
+    def check_for_updates(self) -> None:
+        """يسأل عن أحدث إصدار على خيط خلفي — بطلب المستخدم وحده."""
+        if self._update_thread is not None and self._update_thread.isRunning():
+            return
+
+        self.update_button.setEnabled(False)
+        self.update_button.setText("جارٍ التحقّق…")
+
+        self._update_thread = QThread(self)
+        self._update_worker = UpdateCheckWorker()
+        self._update_worker.moveToThread(self._update_thread)
+        self._update_thread.started.connect(self._update_worker.run)
+        self._update_worker.done.connect(self._on_update_checked)
+        self._update_worker.finished.connect(self._update_thread.quit)
+        self._update_worker.finished.connect(self._update_worker.deleteLater)
+        self._update_thread.finished.connect(self._update_thread.deleteLater)
+        self._update_thread.finished.connect(self._reset_update_button)
+        self._update_thread.start()
+
+    def _on_update_checked(self, result) -> None:
+        """يعرض النتيجة — ولا ينزّل ولا يثبّت شيئًا من تلقائه."""
+        from PyQt6.QtCore import QUrl
+        from PyQt6.QtGui import QDesktopServices
+
+        if not result.available and not result.error:
+            QMessageBox.information(self, "التحديثات", result.message)
+            return
+
+        # الفشل يبقى معه طريق: زرٌّ يفتح الصفحة يدويًّا. رسالةٌ تقول
+        # «تعذّر» بلا بديل تترك المستخدم حيث كان — لا يعرف ولا يستطيع.
+        box = QMessageBox(self)
+        box.setWindowTitle("يوجد إصدار أحدث" if result.available
+                           else "تعذّر التحقّق")
+        box.setIcon(QMessageBox.Icon.Information if result.available
+                    else QMessageBox.Icon.Warning)
+        box.setText(result.message)
+        open_page = box.addButton("افتح صفحة التنزيل",
+                                  QMessageBox.ButtonRole.ActionRole)
+        box.addButton("لاحقًا", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if box.clickedButton() is open_page:
+            QDesktopServices.openUrl(QUrl(result.page_url))
+
+    def _reset_update_button(self) -> None:
+        self._update_thread = None
+        self._update_worker = None
+        self.update_button.setEnabled(True)
+        self.update_button.setText("تحقّق من التحديثات")
 
     def _choose_logo(self) -> None:
         """شعار ترويسة المستند.
@@ -1412,4 +1487,8 @@ class MainWindow(QMainWindow):
         if self._test_thread is not None and self._test_thread.isRunning():
             self._test_thread.quit()
             self._test_thread.wait(3000)
+        if (self._update_thread is not None
+                and self._update_thread.isRunning()):
+            self._update_thread.quit()
+            self._update_thread.wait(3000)
         event.accept()

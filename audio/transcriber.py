@@ -26,8 +26,12 @@ from audio.text_cleaner import (
     clean_segment_text,
     find_repeated_runs,
 )
-from config.schemas import (AudioSegment, TranscriptionCheckpoint,
-                            TranscriptionResult, WordTimestamp)
+from config.schemas import (
+    AudioSegment,
+    TranscriptionCheckpoint,
+    TranscriptionResult,
+    WordTimestamp,
+)
 from config.settings import TranscriptionConfig
 from core.exceptions import ResourceAllocationError
 from utils.cancellation import CancellationToken

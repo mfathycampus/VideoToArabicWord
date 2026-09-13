@@ -17,6 +17,10 @@ on:
 jobs:
   windows:
     runs-on: windows-latest
+    # مطلوبة لإنشاء الإصدار ورفع المثبِّت إليه. بدونها تفشل
+    # الخطوة الأخيرة بـ 403 بعد بناءٍ ناجح كامل.
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -100,3 +104,33 @@ jobs:
         with:
           name: VideoToArabicWord-installer
           path: dist/*-setup.exe
+
+      # ── النشر: المثبِّت إلى صفحة الإصدارات ─────────────────────────
+      # مخرَج Actions ليس تسليمًا. تنزيله يحتاج حساب GitHub وتسجيل
+      # دخول، ويصل أرشيف zip لا مثبِّتًا، وتنتهي صلاحيته بعد 90 يومًا.
+      # فكان كل إصدارٍ يُبنى ولا يصل أحدًا: من يملك 1.4.0 لا رابط له
+      # يعرفه ولا وسيلة ليعلم أن 1.5.0 صدرت أصلًا.
+      #
+      # هنا يصير للإصدار عنوانٌ ثابت — ‏``/releases/latest`` — يُرسَل
+      # للمعلّم كما هو، ويقرؤه فحص التحديث داخل البرنامج
+      # (‏``utils/updater.py``).
+      - name: نشر الإصدار
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*-setup.exe
+          name: ${{ github.ref_name }}
+          # ``make_latest`` هو ما يجعل ``/releases/latest`` يشير إليه.
+          make_latest: true
+          generate_release_notes: true
+          body: |
+            ## التنزيل
+
+            نزّل `VideoToArabicWord-*-setup.exe` من الأسفل وشغّله.
+            لا يحتاج صلاحيات مدير.
+
+            > ويندوز سيعرض تحذير SmartScreen لأن المثبِّت غير موقَّع
+            > رقميًّا بعد. اختر **مزيد من المعلومات ← تشغيل على أي حال**.
+
+            تفاصيل ما تغيّر في
+            [`CHANGELOG.md`](https://github.com/mfathycampus/VideoToArabicWord/blob/main/CHANGELOG.md).
