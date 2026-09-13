@@ -4,7 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "video-to-arabic-word"
-version = "1.4.0"
+# الرقم لا يُكتب هنا. مصدره الوحيد ``version.py`` — وكتابته مرّتين
+# هو بالضبط العطل الذي أنتج إصدار 1.5.0: وسمٌ يقول 1.5.0 وبرنامجٌ
+# يعرض 1.4.0. هذا الملف كان التعريف الثالث، وقد افترق فعلًا.
+dynamic = ["version"]
 description = "تطبيق سطح مكتب محلي يحوّل فيديو تعليميًا إلى مستند Word عربي منظّم"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -24,8 +27,14 @@ video-to-word = "tools.run_pipeline:main"
 video-to-word-doctor = "tools.doctor:main"
 
 [tool.setuptools]
+# ``version`` وحدةٌ في الجذر لا حزمة — ولولا إدراجها هنا لما وجدها
+# ``attr:`` أدناه ولا شُحنت مع التوزيعة.
+py-modules = ["version"]
 packages = ["ai", "audio", "config", "core", "document", "tools", "ui",
             "utils", "video"]
+
+[tool.setuptools.dynamic]
+version = { attr = "version.APP_VERSION" }
 
 # ---------------------------------------------------------------------
 [tool.pytest.ini_options]

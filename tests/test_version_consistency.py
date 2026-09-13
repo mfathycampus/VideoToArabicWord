@@ -62,3 +62,35 @@ def test_the_tagged_build_checks_the_tag_against_version_py():
     # وقبل بناء المثبِّت لا بعده
     assert (workflow.index("version.APP_VERSION")
             < workflow.index("بناء المثبِّت"))
+
+
+# ── التعريف الثالث: pyproject.toml ────────────────────────────────────
+# بعد إصلاح الوسم والسجلّ بقي ملفٌّ ثالث يحمل الرقم بيده: ``pyproject``
+# كان يقول ``1.4.0`` والبرنامج ``1.5.0``. الحارسان السابقان لم يمسّاه
+# لأن كلًّا منهما وُضع لموضع بعينه لا لقاعدة عامّة. والقاعدة هي: رقم
+# الإصدار يُقرأ من ``version.py`` ولا يُكتب في مكان ثانٍ أبدًا.
+
+_PYPROJECT = ROOT / "pyproject.toml"
+_STATIC_VERSION = re.compile(r"^version\s*=\s*[\"'](\d+\.\d+\.\d+)", re.M)
+
+
+def test_pyproject_does_not_write_the_number_by_hand():
+    text = _PYPROJECT.read_text(encoding="utf-8")
+    hardcoded = _STATIC_VERSION.findall(text)
+    assert not hardcoded, (
+        f"pyproject.toml يكتب الرقم بيده ({hardcoded}) — "
+        "استعمل dynamic + attr على version.APP_VERSION")
+
+
+def test_pyproject_takes_its_version_from_version_py():
+    text = _PYPROJECT.read_text(encoding="utf-8")
+    assert 'dynamic = ["version"]' in text, (
+        "‏pyproject لا يعلن الإصدار ديناميكيًّا")
+    assert "version.APP_VERSION" in text, (
+        "‏pyproject لا يشتقّ الإصدار من version.APP_VERSION")
+
+
+def test_the_version_module_ships_with_the_distribution():
+    """‏``attr:`` لا يجد وحدةً غير مُدرَجة — والتوزيعة تخرج بلا رقم."""
+    text = _PYPROJECT.read_text(encoding="utf-8")
+    assert 'py-modules = ["version"]' in text
