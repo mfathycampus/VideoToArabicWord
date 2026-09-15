@@ -266,6 +266,38 @@ def check_write_access(path: Path | None = None) -> CheckResult:
 VAD_MODEL_NAME = "silero_vad_v6.onnx"
 
 
+def faster_whisper_package_dir() -> Path | None:
+    """مجلّد المكتبة — **بلا استيرادها**.
+
+    ``import faster_whisper`` يجرّ ctranslate2 وav وtokenizers معه، وهي
+    ثقيلة وتُحمّل بيئة OpenMP في العملية. والمشروع يؤجّل هذا الاستيراد
+    عمدًا إلى لحظة بناء المفرِّغ (``VideoToDocPipeline._build_transcriber``)
+    لا إلى الإقلاع — فحصٌ يستوردها في ``diagnose`` كان سيُبطئ فتح
+    البرنامج ويُبطل ذلك التأجيل كلّه.
+
+    ‏``find_spec`` يسأل المُحمِّلات عن الموضع ولا ينفّذ الوحدة — وهو ما
+    يفعله ``check_imports`` أصلًا للسبب نفسه.
+
+    و``submodule_search_locations`` أولًا لأنه ما يضبطه مُحمِّل
+    PyInstaller للحزم المجمّدة ضبطًا صحيحًا؛ و``origin`` بديلٌ عند
+    غيابه. والاختبار يتحقّق من أن هذا الاشتقاق يطابق ما تقوله المكتبة
+    عن نفسها (``get_assets_path``) — فالحيلة التي لا تُقاس حيلةٌ تكذب.
+    """
+    try:
+        spec = importlib.util.find_spec("faster_whisper")
+    except Exception:
+        return None
+    if spec is None:
+        return None
+
+    locations = list(getattr(spec, "submodule_search_locations", None) or [])
+    if locations:
+        return Path(locations[0])
+    if spec.origin:
+        return Path(spec.origin).parent
+    return None
+
+
 def check_vad_asset() -> CheckResult:
     """نموذج VAD المشحون مع faster-whisper — موجودٌ حيث تفتحه المكتبة؟
 
@@ -290,14 +322,12 @@ def check_vad_asset() -> CheckResult:
     و``--selftest`` الذي يشغّله ``build_smoke`` على كل بناء (فيسقط
     البناء يوم يقع العطل لا يوم يبلّغ عنه مستخدم).
     """
-    try:
-        from faster_whisper.utils import get_assets_path
-    except Exception as exc:
+    package = faster_whisper_package_dir()
+    if package is None:
         # غياب المكتبة نفسها يبلّغ عنه ``check_imports`` — لا نكرّره
-        return CheckResult("نموذج VAD", True,
-                           f"تعذّر تحديد مسار الموارد ({exc})")
+        return CheckResult("نموذج VAD", True, "المكتبة غير مثبّتة")
 
-    asset = Path(get_assets_path()) / VAD_MODEL_NAME
+    asset = package / "assets" / VAD_MODEL_NAME
     if asset.is_file():
         return CheckResult("نموذج VAD", True, str(asset))
 
