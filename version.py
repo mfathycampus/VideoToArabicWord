@@ -1,6 +1,6 @@
 """Single source of truth for application and persisted schema versions."""
 
-APP_VERSION = "1.6.0"
+APP_VERSION = "1.6.1"
 CONFIG_SCHEMA_VERSION = "1.2"
 JOB_SCHEMA_VERSION = "1.4"
 ARTIFACT_SCHEMA_VERSION = "1.3"
