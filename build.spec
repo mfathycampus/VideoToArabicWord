@@ -21,7 +21,9 @@
 """
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_dynamic_libs, collect_submodules
+from PyInstaller.utils.hooks import (collect_data_files,
+                                     collect_dynamic_libs,
+                                     collect_submodules)
 
 PROJECT = Path(SPECPATH)
 
@@ -50,6 +52,20 @@ for name in ("logo.png", "logo_light.png"):
 # أول ما يراه المستخدم في قائمة ابدأ. تُولَّد بـ ``tools/make_icon.py``
 # ومستبعَدة من المستودع (مُشتقّة من الشعار).
 icon = PROJECT / "assets" / "logo.ico"
+
+# نموذج VAD الذي يشحنه faster-whisper ملفُّ بيانات لا وحدةَ بايثون،
+# فلا يراه محلّل الاستيراد إطلاقًا. ``collect_submodules`` أدناه يجلب
+# الوحدات وحدها، فخرجت الحزمة بـ``faster_whisper`` كاملًا بلا
+# ``assets/silero_vad_v6.onnx`` — و``vad_filter`` مفعّل افتراضيًا،
+# فكان **كل** تفريغ في الحزمة يسقط بـ:
+#
+#     [ONNXRuntimeError] : 3 : NO_SUCHFILE : ... silero_vad_v6.onnx
+#     failed. File doesn't exist
+#
+# بعد أن ينتظر المعلّم استخراج الصوت. والتعليق تحت هذا السطر كان يقول
+# بالحرف إن faster-whisper «يحمّل موارد بالاسم وقت التشغيل» — عرفنا
+# القاعدة وشحنّا الوحدات وحدها.
+datas += collect_data_files("faster_whisper")
 
 # tokenizers الخاص بـ faster-whisper يحمّل موارد بالاسم وقت التشغيل
 hiddenimports = collect_submodules("faster_whisper") + [

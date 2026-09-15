@@ -35,6 +35,14 @@ SELFTEST_TIMEOUT = 180
 EXE_STEM = "VideoToArabicWord"
 BUNDLED_BINARIES = ("ffmpeg", "ffprobe")
 
+#: ملفّات بيانات تشحنها حزم طرف ثالث ولا يراها محلّل الاستيراد.
+#: ``faster_whisper/assets/silero_vad_v6.onnx`` سقط من الحزمة فعلًا،
+#: فكان كل تفريغ ينهار بـNO_SUCHFILE بعد استخراج الصوت. مكرَّر هنا لا
+#: مستورَدًا لأن هذا الملفّ يُشغَّل كنصٍّ مستقلّ قبل أن يصير جذر
+#: المشروع على ``sys.path``؛ و``tests/test_vad_asset.py`` يحرس تطابقه
+#: مع ``utils.deps.VAD_MODEL_NAME``.
+BUNDLED_DATA_FILES = ("faster_whisper/assets/silero_vad_v6.onnx",)
+
 
 def _exe_name() -> str:
     return f"{EXE_STEM}.exe" if sys.platform == "win32" else EXE_STEM
@@ -69,6 +77,13 @@ def validate_layout(root: Path) -> list[str]:
 
     if not (payload / "assets" / "logo.png").is_file():
         errors.append(f"assets/logo.png مفقود من {payload}")
+
+    for relative in BUNDLED_DATA_FILES:
+        if not (payload / Path(relative)).is_file():
+            errors.append(
+                f"ملفّ بيانات مفقود من الحزمة: {relative} — "
+                "المكتبة موجودة ونموذجها ليس معها، فيسقط التفريغ "
+                "بـNO_SUCHFILE عند أول تشغيل")
 
     return errors
 

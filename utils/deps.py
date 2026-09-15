@@ -259,12 +259,62 @@ def check_write_access(path: Path | None = None) -> CheckResult:
     return CheckResult("صلاحية الكتابة", True, str(target))
 
 
+#: اسم ملفّ نموذج VAD كما يفتحه ``faster_whisper.vad.get_vad_model``.
+#: مثبَّت هنا لأن الفحص لا بدّ أن يعرف الاسم ليتحقّق منه — ويحرسه
+#: ``tests/test_vad_asset.py`` بقراءة مصدر المكتبة نفسها، فيسقط يوم
+#: تُعيد ترقيةٌ تسميةَ الملف بدل أن يمرّ الفحص على غياب.
+VAD_MODEL_NAME = "silero_vad_v6.onnx"
+
+
+def check_vad_asset() -> CheckResult:
+    """نموذج VAD المشحون مع faster-whisper — موجودٌ حيث تفتحه المكتبة؟
+
+    سبب وجود هذا الفحص عطلٌ في الحزمة المغلَّفة رآه المستخدم ولم يره أي
+    مقياس عندنا:
+
+        [ONNXRuntimeError] : 3 : NO_SUCHFILE : ...
+        faster_whisper\\assets\\silero_vad_v6.onnx failed. File doesn't exist
+
+    ``build.spec`` كان يجمع **وحدات** faster-whisper ولا يجمع ملفّات
+    بياناتها، فخرجت الحزمة بالمكتبة كاملةً بلا نموذجها. و``vad_filter``
+    مفعّل افتراضيًّا، فكان كل تفريغ في الحزمة يسقط — بعد أن ينتظر
+    المعلّم استخراج الصوت.
+
+    ولماذا لم يمسكه شيء: ``check_imports`` يسأل ``find_spec`` فيجد
+    الوحدة ويقول «موجودة». وهو الدرس نفسه الذي كتبناه عن الملفّ
+    التنفيذي في ``tools/build_smoke.py`` — **الوجود لا يعني العمل** —
+    ولم نطبّقه على المكتبات.
+
+    وموضعه هنا لا في مكانٍ آخر لأن ``diagnose`` يُستدعى من موضعين:
+    إقلاع التطبيق (فيعرف المعلّم في الثانية الأولى لا بعد عشرين دقيقة)،
+    و``--selftest`` الذي يشغّله ``build_smoke`` على كل بناء (فيسقط
+    البناء يوم يقع العطل لا يوم يبلّغ عنه مستخدم).
+    """
+    try:
+        from faster_whisper.utils import get_assets_path
+    except Exception as exc:
+        # غياب المكتبة نفسها يبلّغ عنه ``check_imports`` — لا نكرّره
+        return CheckResult("نموذج VAD", True,
+                           f"تعذّر تحديد مسار الموارد ({exc})")
+
+    asset = Path(get_assets_path()) / VAD_MODEL_NAME
+    if asset.is_file():
+        return CheckResult("نموذج VAD", True, str(asset))
+
+    return CheckResult(
+        "نموذج VAD", False,
+        f"مفقود: {asset} — التفريغ الصوتي لن يعمل إطلاقًا",
+        _reinstall_hint() if is_frozen()
+        else f"{_pip_command()} install --force-reinstall faster-whisper")
+
+
 def diagnose() -> Diagnosis:
     diagnosis = Diagnosis()
     diagnosis.results.append(check_python_version())
     diagnosis.results.append(check_environment_isolation())
     diagnosis.results.append(check_docx_package())
     diagnosis.results.extend(r for r in check_imports() if r.name != "python-docx")
+    diagnosis.results.append(check_vad_asset())
     diagnosis.results.extend(check_binaries())
     diagnosis.results.append(check_ocr_binary())
     diagnosis.results.append(check_disk_space())

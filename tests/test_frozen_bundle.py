@@ -187,6 +187,14 @@ def _make_bundle(root: Path, *, complete: bool = True) -> Path:
     if complete:
         for name in ("ffmpeg", "ffprobe"):
             (payload / bundle.binary_name(name)).write_bytes(b"\x7fELF")
+        # ملفّات بيانات حزم الطرف الثالث جزءٌ من «الحزمة الكاملة» —
+        # غيابُ نموذج VAD وحده كان يُسقط كل تفريغ في حزمة تبدو سليمة.
+        from tools import build_smoke
+
+        for relative in build_smoke.BUNDLED_DATA_FILES:
+            target = payload / Path(relative)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"onnx")
     return root
 
 
