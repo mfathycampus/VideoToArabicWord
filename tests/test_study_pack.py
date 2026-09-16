@@ -385,3 +385,57 @@ def test_rebuild_reads_the_saved_pack_without_calling_any_model(tmp_path):
 
     path = export_study(ctx)
     assert path is not None and "أي البروتوكولات" in path.read_text(encoding="utf-8")
+
+
+# ── مزوّد الصياغة بديلًا حين يتعذّر مزوّد الحزمة ─────────────────────────
+def _study_pipeline(monkeypatch, available=True, rewrite_enabled=True):
+    pytest.importorskip("cv2")
+    import ai.providers as providers
+    from config.settings import AppConfig
+    from core.pipeline import VideoToDocPipeline
+
+    built = []
+
+    class FakeProvider:
+        def __init__(self, name):
+            self.name = name
+
+        def is_available(self):
+            return self.name == "anthropic" and available
+
+    def fake_build(name, **kwargs):
+        built.append(name)
+        return FakeProvider(name)
+
+    monkeypatch.setattr(providers, "build_provider", fake_build)
+    config = AppConfig()
+    config.study.provider = "ollama"
+    config.rewrite.enabled = rewrite_enabled
+    config.rewrite.provider = "anthropic"
+    pipeline = VideoToDocPipeline.__new__(VideoToDocPipeline)
+    pipeline.config = config
+    return pipeline, built
+
+
+def test_study_pack_borrows_the_available_rewrite_provider(monkeypatch):
+    """رُصد: «ollama غير متاح» ⇒ 0 أسئلة، و Claude يعمل في المهمة نفسها."""
+    pipeline, built = _study_pipeline(monkeypatch)
+    provider = pipeline._rewrite_provider_for_study(pipeline.config.study)
+    assert provider is not None and provider.name == "anthropic"
+
+
+def test_no_new_egress_when_rewrite_is_off(monkeypatch):
+    pipeline, built = _study_pipeline(monkeypatch, rewrite_enabled=False)
+    assert pipeline._rewrite_provider_for_study(pipeline.config.study) is None
+    assert built == []
+
+
+def test_fallback_can_be_disabled(monkeypatch):
+    pipeline, _ = _study_pipeline(monkeypatch)
+    pipeline.config.study.use_rewrite_provider_as_fallback = False
+    assert pipeline._rewrite_provider_for_study(pipeline.config.study) is None
+
+
+def test_unavailable_rewrite_provider_is_not_used(monkeypatch):
+    pipeline, _ = _study_pipeline(monkeypatch, available=False)
+    assert pipeline._rewrite_provider_for_study(pipeline.config.study) is None

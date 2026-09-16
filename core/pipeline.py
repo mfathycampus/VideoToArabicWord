@@ -787,6 +787,34 @@ class VideoToDocPipeline:
         return (f"ai:{settings.provider}"
                 + (f"/{settings.model}" if settings.model else ""))
 
+    def _rewrite_provider_for_study(self, study_settings):
+        """مزوّد إعادة الصياغة بديلًا للحزمة التعليمية — إن كان متاحًا.
+
+        لا يُستعمل إلا إن فُعّلت الصياغة في هذه المهمة: المستخدم رضي
+        بإرسال النص إلى هذا المزوّد أصلًا، فلا يُفتح بابُ خروجٍ جديد.
+        """
+        rewrite = self.config.rewrite
+        if not (getattr(study_settings, "use_rewrite_provider_as_fallback", True)
+                and rewrite.enabled and rewrite.provider
+                and rewrite.provider != study_settings.provider):
+            return None
+        try:
+            from ai.providers import build_provider
+
+            provider = build_provider(
+                rewrite.provider, model=rewrite.model,
+                base_url=rewrite.base_url, api_key_env=rewrite.api_key_env,
+                api_key=rewrite.api_key, workspace_id=rewrite.workspace_id)
+            if not provider.is_available():
+                return None
+        except Exception as exc:
+            logger.debug(f"مزوّد الصياغة غير صالح بديلًا للحزمة: {exc}")
+            return None
+        logger.info(
+            f"مزوّد الحزمة التعليمية «{study_settings.provider}» غير متاح — "
+            f"تُبنى الحزمة بمزوّد الصياغة «{rewrite.provider}».")
+        return provider
+
     def _generate_study_pack(self, plan, transcript, keyframes, emit):
         """يختار المسار: نموذج لغوي، أو المسار الإحصائي عند تعذّره."""
         from ai.providers import build_provider
@@ -811,6 +839,14 @@ class VideoToDocPipeline:
         except Exception as exc:
             logger.warning(f"تعذّر تجهيز مزوّد الحزمة التعليمية: {exc}")
             available = False
+
+        if not available:
+            substitute = self._rewrite_provider_for_study(settings)
+            if substitute is not None:
+                provider = substitute
+                available = True
+                config.provider = self.config.rewrite.provider
+                config.model = self.config.rewrite.model
 
         if not available:
             if not settings.fallback_without_model:
