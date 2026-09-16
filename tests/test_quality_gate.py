@@ -12,7 +12,8 @@ from __future__ import annotations
 
 import pytest
 
-from config.schemas import DocumentBlock, DocumentPlan, DocumentSection
+from config.schemas import (DocumentBlock, DocumentPlan, DocumentSection,
+                            KeyframeMetadata)
 from document.quality import assert_quality_gate, evaluate
 
 SENTENCE = "هذه جملة كاملة عن الموضوع المطروح في المحاضرة وتنتهي بنقطة. " * 4
@@ -325,3 +326,31 @@ def test_evaluate_without_segments_keeps_old_behaviour():
     plan = _plan([DocumentSection(title="فصل الخوارزميات",
                                   blocks=[_para(SENTENCE * 3, [1])])])
     assert "transcript_coverage_pct" not in evaluate(plan).diagnostics
+
+
+def test_invented_numbers_and_names_are_flagged():
+    from document.quality import unsupported_tokens
+
+    plan = _plan([DocumentSection(title="إعداد Moodle", blocks=[
+        _para("يحتوي الجدول على 16 حصة خلال 60 يومًا في نظام Moodle.", [1])])])
+    segments = [_Seg(0, 5, "عندي 16 حصة في الجدول")]
+    frames = [KeyframeMetadata(image_id=1, timestamp=1.0, filename="1.jpg",
+                               scene_id=1, change_score=0.1, width=10,
+                               height=10, selection_reason="stable_frame",
+                               ocr_text="Lesson Planner")]
+    found = unsupported_tokens(plan, segments, frames)
+    assert found["numbers"] == ["60"]
+    assert found["latin"] == ["Moodle"]
+
+
+def test_screen_text_and_arabic_digits_count_as_a_source():
+    from document.quality import unsupported_tokens
+
+    plan = _plan([DocumentSection(title="Lesson Planner", blocks=[
+        _para("يظهر ١٦ معلمًا في Lesson Planner.", [1])])])
+    segments = [_Seg(0, 5, "عندي 16 معلم")]
+    frames = [KeyframeMetadata(image_id=1, timestamp=1.0, filename="1.jpg",
+                               scene_id=1, change_score=0.1, width=10,
+                               height=10, selection_reason="stable_frame",
+                               ocr_text="Lesson Planner")]
+    assert unsupported_tokens(plan, segments, frames) == {"latin": [], "numbers": []}

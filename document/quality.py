@@ -376,6 +376,43 @@ def seconds_label(seconds: float) -> str:
     return f"{seconds // 60}:{seconds % 60:02d}"
 
 
+# ── الوفاء للمصدر: أرقام وأسماء لاتينية لا أصل لها ─────────────────────
+
+_LATIN_TOKEN = re.compile(r"[A-Za-z][A-Za-z0-9&+\-]{2,}")
+_NUMBER_TOKEN = re.compile(r"[0-9٠-٩]+(?:[.,][0-9٠-٩]+)?")
+_ARABIC_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
+
+
+def unsupported_tokens(plan: DocumentPlan, segments: Iterable,
+                       keyframes: Iterable[KeyframeMetadata] = ()
+                       ) -> dict[str, list[str]]:
+    """أرقامٌ وكلماتٌ لاتينية في المستند لا ترد في التفريغ ولا نصّ الشاشة.
+
+    فحصٌ ضيّق عمدًا: إعادة الصياغة تغيّر الكلمات العربية بحقّ، فمقارنتها
+    تُطلق إنذارًا على كل فقرة. أمّا الرقم واسم النظام أو الزرّ فلا
+    يُعاد صوغهما — ظهورُ واحدٍ منهما بلا أصل علامةُ اختلاق.
+    """
+    source = " ".join((s.text_clean or s.text_raw or "") for s in segments)
+    source += " " + " ".join(k.ocr_text or "" for k in keyframes)
+    source += " " + (plan.title or "")
+    source_latin = {t.lower() for t in _LATIN_TOKEN.findall(source)}
+    source_numbers = {n.translate(_ARABIC_DIGITS)
+                      for n in _NUMBER_TOKEN.findall(source)}
+
+    written: list[str] = []
+    for section in plan.sections:
+        written.append(section.title or "")
+        for block in section.blocks:
+            written.append(_text_of(block) if block.image_id is None else "")
+    text = " ".join(written)
+
+    latin = sorted({t for t in _LATIN_TOKEN.findall(text)
+                    if t.lower() not in source_latin})
+    numbers = sorted({n for n in _NUMBER_TOKEN.findall(text)
+                      if n.translate(_ARABIC_DIGITS) not in source_numbers})
+    return {"latin": latin, "numbers": numbers}
+
+
 # ── التقييم ──────────────────────────────────────────────────────────
 
 def evaluate(plan: DocumentPlan,
@@ -442,11 +479,23 @@ def evaluate(plan: DocumentPlan,
         if metric.applicable and metric.value < 50.0:
             warnings.append(f"{metric.name}: {metric.value:.0f}% — {metric.detail}")
 
+    keyframes = list(keyframes)
+    keyframes_for_check = keyframes
     completeness_info: dict = {}
     if segments is not None:
+        segments_list = list(segments)
         completeness_info, completeness_warnings = completeness(
-            segments, duration_seconds, start_offset)
+            segments_list, duration_seconds, start_offset)
         warnings.extend(completeness_warnings)
+        if plan.generated_by.startswith("ai:"):
+            unsupported = unsupported_tokens(plan, list(segments_list),
+                                             keyframes_for_check)
+            completeness_info["unsupported_tokens"] = unsupported
+            flagged = unsupported["latin"] + unsupported["numbers"]
+            if flagged:
+                warnings.append(
+                    "unsupported_tokens: في المستند ما لا يرد في التفريغ ولا "
+                    "الشاشة — تحقّق منه: " + "، ".join(flagged[:8]))
 
     keyframe_list = list(keyframes)
     diagnostics = {
