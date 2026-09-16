@@ -107,16 +107,32 @@ def test_every_figure_appears_exactly_once(server, monkeypatch):
     assert sorted(ids) == list(range(1, 7))
 
 
-def test_broken_model_output_falls_back_to_raw_text(server, monkeypatch):
-    """رد غير صالح يجب ألا يُسقط المحتوى — يُستخدم النص الخام."""
+def test_broken_model_output_refuses_to_pose_as_a_rewrite(server, monkeypatch):
+    """ردٌّ غير صالح في **كل** الدفعات يرفع استثناءً بسببه.
+
+    كان هذا الاختبار يؤكّد العكس — أن الخطة تخرج موسومة ``ai:`` ومحتواها
+    خام — وهو ما ثبت أنه عطل لا ميزة: خرج مستندٌ حقيقي بغلافٍ مكتوب
+    عليه «صياغة النص: ai:anthropic/claude-sonnet-5» ونصُّه خامٌ كلّه.
+
+    وضمانة «لا يُسقط المحتوى» باقية، لكن موضعها الصحيح هو الـ pipeline:
+    يلتقط الاستثناء ويبني الخطة بالمُخطِّط الزمنيّ — بلا ادّعاء.
+    """
+    from ai.providers import RewriteUnavailableError
+    from document.planner import TimelinePlanner
+
     Handler.mode = "broken"
     try:
         transcript = make_transcript(12)
-        plan = rewriter(server, monkeypatch).build_plan(
-            transcript, [], "احتياطي")
+        with pytest.raises(RewriteUnavailableError) as caught:
+            rewriter(server, monkeypatch).build_plan(transcript, [], "احتياطي")
+        assert "فشلت كل دفعات" in str(caught.value)
+
+        # ومسار السقوط يحفظ النصّ كاملًا — وهو ما كان يُفحص هنا أصلًا
+        plan = TimelinePlanner().build(transcript, [], "احتياطي")
         assert_lossless(plan)
         body = " ".join(b.text for s in plan.sections for b in s.blocks)
         assert "الجملة رقم 1" in body, "ضاع النص عند فشل الصياغة"
+        assert plan.generated_by == "timeline"
     finally:
         Handler.mode = "ok"
 

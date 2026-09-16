@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import json
 import re
-import time
 from dataclasses import dataclass
 from typing import Callable, List, Optional
 
@@ -35,6 +34,18 @@ from config.schemas import (
 )
 from utils.logger import logger
 from utils.timestamps import seconds_to_display, timestamp_to_seconds
+
+
+def _figure_caption(keyframe):
+    """يعيد استعمال تعليق المُخطِّط الزمنيّ المبنيّ على نصّ الشاشة.
+
+    الاستيراد داخل الدالّة لا في رأس الملفّ: ``document.planner`` يستورد
+    ``document.titles`` الذي يستورد… والحلقة تقع عند الإقلاع لا عند
+    الاستعمال.
+    """
+    from document.planner import _figure_caption as build
+
+    return build(keyframe)
 
 SYSTEM_PROMPT = """أنت محرّر عربي محترف. مهمتك تحويل تفريغ صوتي خام إلى نص وثيقة مكتوبة.
 
@@ -67,6 +78,20 @@ OUTLINE_PROMPT = """أنت محرّر عربي محترف. أمامك عناوي
 لا تضف معلومات غير موجودة. 3-6 نقاط رئيسية."""
 
 _JSON_BLOCK = re.compile(r"\{.*\}", re.S)
+
+
+#: عبارات تدلّ على أن النموذج لم يجد ما يعنونه. عنوانٌ كهذا على غلاف
+#: مستندٍ يُسلَّم لمعلّم أسوأ من اسم الملفّ الخام بكثير.
+_DEGENERATE_TITLE_HINTS = (
+    "بدون محتوى", "بلا محتوى", "لا يوجد محتوى", "غير محدد", "غير واضح",
+    "فارغ", "بدون عنوان", "بلا عنوان", "مقطع زمني", "no content",
+    "untitled", "unknown",
+)
+
+
+def _is_degenerate_title(title: str) -> bool:
+    folded = " ".join(title.split()).lower()
+    return any(hint in folded for hint in _DEGENERATE_TITLE_HINTS)
 
 
 @dataclass
@@ -111,34 +136,35 @@ class TranscriptRewriter:
     def __init__(self, provider: LLMProvider, config: RewriteConfig) -> None:
         self.provider = provider
         self.config = config
+        #: سبب آخر فشل دفعة — يُرفَع مع الاستثناء النهائي ليصل للمستخدم.
+        self._last_failure: str = ""
 
     def _complete_with_retry(self, system_prompt: str, user_prompt: str,
                              max_tokens: int = 2048) -> str:
-        """نداء المزوّد مع إعادة محاولة للأخطاء العابرة."""
-        last: Optional[BaseException] = None
-        for attempt in range(1, self.MAX_ATTEMPTS + 1):
-            try:
-                return self.provider.complete(
-                    system_prompt, user_prompt, max_tokens=max_tokens,
-                    timeout=self.config.timeout_seconds)
-            except RewriteUnavailableError as exc:
-                last = exc
-                if not getattr(exc, "retryable", False):
-                    raise
-                if attempt == self.MAX_ATTEMPTS:
-                    break
-                delay = self.BACKOFF_SECONDS * (2 ** (attempt - 1))
-                logger.warning(
-                    f"خطأ عابر من المزوّد ({exc}) — "
-                    f"إعادة المحاولة {attempt}/{self.MAX_ATTEMPTS - 1} "
-                    f"بعد {delay:.0f} ثانية.")
-                time.sleep(delay)
-        raise last  # type: ignore[misc]
+        """نداء المزوّد مع إعادة محاولة للأخطاء العابرة.
+
+        المنطق نفسه انتقل إلى ``ai.providers.complete_with_retry`` حين
+        احتاجته الحزمة التعليمية أيضًا. الغلاف باقٍ هنا لأن ``MAX_ATTEMPTS``
+        و``BACKOFF_SECONDS`` صفتا صنفٍ تستبدلهما الاختبارات.
+        """
+        from ai import providers
+
+        attempts, backoff = providers.MAX_ATTEMPTS, providers.BACKOFF_SECONDS
+        providers.MAX_ATTEMPTS = self.MAX_ATTEMPTS
+        providers.BACKOFF_SECONDS = self.BACKOFF_SECONDS
+        try:
+            return providers.complete_with_retry(
+                self.provider, system_prompt, user_prompt,
+                max_tokens=max_tokens, timeout=self.config.timeout_seconds)
+        finally:
+            providers.MAX_ATTEMPTS, providers.BACKOFF_SECONDS = attempts, backoff
 
     # ------------------------------------------------------------------
     # عدد الأقسام المستهدف — فهرس مفيد بلا تفتيت
     TARGET_SECTIONS = 5
     MIN_BATCH_CHARS = 700
+    #: فوق هذه المدّة يُعدّ التسجيل «محاضرة» تستحقّ فهرسًا مهما شحّ نصّها.
+    SPARSE_SPAN_SECONDS = 180.0
 
     def _effective_batch_chars(self, segments: List[AudioSegment]) -> int:
         """حجم الدفعة مشتقّ من طول النص.
@@ -152,7 +178,24 @@ class TranscriptRewriter:
             return self.config.batch_chars
         # الإعداد المُصرّح به يبقى سقفًا دائمًا (تحكّم المستخدم في الكلفة)،
         # والاشتقاق التلقائي يخفضه فقط — ولا ينزل تحت الحد الأدنى المفيد.
-        target = max(self.MIN_BATCH_CHARS, total / self.TARGET_SECTIONS)
+        # الحدّ الأدنى يُخفَّض لتفريغٍ **شحيحٍ على مدى طويل** وحده.
+        #
+        # رُصد على تسجيل حقيقي مدّته 5:12 خرج بـ597 حرفًا فقط (كلامٌ
+        # متقطّع وصوتٌ هادئ): 597 < 700 فصار دفعةً واحدة — أي **قسمًا
+        # وحيدًا لمحاضرة كاملة**، بينما المُخطِّط الزمنيّ على البيانات
+        # نفسها يُخرج خمسة أقسام.
+        #
+        # والشرط على **المدّة** لا على عدد الحروف وحده، وهذا هو الفرق
+        # الصحيح: مقطعٌ من ثلاثين ثانية فيه ثلاثمئة حرف قسمٌ واحد بحقّ،
+        # ومحاضرةٌ من خمس دقائق فيه ثلاثمئة حرف مقرّرٌ متقطّع يستحقّ
+        # فهرسًا. الحدّ الأدنى وُضع ليمنع دفعات تافهة لا ليبتلع محاضرة.
+        span = 0.0
+        if segments:
+            span = max(0.0, segments[-1].end - segments[0].start)
+        floor = float(self.MIN_BATCH_CHARS)
+        if span >= self.SPARSE_SPAN_SECONDS and total < self.MIN_BATCH_CHARS * 2:
+            floor = min(floor, max(150.0, total / 3.0))
+        target = max(floor, total / self.TARGET_SECTIONS)
         return int(min(self.config.batch_chars, target))
 
     def _batch(self, segments: List[AudioSegment]) -> List[List[AudioSegment]]:
@@ -200,6 +243,9 @@ class TranscriptRewriter:
             logger.warning(f"فشل إعادة صياغة دفعة {start}: {exc}")
             parsed = None
             failed = True
+            # السبب يُحفظ ليصل إلى المستخدم: تحذيرٌ يقول «تعذّرت» بلا
+            # سبب لا يُمكّنه من فعل شيء — مفتاح؟ شبكة؟ نموذج؟
+            self._last_failure = f"{type(exc).__name__}: {exc}"
 
         paragraphs = []
         if parsed:
@@ -207,10 +253,20 @@ class TranscriptRewriter:
                           if isinstance(p, str) and p.strip()]
 
         if not paragraphs:
-            # لا نُسقط المحتوى أبدًا: نرجع إلى النص الخام لهذه الدفعة
-            logger.warning(f"دفعة {start}: تعذّرت الصياغة — استُخدم النص الخام.")
+            # لا نُسقط المحتوى أبدًا: نرجع إلى النص الخام لهذه الدفعة.
+            #
+            # **و``failed`` تُرفع هنا أيضًا** — وهذا إصلاح عطلٍ رُصد على
+            # مخرج حقيقي: كانت تُرفع عند الاستثناء وحده، فردٌّ سليم
+            # الشكل وفارغ المحتوى (``{}`` أو ``paragraphs: []``) يُعدّ
+            # نجاحًا. وبدفعةٍ واحدة فاشلة بهذا الشكل كان حارس «فشلت كل
+            # الدفعات» لا يُطلق أبدًا، فيخرج المستند خامًا بالكامل
+            # موسومًا ``ai:`` — ويُطبع على غلافه «صياغة النص: ai:…».
+            logger.warning(
+                f"دفعة {start}: ردٌّ بلا فقرات — استُخدم النص الخام.")
             paragraphs = [source]
             parsed = parsed or {}
+            failed = True
+            self._last_failure = self._last_failure or "ردٌّ بلا فقرات قابلة للاستعمال"
 
         captions: dict[str, str] = {}
         for item in (parsed.get("figures") or []) if parsed else []:
@@ -321,8 +377,17 @@ class TranscriptRewriter:
             logger.warning(f"تعذّر بناء الملخّص التنفيذي: {exc}")
             parsed = {}
 
+        # عنوانٌ يصف **عجز النموذج** لا محتوى المحاضرة يُرفض. رُصد
+        # حرفيًّا على مخرج حقيقي: خرج المستند بعنوان «مقطع زمني بدون
+        # محتوى» مطبوعًا على غلافه وفي رأس كل صفحة.
+        title = (parsed.get("title") or "").strip()
+        if title and _is_degenerate_title(title):
+            logger.warning(
+                f"عنوانٌ يصف الفراغ لا المحتوى («{title}») — "
+                f"استُعمل اسم الملفّ بدلًا منه.")
+            title = ""
         return {
-            "title": (parsed.get("title") or "").strip() or fallback_title,
+            "title": title or fallback_title,
             "abstract": (parsed.get("abstract") or "").strip(),
             "key_points": [p.strip() for p in parsed.get("key_points", [])
                            if isinstance(p, str) and p.strip()][:6],
@@ -354,11 +419,14 @@ class TranscriptRewriter:
         failures = sum(1 for entry in rewritten if entry.get("failed"))
         if failures == len(rewritten):
             # لا فائدة من مستند يحمل وسم «ai:» ومحتواه خام بالكامل
+            reason = self._last_failure or "لم يُعد النموذج نصًّا قابلًا للاستعمال"
             raise RewriteUnavailableError(
-                "فشلت كل دفعات إعادة الصياغة — المتابعة بالنص الخام.")
+                f"فشلت كل دفعات إعادة الصياغة ({reason}) — "
+                "المتابعة بالنص الخام.")
         if failures:
             logger.warning(
-                f"{failures} من {len(rewritten)} دفعة استُخدم نصها الخام.")
+                f"{failures} من {len(rewritten)} دفعة استُخدم نصها الخام"
+                + (f" ({self._last_failure})" if self._last_failure else "."))
 
         outline = self._build_outline(rewritten, fallback_title)
         if progress_callback:
@@ -409,7 +477,14 @@ class TranscriptRewriter:
                     timestamp=keyframe.timestamp,
                     image_id=keyframe.image_id,
                     image_filename=keyframe.filename,
-                    caption=captions.get(stamp, ""),
+                    # تعليقٌ من النموذج إن وُجد، وإلا فمن نصّ الشاشة —
+                    # لا فراغ. رُصد على مخرج حقيقي: أربع صور بتعليق
+                    # فارغ (‏figure_captioning = 0٪) بينما نصّ الشاشة
+                    # لكلٍّ منها محفوظ وبين 34 و229 حرفًا. النموذج
+                    # صمت، فسقط المستند إلى لا شيء بدل السقوط إلى
+                    # البيانات التي في يده.
+                    caption=(captions.get(stamp)
+                             or _figure_caption(keyframe)),
                     ocr_text=keyframe.ocr_text)))
 
             times = TranscriptRewriter._paragraph_times(entry)

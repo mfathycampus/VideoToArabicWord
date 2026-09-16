@@ -39,6 +39,19 @@ from utils.timestamps import arabic_datetime
 DEFAULT_LOGO = Path(__file__).resolve().parents[1] / "assets" / "logo.png"
 
 
+#: الشعار صورة أيضًا، ومدقّق إمكانية الوصول في Word لا يفرّق. صورةٌ
+#: زخرفية بلا نصّ بديل تُبلّغ خطأً في كل صفحة — ورأسُ الصفحة يتكرّر في
+#: كل صفحة، فمستندٌ من ثلاثين صفحة يُبلّغ ثلاثين خطأً عن صورة واحدة.
+LOGO_ALT = "شعار الجهة"
+
+
+def _set_logo_alt(picture) -> None:
+    try:
+        picture._inline.docPr.set("descr", LOGO_ALT)
+    except Exception:
+        pass
+
+
 @dataclass(frozen=True)
 class Theme:
     """هوية بصرية واحدة للمستند كله.
@@ -235,7 +248,8 @@ def add_header(document: Document, theme: Theme, title: str) -> None:
 
     logo = theme.resolved_logo()
     if logo:
-        paragraph.add_run().add_picture(str(logo), width=Inches(0.95))
+        _set_logo_alt(
+            paragraph.add_run().add_picture(str(logo), width=Inches(0.95)))
         style_arabic_run(paragraph.add_run("   "), theme.font, 9)
 
     if dominant_direction(title) == "rtl":
@@ -305,8 +319,8 @@ def add_cover_page(document: Document, theme: Theme, *, title: str,
         set_paragraph_rtl(logo_paragraph, WD_ALIGN_PARAGRAPH.CENTER)
         logo_paragraph.paragraph_format.space_before = Pt(30)
         logo_paragraph.paragraph_format.space_after = Pt(22)
-        logo_paragraph.add_run().add_picture(
-            str(logo), width=Inches(theme.logo_width_inches))
+        _set_logo_alt(logo_paragraph.add_run().add_picture(
+            str(logo), width=Inches(theme.logo_width_inches)))
     else:
         for _ in range(2):
             document.add_paragraph()

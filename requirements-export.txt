@@ -1,0 +1,11 @@
+# صيغ إخراج اختيارية — لا يحتاجها التشغيل الأساسي إطلاقًا.
+#
+# ‏python-pptx: شرائح العرض (document/exporters/pptx_export.py).
+#   خفيفة عمليًا — تعتمد lxml و Pillow وكلاهما مثبَّت أصلًا للمستند
+#   والصور، فالإضافة الصافية أقل من ميغابايت.
+#
+# و‏PDF لا يُذكر هنا لأنه ليس حزمة بايثون: يحتاج LibreOffice مثبَّتًا
+# على النظام (مجاني) — https://www.libreoffice.org/download
+# شغّل ``python tools/doctor.py`` ليقول لك حالة الاثنين.
+-r requirements.txt
+python-pptx>=0.6.23

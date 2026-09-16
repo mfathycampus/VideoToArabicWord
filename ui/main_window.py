@@ -431,12 +431,31 @@ class MainWindow(QMainWindow):
             "Tesseract منفصلًا (مثل ffmpeg تمامًا) — شغّل tools/doctor.py\n"
             "للتحقّق. يضيف وقت معالجة لكل صورة.")
         self.ocr_check.setChecked(self.config.frames.enable_ocr)
+        self._audit_locked = self._policy_reason("require_audit_log")
         self.ocr_check.stateChanged.connect(
             lambda: setattr(self.config.frames, "enable_ocr",
                             self.ocr_check.isChecked()))
         toggles.addWidget(self.ocr_check)
+
+        self.audit_check = QCheckBox("سجلّ تدقيق")
+        self.audit_check.setToolTip(
+            "سطرٌ لكل مهمّة: من ومتى وأي ملف وكم استغرق وما المخرجات —\n"
+            "وأهمّ حقل فيه: هل غادر نصّ التفريغ هذا الجهاز وإلى أي مزوّد.\n"
+            "لا يحوي السجلّ نصّ المحاضرة إطلاقًا."
+            + (f"\n\n🔒 {self._audit_locked}" if self._audit_locked else ""))
+        self.audit_check.setChecked(self.config.application.audit_log)
+        self.audit_check.setEnabled(not self._audit_locked)
+        self.audit_check.stateChanged.connect(
+            lambda: (setattr(self.config.application, "audit_log",
+                             self.audit_check.isChecked()),
+                     self._save_config()))
+        toggles.addWidget(self.audit_check)
         toggles.addStretch(1)
         advanced_layout.addLayout(toggles)
+
+        advanced_layout.addWidget(QLabel("صيغ إضافية بجوار مستند Word:"))
+        advanced_layout.addLayout(self._build_export_toggles())
+        advanced_layout.addLayout(self._build_study_row())
         layout.addWidget(advanced)
 
         # --- التشغيل ---
@@ -522,6 +541,129 @@ class MainWindow(QMainWindow):
         self._on_engine_changed()
 
     # ------------------------------------------------------------------
+    #: ``مفتاح الصيغة: (التسمية، التلميح)``. التلميح يقول الاعتماد
+    #: الخارجي صراحةً: مربّعٌ يُفعَّل ثم لا يُنتج شيئًا بلا سبب ظاهر
+    #: أسوأ من مربّع غائب.
+    EXPORT_CHOICES = (
+        ("html", "صفحة ويب تفاعلية",
+         "ملف واحد يُفتح على أي جهاز بلا تثبيت: بحث فوري في كل الكلام،\n"
+         "فهرس جانبي، ونقرة على أي توقيت تقفز إليه في الفيديو.\n"
+         "يُطبع إلى PDF من المتصفّح بضغطة. بلا أي اعتماد خارجي."),
+        ("chapters", "فصول الفيديو",
+         "قائمة توقيتات تُلصق في وصف الفيديو على يوتيوب فيصير شريط\n"
+         "التقدّم فهرسًا قابلًا للنقر. بلا أي اعتماد خارجي."),
+        ("pdf", "ملف PDF",
+         "يحوّل مستند Word نفسه، فيخرج مطابقًا له تمامًا.\n"
+         "يحتاج LibreOffice مثبَّتًا (مجاني). غيابه يتخطّى هذه الصيغة\n"
+         "وحدها ولا يؤثّر على شيء آخر."),
+        ("pptx", "شرائح عرض",
+         "شريحة لكل قسم بنقاطه المكثّفة، وشريحة لكل لقطة شاشة،\n"
+         "والنصّ الكامل في ملاحظات المتحدّث. يحتاج python-pptx."),
+        ("study", "دليل مذاكرة",
+         "أهداف التعلّم والمسرد والأسئلة في صفحة واحدة، وبجوار كل\n"
+         "سؤال توقيتٌ يقفز إلى المقطع الذي بُني منه. يحتاج تفعيل\n"
+         "«الحزمة التعليمية» أدناه، وإلا خرج فارغًا فيُتخطّى."),
+        ("flashcards", "بطاقات مراجعة",
+         "ملف CSV يستورده Anki مباشرةً، ويفتحه Excel سليمًا.\n"
+         "يحتاج تفعيل «الحزمة التعليمية» أدناه."),
+        ("scorm", "حزمة SCORM",
+         "ملف ZIP تُرفع كوحدة تعلّم في Moodle أو Blackboard أو\n"
+         "Schoology أو Canvas. المنصّة تسجّل من أتمّها وبأي درجة.\n"
+         "المحتوى كلّه داخل الحزمة — تعمل بلا إنترنت."),
+    )
+
+    def _build_export_toggles(self):
+        """مربّعات الصيغ الإضافية — تُكتب مباشرةً في ``export_formats``.
+
+        الترتيب المحفوظ هو ترتيب ``EXPORT_CHOICES`` لا ترتيب النقر،
+        فلا تتبدّل بصمة مرحلة المستند لمجرّد أن المستخدم أعاد تفعيل
+        مربّعين بترتيب مختلف — وإلا أُبطلت المرحلة بلا سبب حقيقي.
+        """
+        row = QHBoxLayout()
+        self.export_checks = {}
+        active = {str(f).lower()
+                  for f in (self.config.document.export_formats or [])}
+        locked = self._policy_reason("lock_export_formats")
+        for key, label, tip in self.EXPORT_CHOICES:
+            box = QCheckBox(label)
+            box.setToolTip(tip if not locked else f"{tip}\n\n🔒 {locked}")
+            box.setChecked(key in active)
+            # المقفل يظهر **معطَّلًا مع سببه** لا مخفيًّا: المستخدم الذي
+            # لا يجد الخيار يفتح بلاغًا، والذي يراه معطَّلًا يعرف أن
+            # جهة عمله قرّرت ذلك.
+            box.setEnabled(not locked)
+            box.stateChanged.connect(self._on_exports_changed)
+            self.export_checks[key] = box
+            row.addWidget(box)
+        row.addStretch(1)
+        return row
+
+    def _policy_reason(self, field: str) -> str:
+        """سبب قفل حقلٍ بسياسة الجهاز، أو سلسلة فارغة إن لم يكن مقفلًا."""
+        return (getattr(self.config, "policy_locked", {}) or {}).get(field, "")
+
+    def _on_exports_changed(self) -> None:
+        self.config.document.export_formats = [
+            key for key, _, _ in self.EXPORT_CHOICES
+            if self.export_checks[key].isChecked()]
+        self._save_config()
+
+    def _build_study_row(self):
+        """تفعيل الحزمة التعليمية واختيار مزوّدها.
+
+        المزوّد الافتراضي محلّي (‏Ollama) عمدًا: ميزةٌ يُفترض أن
+        يجرّبها كل معلّم لا يصحّ أن تكون تجربتها مشروطة بمفتاح مدفوع.
+        """
+        from ai.providers import PROVIDER_CHOICES
+
+        row = QHBoxLayout()
+        self.study_check = QCheckBox("الحزمة التعليمية (أهداف · مسرد · أسئلة · بطاقات)")
+        self.study_check.setToolTip(
+            "يقرأ التفريغ ويكتب أهداف تعلّم وأسئلة تقييم ومسردًا وبطاقات\n"
+            "مراجعة. كل عنصر يحمل مرجعه إلى المقطع الذي بُني منه، وما لا\n"
+            "يُثبت مصدره يُسقَط.\n\n"
+            "المزوّد المحلي (Ollama) مجاني ولا يغادر النصّ جهازك.\n"
+            "وبلا أي مزوّد تخرج قائمة مصطلحات وحدها — مفيدة للمراجعة\n"
+            "ولخانة «مصطلحات المادة».")
+        self.study_check.setChecked(self.config.study.enabled)
+        self.study_check.stateChanged.connect(self._on_study_toggled)
+        row.addWidget(self.study_check)
+
+        row.addWidget(QLabel("المزوّد:"))
+        self.study_provider = QComboBox()
+        for key, label in PROVIDER_CHOICES:
+            self.study_provider.addItem(label, key)
+        index = self.study_provider.findData(self.config.study.provider)
+        self.study_provider.setCurrentIndex(max(0, index))
+        self.study_provider.currentIndexChanged.connect(self._on_study_toggled)
+        row.addWidget(self.study_provider)
+
+        cloud_locked = self._policy_reason("allow_cloud_ai")
+        if cloud_locked:
+            # لا يكفي إسقاط الاختيار في الإعداد: مربّعٌ يعرض «Claude API»
+            # ويُنتج تشغيلًا محليًّا كذبٌ في الواجهة. تُحذف الخيارات
+            # السحابية من القائمة أصلًا ويُعلَن السبب.
+            for position in range(self.study_provider.count() - 1, -1, -1):
+                if self.study_provider.itemData(position) != "ollama":
+                    self.study_provider.removeItem(position)
+            note = QLabel("🔒")
+            note.setToolTip(cloud_locked)
+            row.addWidget(note)
+
+        row.addStretch(1)
+        self._refresh_study_row()
+        return row
+
+    def _on_study_toggled(self) -> None:
+        self.config.study.enabled = self.study_check.isChecked()
+        self.config.study.provider = (
+            self.study_provider.currentData() or "ollama")
+        self._refresh_study_row()
+        self._save_config()
+
+    def _refresh_study_row(self) -> None:
+        self.study_provider.setEnabled(self.study_check.isChecked())
+
     def _on_rewrite_toggled(self) -> None:
         enabled = self.rewrite_check.isChecked()
         self.config.rewrite.enabled = enabled

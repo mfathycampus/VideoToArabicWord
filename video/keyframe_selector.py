@@ -42,8 +42,14 @@ from video.scene_detector import Scene
 
 
 class KeyframeSelector:
-    def __init__(self, config: Optional[KeyframeConfig] = None) -> None:
+    def __init__(self, config: Optional[KeyframeConfig] = None,
+                 crop_box=None) -> None:
         self.config = config or KeyframeConfig()
+        #: صندوق قصّ زينة الشاشة (``video/screen_crop``). يُطبَّق في
+        #: ``_read_at`` — أي **قبل** فحص الجودة والبصمة و OCR والحفظ.
+        #: القصّ بعد الحفظ كان سيترك شريط المهام يُحسب في بصمة التكرار،
+        #: وساعةٌ تتغيّر فيه تجعل كل لقطتين مختلفتين فينجو المكرَّر.
+        self.crop_box = crop_box
 
     # ------------------------------------------------------------------
     def _read_at(self, cap, timestamp: float, fps: float,
@@ -59,7 +65,7 @@ class KeyframeSelector:
         cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, int(timestamp * fps)))
         ok, frame = cap.read()
         if ok and frame is not None:
-            return rotation_plan.apply(frame)
+            return self._crop(rotation_plan.apply(frame))
 
         if ffmpeg is not None and video_path is not None:
             scratch = Path(temp_dir) if temp_dir else Path(tempfile.gettempdir())
@@ -68,12 +74,22 @@ class KeyframeSelector:
             try:
                 ffmpeg.extract_frame(video_path, timestamp, target)
                 frame = cv2.imread(str(target))
-                return frame          # FFmpeg يطبّق الدوران بنفسه
+                return self._crop(frame)   # FFmpeg يطبّق الدوران بنفسه
             except Exception as exc:
                 logger.debug(f"تعذّر استخراج الإطار عبر FFmpeg: {exc}")
             finally:
                 target.unlink(missing_ok=True)
         return None
+
+    def _crop(self, frame):
+        """يقصّ زينة الشاشة إن وُجد صندوق قصّ صالح لهذا الارتفاع."""
+        box = self.crop_box
+        if frame is None or box is None or not getattr(box, "active", False):
+            return frame
+        if box.height and frame.shape[0] != box.height:
+            # ارتفاعٌ مختلف عمّا عُوير عليه الصندوق: لا نقصّ بالتخمين.
+            return frame
+        return box.apply(frame)
 
     # فوق هذه المسافة يصير البحث العشوائي أرخص من التقدّم إطارًا إطارًا.
     # ‏250 إطارًا تقارب طول مجموعة الصور (GOP) المعتادة في H.264، وهي
@@ -102,7 +118,7 @@ class KeyframeSelector:
         ok, frame = cap.read()
 
         if ok and frame is not None:
-            frame = rotation_plan.apply(frame)
+            frame = self._crop(rotation_plan.apply(frame))
             # المؤشر الآن عند first_index + 1 بالضبط — وهذا وحده ما يجعل
             # التقدّم التسلسلي صحيحًا.
             sequential = True
@@ -131,7 +147,9 @@ class KeyframeSelector:
         ok, probe = cap.read()
         if not ok or probe is None:
             return frame, None
-        return frame, rotation_plan.apply(probe)
+        # الإطار المرجعي يُقصّ أيضًا: مقارنة مقصوصٍ بغير مقصوص تُنتج
+        # فرقًا وهميًّا بحجم الشريط، فيُعدّ كل إطار «غير مستقرّ».
+        return frame, self._crop(rotation_plan.apply(probe))
 
     def _candidate_times(self, scene: Scene) -> List[float]:
         """لحظات مرشّحة داخل المشهد، منحازة إلى ما بعد الانتقال.

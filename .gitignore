@@ -51,3 +51,8 @@ config.local.yaml
 Thumbs.db
 desktop.ini
 .DS_Store
+
+# حزم Git الاحتياطية — ‏_backup-before-purge.bundle وحده 66MB، وهو
+# نسخة التاريخ **قبل** تنظيفه من تسجيلات المحاضرات. دفعُه بـ
+# ``git add -A`` يعيد إلى المستودع بالضبط ما أُخرج منه.
+*.bundle

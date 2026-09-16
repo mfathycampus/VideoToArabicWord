@@ -184,6 +184,34 @@ def check_ocr_binary() -> CheckResult:
         "غير مثبَّت — ميزة OCR (نص الشاشة) ستبقى معطّلة", hint)
 
 
+def check_export_extras() -> List[CheckResult]:
+    """اعتمادات الصيغ الإضافية — تحذير لا فشل، كحال Tesseract تمامًا.
+
+    الاثنان اختياريان بالكامل: غيابهما يتخطّى صيغته وحدها. لكن ظهورهما
+    هنا مقصود — المستخدم الذي فعّل «ملف PDF» في الواجهة ثم لم يجده في
+    مجلد المخرجات يحتاج مكانًا واحدًا يقول له لماذا.
+    """
+    from document.exporters.pdf_export import INSTALL_HINT as PDF_HINT
+    from document.exporters.pdf_export import find_soffice
+
+    results: List[CheckResult] = []
+
+    soffice = find_soffice()
+    results.append(CheckResult(
+        "LibreOffice (تحويل PDF)", True,
+        str(soffice) if soffice else "غير مثبَّت — صيغة PDF ستبقى معطّلة",
+        "" if soffice else PDF_HINT))
+
+    try:
+        import pptx  # noqa: F401
+        detail, fix = f"مثبَّتة ({pptx.__version__})", ""
+    except Exception:
+        detail = "غير مثبَّتة — صيغة الشرائح ستبقى معطّلة"
+        fix = f"{_pip_command()} install python-pptx"
+    results.append(CheckResult("python-pptx (الشرائح)", True, detail, fix))
+    return results
+
+
 def check_environment_isolation() -> CheckResult:
     """يحذّر من التثبيت خارج بيئة افتراضية."""
     in_venv = (hasattr(sys, "real_prefix")
@@ -347,6 +375,7 @@ def diagnose() -> Diagnosis:
     diagnosis.results.append(check_vad_asset())
     diagnosis.results.extend(check_binaries())
     diagnosis.results.append(check_ocr_binary())
+    diagnosis.results.extend(check_export_extras())
     diagnosis.results.append(check_disk_space())
     diagnosis.results.append(check_write_access())
     return diagnosis

@@ -265,6 +265,7 @@ class VideoToDocPipeline:
         generator.generate(plan, metadata, job_dir / "keyframes", target)
         logger.info(f"أُعيد بناء المستند: {target}")
 
+        transcript = None
         transcription_path = job_dir / "transcription.json"
         if transcription_path.exists():
             try:
@@ -276,6 +277,12 @@ class VideoToDocPipeline:
                                     self.config.document.subtitle_formats)
             except Exception as exc:
                 logger.warning(f"تعذّرت إعادة كتابة الترجمات: {exc}")
+
+        # وهذا بيت القصيد من المُصيِّرات: صفحة HTML وشرائح وفصول
+        # وPDF كلّها تُبنى من الخطة المحفوظة في ثوانٍ — بلا تفريغ ولا
+        # كشف مشاهد. من ملك ``plan.json`` ملك كل الصيغ.
+        self._write_exports(plan, metadata, job_dir / "keyframes", target,
+                            None, docx_path=target, transcript=transcript)
         return target
 
     def merge_documents(self, job_dirs: List[Path], output_path: Path,
@@ -337,6 +344,22 @@ class VideoToDocPipeline:
         job = JobManager.create_or_resume(job_dir, video_path)
         emit = self._make_emitter(progress_callback)
 
+        # سجلّ التدقيق يلفّ المهمّة كلّها من هنا: ``finally`` بداخله
+        # يكتب السطر مهما كانت النهاية — نجاحًا أو إلغاءً أو سقوطًا.
+        # سجلٌّ لا يحوي إلا النجاحات لا يصلح للتدقيق أصلًا.
+        from utils import audit as audit_module
+
+        with audit_module.record_job(
+                self.config, video_path, job_dir,
+                enabled=bool(getattr(self.config.application,
+                                     "audit_log", False))) as audit:
+            return self._run_guarded(job, video_path, cancel_token, emit,
+                                     allow_model_download, allow_audio_only,
+                                     clip, transcript_only, audit)
+
+    def _run_guarded(self, job, video_path, cancel_token, emit,
+                     allow_model_download, allow_audio_only, clip,
+                     transcript_only, audit=None) -> Path:
         try:
             # ساعةٌ من المعالجة بلا لمس لوحة المفاتيح تُنيم ويندوز
             # بسياسته الافتراضية، فيقف التنفيذ بلا خطأ ولا تفسير.
@@ -346,8 +369,9 @@ class VideoToDocPipeline:
                                        clip, transcript_only)
             job.finish()
             if not self.config.application.keep_temp_on_success:
-                self._cleanup_temp(job_dir)
+                self._cleanup_temp(job.job_dir)
             emit(Stage.DOCUMENT, 1.0, "اكتملت المعالجة بنجاح.")
+            self._fill_audit(audit, job)
             return result
         except PipelineCancelledError:
             job.cancel()
@@ -357,6 +381,114 @@ class VideoToDocPipeline:
             job.fail(f"{type(exc).__name__}: {exc}")
             logger.exception("فشل الـ pipeline")
             raise
+
+    def _autofill_screen_glossary(self, video_path: Path, metadata,
+                                  emit) -> None:
+        """يملأ «مصطلحات المادة» من نصّ الشاشة قبل التفريغ — إن كانت فارغة.
+
+        الترتيب هو كل الفكرة: نصّ الشاشة كان يُستخرج في مرحلة اللقطات،
+        أي **بعد** التفريغ بمرحلتين — فيُعرَض في المستند ولا ينفع الدقّة
+        التي كان يستطيع رفعها. والمسح هنا أربعةَ عشر إطارًا فقط، ثوانٍ
+        أمام ساعات التفريغ.
+
+        ولا يُلمس ما كتبه المستخدم بيده: اختياره يفوز دائمًا.
+        """
+        settings = self.config.whisper
+        if not getattr(settings, "auto_screen_glossary", True):
+            return
+        if (settings.glossary or "").strip():
+            return
+        if not metadata.has_video or metadata.duration_seconds <= 0:
+            return
+        try:
+            from video.screen_terms import as_glossary, scan_video
+
+            emit(Stage.TRANSCRIPTION, 0.01,
+                 "مسح مصطلحات الشاشة قبل التفريغ…")
+            terms = scan_video(video_path, self.ffmpeg,
+                               metadata.duration_seconds)
+            glossary = as_glossary(terms)
+            if glossary:
+                settings.glossary = glossary
+                logger.info(
+                    f"مصطلحات من الشاشة ({len(terms)}): {glossary[:160]}")
+        except Exception as exc:
+            # اقتراحٌ مساعد لا شرط تشغيل — فشلُه لا يمسّ التفريغ.
+            logger.warning(f"تعذّر مسح مصطلحات الشاشة: {exc}")
+
+    def _prepare_screen_crop(self, video_path: Path, metadata) -> None:
+        """يستنتج صندوق قصّ زينة الشاشة ويحقنه في منتقي اللقطات.
+
+        يقع قبل كشف المشاهد فيسري على كل إطار يُقرأ بعده — بما فيه
+        إطارات المقارنة. وفشلُه لا يُفشل شيئًا: لقطةٌ بشريطٍ زائد أهون
+        من مهمّة ساقطة.
+        """
+        frames_config = self.config.frames
+        if not getattr(frames_config, "crop_screen_chrome", True):
+            return
+        try:
+            from video.screen_crop import detect_from_video, manual_box
+
+            top = float(getattr(frames_config, "crop_top_ratio", 0.0) or 0.0)
+            bottom = float(getattr(frames_config, "crop_bottom_ratio", 0.0) or 0.0)
+            if top > 0 or bottom > 0:
+                # اليدويّ يُلغي الاستنتاج: من ضبط النسب يعرف شاشته.
+                box = manual_box(metadata.height or 0, top, bottom)
+                logger.info(f"قصّ يدويّ لزينة الشاشة: {box.describe()}")
+            else:
+                box = detect_from_video(video_path,
+                                        metadata.duration_seconds, self.ffmpeg)
+            self.keyframe_selector.crop_box = box
+        except Exception as exc:
+            logger.warning(f"تعذّر كشف زينة الشاشة: {exc}")
+
+    def _report_audio_level(self, media_path: Path, normalized: bool) -> None:
+        """يقيس مستوى الصوت ويقول للمستخدم إن كان هادئًا — تشخيص لا قرار.
+
+        القرار (التطبيع) يقع دائمًا. وهذا السطر يجيب على السؤال الذي
+        كان بلا جواب: «لماذا خرج تفريغي ناقصًا؟» — سطرٌ في السجلّ يقول
+        إن المصدر أهدأ من اللازم أنفع من تخمين المستخدم.
+        """
+        try:
+            levels = self.ffmpeg.audio_levels(media_path)
+        except Exception:
+            return
+        if not levels or "peak_db" not in levels:
+            return
+        peak = levels["peak_db"]
+        mean = levels.get("mean_db")
+        detail = f"ذروة {peak:.1f} dBFS" + (
+            f" · متوسّط {mean:.1f} dBFS" if mean is not None else "")
+        if peak < self.ffmpeg.QUIET_PEAK_DBFS:
+            logger.warning(
+                f"المصدر هادئ ({detail}). "
+                + ("أُطبّق توحيد المستوى قبل التفريغ."
+                   if normalized else
+                   "توحيد المستوى معطَّل — متوقَّعٌ ضياع مقاطع من التفريغ."))
+        else:
+            logger.info(f"مستوى الصوت: {detail}")
+
+    @staticmethod
+    def _fill_audit(audit, job) -> None:
+        """يملأ ما لا يُعرف إلا بعد انتهاء المهمّة — ولا يرمي أبدًا.
+
+        المدّة تُقرأ من ``metadata.json`` لا من حقلٍ في الكائن: المهمّة
+        المستأنَفة قد تتخطّى مرحلة الميتاداتا كلّها، فالقيمة في الذاكرة
+        تبقى صفرًا بينما الملفّ على القرص صحيح.
+        """
+        if audit is None:
+            return
+        try:
+            audit.job_dir = str(job.job_dir)
+            audit.outputs = sorted(
+                path.name for path in job.job_dir.iterdir() if path.is_file())
+            metadata_path = job.job_dir / "metadata.json"
+            if metadata_path.is_file():
+                audit.duration_seconds = float(json.loads(
+                    metadata_path.read_text(encoding="utf-8")
+                ).get("duration_seconds") or 0.0)
+        except Exception as exc:
+            logger.warning(f"تعذّر استكمال سطر التدقيق: {exc}")
 
     # ------------------------------------------------------------------
     def _make_emitter(self, progress_callback: Optional[ProgressFn]):
@@ -459,6 +591,7 @@ class VideoToDocPipeline:
 
         # ---------- 4-6. المسار البصري — يُتخطّى كليًا لمصدر صوتي ----------
         if metadata.has_video:
+            self._prepare_screen_crop(video_path, metadata)
             rotation_plan = resolve_rotation_plan(
                 video_path, metadata.rotation,
                 metadata.stored_width or metadata.width,
@@ -538,7 +671,14 @@ class VideoToDocPipeline:
 
         # ---------- 8. المستند ----------
         job.begin_stage(Stage.DOCUMENT)
-        emit(Stage.DOCUMENT, 0.2, "كتابة مستند Word…")
+
+        # الحزمة التعليمية قبل المستند: هي المسار الوحيد هنا الذي قد
+        # يستغرق دقائق أو يكلّف مالًا، وتقديمها يجعل الإلغاء أثناءها
+        # لا يُضيّع مستندًا مكتوبًا بالفعل.
+        study_pack = self._build_study_pack(
+            plan, transcript, keyframes, job, emit)
+
+        emit(Stage.DOCUMENT, 0.5, "كتابة مستند Word…")
         self.document_generator.generate(plan, metadata, images_dir, output_docx)
         document_fp = self._stage_fp(
             Stage.DOCUMENT, video_path, clip,
@@ -548,8 +688,15 @@ class VideoToDocPipeline:
         job.register_artifact("document", output_docx, document_fp)
 
         # مخرج إضافي لا شرط نجاح: فشله لا يُفشل المهمة
-        emit(Stage.DOCUMENT, 0.9, "كتابة ملفات الترجمة…")
+        emit(Stage.DOCUMENT, 0.85, "كتابة ملفات الترجمة…")
         self._write_subtitles(transcript, output_docx, job)
+
+        self._write_translations(transcript, output_docx, job)
+
+        emit(Stage.DOCUMENT, 0.93, "تصيير الصيغ الإضافية…")
+        self._write_exports(plan, metadata, images_dir, output_docx, job,
+                            docx_path=output_docx, transcript=transcript,
+                            source_media=video_path, study_pack=study_pack)
 
         job.complete_stage(Stage.DOCUMENT)
         return output_docx
@@ -581,6 +728,181 @@ class VideoToDocPipeline:
                             + "، ".join(p.name for p in written))
         except Exception as exc:
             logger.warning(f"تعذّرت كتابة ملفات الترجمة: {exc}")
+
+    def _build_study_pack(self, plan, transcript, keyframes, job, emit):
+        """يبني حزمة المذاكرة ويحفظها في ``study.json`` — أو يعيد ``None``.
+
+        **لا يُفشل المهمة أبدًا.** الحزمة مخرج إضافي كالترجمات تمامًا:
+        غياب المزوّد أو سقوطه يترك المستند كما يخرج اليوم بالضبط.
+
+        **ولا يُستدعى النموذج مرّتين لنفس الخطة.** التوليد هو الخطوة
+        الوحيدة في البرنامج التي قد تكلّف مالًا أو دقائق انتظار، فحزمةٌ
+        محفوظة بالتوقيع نفسه تُعاد كما هي.
+        """
+        settings = self.config.study
+        if not settings.enabled or not transcript.segments:
+            return None
+
+        from config.schemas import StudyPack
+
+        signature = self._study_signature()
+        study_path = job.job_dir / "study.json"
+        if study_path.is_file():
+            try:
+                stored = StudyPack(**json.loads(
+                    study_path.read_text(encoding="utf-8")))
+                if stored.generated_by == signature and not stored.is_empty():
+                    logger.info("حزمة تعليمية محفوظة بالتوقيع نفسه — أُعيد استعمالها.")
+                    return stored
+            except Exception as exc:
+                logger.warning(f"تعذّرت قراءة study.json المحفوظ: {exc}")
+
+        emit(Stage.DOCUMENT, 0.05, "توليد الحزمة التعليمية…")
+        try:
+            pack = self._generate_study_pack(plan, transcript, keyframes, emit)
+        except Exception as exc:
+            logger.warning(f"تعذّرت الحزمة التعليمية: {exc}")
+            return None
+
+        if pack is None or pack.is_empty():
+            return None
+        try:
+            atomic_write_text(study_path, pack.model_dump_json(indent=2))
+            job.register_artifact("study", study_path)
+        except Exception as exc:
+            logger.warning(f"تعذّر حفظ study.json: {exc}")
+        return pack
+
+    def _study_signature(self) -> str:
+        settings = self.config.study
+        if not settings.enabled:
+            return "none"
+        return (f"ai:{settings.provider}"
+                + (f"/{settings.model}" if settings.model else ""))
+
+    def _generate_study_pack(self, plan, transcript, keyframes, emit):
+        """يختار المسار: نموذج لغوي، أو المسار الإحصائي عند تعذّره."""
+        from ai.providers import build_provider
+        from ai.study_builder import (
+            StudyBuilder,
+            StudyConfig,
+            build_without_model,
+        )
+
+        settings = self.config.study
+        config = StudyConfig(**{
+            key: getattr(settings, key) for key in StudyConfig.__dataclass_fields__
+            if hasattr(settings, key)})
+
+        provider = None
+        try:
+            provider = build_provider(
+                settings.provider, model=settings.model,
+                base_url=settings.base_url, api_key_env=settings.api_key_env,
+                api_key=settings.api_key, workspace_id=settings.workspace_id)
+            available = provider.is_available()
+        except Exception as exc:
+            logger.warning(f"تعذّر تجهيز مزوّد الحزمة التعليمية: {exc}")
+            available = False
+
+        if not available:
+            if not settings.fallback_without_model:
+                logger.warning(
+                    f"مزوّد الحزمة التعليمية «{settings.provider}» غير متاح — "
+                    "أُلغيت الحزمة.")
+                return None
+            # صادقٌ ومفيد: قائمة مصطلحات بلا ادّعاء تعريفات، وهي نفسها
+            # ما يُلصق في خانة «مصطلحات المادة» فيرفع دقّة المحاضرة التالية.
+            logger.info(
+                f"مزوّد الحزمة التعليمية «{settings.provider}» غير متاح — "
+                "أُخرجت قائمة المصطلحات وحدها.")
+            return build_without_model(plan, transcript, keyframes,
+                                       limit=settings.max_glossary)
+
+        def report(done: int, total: int) -> None:
+            emit(Stage.DOCUMENT, 0.05 + 0.35 * (done / max(1, total)),
+                 f"توليد الحزمة التعليمية… ({done}/{total})")
+
+        return StudyBuilder(provider, config).build(
+            plan, transcript, keyframes, progress=report)
+
+    def _write_translations(self, transcript, output_docx: Path, job) -> None:
+        """يترجم ملفّات الترجمة إلى اللغات المطلوبة — مخرج إضافي لا شرط.
+
+        يستعمل مزوّد الحزمة التعليمية نفسه: مزوّدٌ ثانٍ بمفتاح ثانٍ
+        وإعدادٍ ثانٍ لنفس النوع من العمل تعقيدٌ بلا مقابل.
+        """
+        targets = [str(t).strip().lower()
+                   for t in (getattr(self.config.document, "translate_to", [])
+                             or []) if str(t).strip()]
+        if not targets or not transcript.segments:
+            return
+        try:
+            from ai.providers import build_provider
+            from ai.translator import TranslationConfig, translate_subtitles
+
+            settings = self.config.study
+            provider = build_provider(
+                settings.provider, model=settings.model,
+                base_url=settings.base_url, api_key_env=settings.api_key_env,
+                api_key=settings.api_key, workspace_id=settings.workspace_id)
+            if not provider.is_available():
+                logger.info(
+                    f"مزوّد الترجمة «{settings.provider}» غير متاح — "
+                    "تُخطّى الترجمة.")
+                return
+            for target in targets:
+                for path in translate_subtitles(
+                        transcript, output_docx, provider,
+                        TranslationConfig(
+                            target=target,
+                            timeout_seconds=settings.timeout_seconds),
+                        self.config.document.subtitle_formats):
+                    job.register_artifact(f"translation_{target}", path)
+        except Exception as exc:
+            logger.warning(f"تعذّرت الترجمة: {exc}")
+
+    def _write_exports(self, plan, metadata, images_dir: Path,
+                       base_path: Path, job,
+                       docx_path: Optional[Path] = None,
+                       transcript=None,
+                       source_media: Optional[Path] = None,
+                       study_pack=None) -> List[Path]:
+        """يصيّر الصيغ الإضافية من الخطة نفسها — بعقد الترجمات ذاته.
+
+        مخرجات إضافية لا شروط نجاح: ``write_exports`` يعزل كل مُصيِّر،
+        وهذا الغلاف يعزل الوحدة كلّها. مستند Word وحده هو ما يُفشل
+        فشلُه المهمة.
+        """
+        formats = list(getattr(self.config.document, "export_formats", []) or [])
+        if not formats:
+            return []
+        try:
+            from document.exporters import ExportContext, write_exports
+
+            written = write_exports(
+                ExportContext(
+                    plan=plan,
+                    metadata=metadata,
+                    images_dir=images_dir,
+                    base_path=base_path,
+                    docx_path=docx_path,
+                    transcript=transcript,
+                    source_media=source_media,
+                    document_config=self.config.document,
+                    options={"study_pack": study_pack} if study_pack else {},
+                ),
+                formats)
+        except Exception as exc:
+            logger.warning(f"تعذّرت الصيغ الإضافية: {exc}")
+            return []
+
+        if job is not None:
+            for path in written:
+                job.register_artifact(
+                    f"export_{path.name.split('.', 1)[-1].replace('.', '_')}",
+                    path)
+        return written
 
     def _expected_plan_source(self) -> str:
         """توقيع مصدر الخطة حسب الإعداد الحالي."""
@@ -640,10 +962,15 @@ class VideoToDocPipeline:
                 logger.info(f"أُعيدت الصياغة عبر {plan.generated_by}")
                 return plan
             except Exception as exc:
+                # السبب يُعرض في الواجهة لا في السجلّ وحده: المستخدم
+                # الذي يرى «تعذّرت» بلا سبب لا يستطيع فعل شيء، والمستخدم
+                # الذي يرى «مفتاح غير صالح» يُصلحها في دقيقة.
+                reason = str(exc).strip() or type(exc).__name__
                 logger.warning(
-                    f"تعذّرت إعادة الصياغة ({exc}) — المتابعة بالنص الخام.")
+                    f"تعذّرت إعادة الصياغة — المتابعة بالنص الخام. السبب: {reason}")
                 emit(Stage.MATCHING, 0.85,
-                     "تعذّرت إعادة الصياغة — المتابعة بالنص الخام")
+                     f"تعذّرت إعادة الصياغة ({reason[:120]}) — "
+                     "المتابعة بالنص الخام")
 
         emit(Stage.MATCHING, 0.9, "بناء بنية المستند…")
         return self.planner.build(transcript, keyframes, title, subtitle)
@@ -708,14 +1035,17 @@ class VideoToDocPipeline:
                 and audio_path.exists()):
             job.begin_stage(Stage.AUDIO_EXTRACTION)
             denoise = self.config.application.denoise_audio
+            normalize = getattr(self.config.application,
+                                "normalize_audio", True)
             emit(Stage.AUDIO_EXTRACTION, 0.2,
                  "استخراج المسار الصوتي وتنظيفه…" if denoise
                  else "استخراج المسار الصوتي…")
+            self._report_audio_level(video_path, normalize)
             self.ffmpeg.extract_audio(
                 video_path, audio_path,
                 start_seconds=clip.start_seconds,
                 end_seconds=clip.end_seconds,
-                denoise=denoise)
+                denoise=denoise, normalize=normalize)
             audio_fp = self._stage_fp(Stage.AUDIO_EXTRACTION, video_path, clip)
             job.register_artifact("audio", audio_path, audio_fp)
             job.complete_stage(Stage.AUDIO_EXTRACTION)
@@ -723,6 +1053,7 @@ class VideoToDocPipeline:
 
         # النموذج
         job.begin_stage(Stage.TRANSCRIPTION)
+        self._autofill_screen_glossary(video_path, metadata, emit)
         emit(Stage.TRANSCRIPTION, 0.02, "تجهيز نموذج التفريغ…")
         # الإذن يُمرَّر إلى المحرّك أيضًا، لا إلى مدير النماذج وحده:
         # هو الحاجز الذي يمنع التنزيل فعليًا داخل faster-whisper.
@@ -762,8 +1093,12 @@ class VideoToDocPipeline:
             # قصٌّ دقيق عند حدّ المقطع: ملف PCM، فـ``-ss`` عليه ليس
             # بحثًا تقريبيًّا إلى إطار مفتاحي. لا تكرار ولا سقوط.
             transcribe_from = temp_dir / "audio_resume.wav"
+            # بلا تطبيع: ``audio_path`` مطبَّع أصلًا، وتطبيعه ثانيةً
+            # يجعل الجزء المستأنَف بمستوى مختلف عن أوّل الملفّ —
+            # فيتغيّر سلوك VAD عند حدّ الاستئناف بالضبط.
             self.ffmpeg.extract_audio(audio_path, transcribe_from,
-                                      start_seconds=resume.resume_at)
+                                      start_seconds=resume.resume_at,
+                                      normalize=False)
 
         transcript = self._transcribe_with_fallback(
             transcribe_from, cancel_token, emit, engine_label,

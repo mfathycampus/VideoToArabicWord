@@ -203,3 +203,81 @@ class DocumentPlan(BaseModel):
     # تقرير جودة آخر بناء محفوظ داخل الخطة، اختياري للتوافق مع الخطط القديمة.
     quality_score: Optional[float] = None
     quality_warnings: List[str] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------
+# الحزمة التعليمية — طبقة مشتقّة من الخطة والتفريغ، لا بديلة عنهما
+# ---------------------------------------------------------------------
+# ADR-018 · **كل مخرج تعليمي يُثبت مصدره أو يُسقَط.**
+#
+# مولّد الأسئلة العام يكتب سؤالًا معقولًا عن موضوع المحاضرة. وهذا لا
+# يكفي في صفّ: المعلّم الذي لا يستطيع التحقّق من أن السؤال يخصّ ما قاله
+# **هو** لن يستعمل الأداة مرّتين. ولذلك يحمل كل عنصر هنا ``segment_ids``
+# تشير إلى مقاطع ``TranscriptionResult`` التي بُني منها، ويُفحص وجودها
+# فعليًّا قبل القبول (``ai/study_verify``).
+#
+# والفائدة مزدوجة: ما لا يُثبت مصدره يُسقَط، وما يُقبل يصير قابلًا
+# للنقر — من السؤال إلى لحظته في التسجيل.
+
+class StudyItem(BaseModel):
+    """أصلٌ مشترك: كل عنصر تعليمي يعرف من أين جاء."""
+    #: مقاطع التفريغ التي بُني منها العنصر. فارغة = غير مُتتبَّع، ولا
+    #: تُقبل إلا للعناصر المشتقّة إحصائيًّا من نصّ الشاشة.
+    segment_ids: List[int] = Field(default_factory=list)
+    source_start: Optional[float] = None
+    source_end: Optional[float] = None
+
+
+class LearningObjective(StudyItem):
+    """هدف تعلّم واحد — ما يُفترض أن يقدر عليه الطالب بعد المحاضرة."""
+    text: str
+
+
+class GlossaryTerm(StudyItem):
+    term: str
+    definition: str = ""
+    #: ``ai`` من نموذج لغوي · ``screen`` من نصّ الشاشة عبر OCR ·
+    #: ``frequency`` من تكرار المصطلح في التفريغ. الأخيران يعملان بلا
+    #: أي نموذج، وهما مسار من لا يملك واحدًا.
+    origin: Literal["ai", "screen", "frequency"] = "ai"
+    occurrences: int = 0
+
+
+class QuizQuestion(StudyItem):
+    kind: Literal["mcq", "true_false", "short"] = "mcq"
+    question: str
+    #: خيارات الاختيار من متعدد. فارغة لغير ``mcq``.
+    options: List[str] = Field(default_factory=list)
+    answer: str
+    explanation: str = ""
+    difficulty: Literal["easy", "medium", "hard"] = "medium"
+
+
+class Flashcard(StudyItem):
+    front: str
+    back: str
+
+
+class StudyPack(BaseModel):
+    """حزمة المذاكرة كاملةً — تُحفظ في ``study.json`` بجوار ``plan.json``.
+
+    حفظها مستقلّةً ليس ترتيبًا: توليدها هو الخطوة **الوحيدة** في
+    البرنامج التي قد تكلّف مالًا أو دقائق انتظار عند مزوّد. وحفظها
+    يعني أن ``--rebuild`` يُعيد تصيير كل الصيغ منها بلا استدعاء واحد
+    للنموذج — كما يفعل ``plan.json`` مع المستند تمامًا.
+    """
+    schema_version: str = SCHEMA_VERSION
+    title: str = ""
+    #: ``none`` بلا نموذج · ``ai:<مزوّد>/<نموذج>`` · ``screen`` إحصائي
+    generated_by: str = "none"
+    objectives: List[LearningObjective] = Field(default_factory=list)
+    glossary: List[GlossaryTerm] = Field(default_factory=list)
+    questions: List[QuizQuestion] = Field(default_factory=list)
+    flashcards: List[Flashcard] = Field(default_factory=list)
+    #: ما أسقطته طبقة التحقّق وسببه. يُعرض في السجلّ وفي دليل المذاكرة.
+    #: إخفاؤه يجعل حزمةً نصفُها مرفوض تبدو حزمةً صغيرة بلا سبب ظاهر.
+    dropped: List[str] = Field(default_factory=list)
+
+    def is_empty(self) -> bool:
+        return not (self.objectives or self.glossary
+                    or self.questions or self.flashcards)

@@ -32,6 +32,20 @@ _ORDINALS = ("الأول", "الثاني", "الثالث", "الرابع", "ال
              "الثاني عشر")
 
 
+#: بديلٌ محايد حين لا يبقى اسمٌ صالح. «تفريغ تسجيل» يصف المستند بصدق،
+#: بخلاف «مقطع زمني بدون محتوى» الذي يصف عجز المولّد ويُطبع على الغلاف.
+DEFAULT_TITLE = "تفريغ تسجيل"
+
+
+def _safe_title(title: str) -> str:
+    cleaned = " ".join((title or "").split())
+    if len(cleaned) < 3:
+        return DEFAULT_TITLE
+    from ai.rewriter import _is_degenerate_title
+
+    return DEFAULT_TITLE if _is_degenerate_title(cleaned) else cleaned
+
+
 def _gaps_after(transcript: TranscriptionResult) -> dict:
     """‏{معرّف المقطع: طول السكتة التي تليه}. الأخير سكتته لا نهائية."""
     segments = transcript.segments
@@ -217,7 +231,10 @@ class TimelinePlanner:
             _gaps_after(transcript))
 
         plan = DocumentPlan(
-            title=title,
+            # حارسٌ أخير قبل الغلاف: اسمٌ خالٍ أو يصف الفراغ لا يُطبع.
+            # المسار الطبيعي يمرّ بـ``humanize_title`` فيعطي اسم الملفّ،
+            # لكن مسار الدمج ومسار إعادة البناء يمرّان من هنا أيضًا.
+            title=_safe_title(title),
             subtitle=subtitle,
             sections=sections,
             generated_by="timeline",

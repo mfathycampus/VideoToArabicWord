@@ -92,6 +92,34 @@ _JUNK_CHARS = re.compile(r"[©®™$¥§¶|~^*<>{}\[\]\\_=+`]")
 #: أقصى نسبة رموز غريبة قبل أن يُعدّ السطر قراءةً فاشلة.
 _MAX_JUNK_RATIO = 0.04
 
+# ── شريط تنقّل التطبيق: ثالث ما يقرؤه الـOCR وليس محتوى ───────────────
+#
+# رُصد على مخرج حقيقي عنوانان خرجا إلى فهرس المستند:
+#
+#   «Curriculum & Instruction Lessons v Curriculum Reports »»
+#   «GRADE 9AM WEEKLY PLAN - WEEK 4 tte»
+#
+# الأول شريط القوائم العلوي كاملًا — أسماء تبويبات لا موضوع درس —
+# وعلامته سهامُ القوائم (‏»، ›) و«v» المنسدلة بين الكلمات. والثاني
+# عنوان سليم تذيّلته شظيّة قراءة («tte»)، وهي أثر نصٍّ مقصوص عند حافة
+# اللقطة. وكلاهما مرّ من المقياس بـ100٪.
+
+#: فواصل القوائم وأسهمها. وجودها يعني أن السطر شريط تنقّل لا عنوانًا.
+_NAV_SEPARATORS = re.compile(r"[»«›‹▾▼⌄]|\s\|\s|\bv\s(?=[A-Z])")
+
+#: كلمات لاتينية قصيرة **حقيقية** — تُستثنى من قصّ الشظايا. القائمة
+#: قصيرة عمدًا: كل إضافة إليها تُبقي شظيّة محتملة، وحذفُ كلمة سليمة من
+#: آخر عنوان أهون من إبقاء «tte» فيه.
+_SHORT_WORDS = {
+    "a", "an", "of", "to", "in", "on", "at", "is", "it", "as", "by", "or",
+    "am", "pm", "id", "no", "tv", "hr", "q1", "q2", "q3", "q4", "ai", "hq",
+}
+
+#: شظيّة قراءة في آخر السطر: كلمة لاتينية من ثلاثة أحرف فأقلّ ليست من
+#: الكلمات القصيرة المعروفة. «tte» و«rn» و«sv» — لا كلمات ولا اختصارات،
+#: بل أثر نصٍّ مقصوص عند حافة اللقطة.
+_TRAILING_FRAGMENT = re.compile(r"\s+([A-Za-z]{1,3})\s*$")
+
 
 def _normalize_word(word: str) -> str:
     """صورة الكلمة للمقارنة: بلا تشكيل، وبلا واو عطف بادئة.
@@ -144,6 +172,8 @@ def title_defects(candidate: str, min_chars: int = JUDGE_MIN_CHARS) -> List[str]
     if candidate and (len(_JUNK_CHARS.findall(candidate))
                       / len(candidate) > _MAX_JUNK_RATIO):
         defects.append("قراءة فاشلة")
+    if _NAV_SEPARATORS.search(candidate):
+        defects.append("شريط تنقّل")
 
     words = _words(candidate)
     bigrams = list(zip(words, words[1:]))
@@ -166,6 +196,25 @@ def is_acceptable_title(candidate: str) -> bool:
     return not title_defects(candidate)
 
 
+def strip_trailing_fragment(text: str) -> str:
+    """يحذف شظيّة القراءة من آخر السطر — تكرارًا حتى تثبت النتيجة.
+
+    مرّة واحدة لا تكفي: «… WEEK 4 tte sv» تحتاج مرّتين، وسطرٌ انتهى
+    بثلاث شظايا يحتاج ثلاثًا. والحلقة محدودة كي لا تأكل عنوانًا
+    قصيرًا كلماتُه قصيرة أصلًا.
+    """
+    text = (text or "").strip()
+    for _ in range(3):
+        match = _TRAILING_FRAGMENT.search(text)
+        if not match or match.group(1).lower() in _SHORT_WORDS:
+            break
+        stripped = text[:match.start()].strip(" -–—،,.")
+        if len(stripped) < TITLE_MIN_CHARS:
+            break
+        text = stripped
+    return text
+
+
 def strip_opening_noise(text: str) -> str:
     """يحذف الافتتاحيات الجوفاء تكرارًا حتى تثبت النتيجة."""
     text = (text or "").strip()
@@ -180,6 +229,9 @@ def strip_opening_noise(text: str) -> str:
 def clean_title_candidate(text: str) -> str:
     """يشذّب **جملة واحدة** ليصير عنوانًا، أو سلسلة فارغة إن لم تصلح."""
     candidate = strip_opening_noise(text)
+    # شظيّة القراءة تُحذف **قبل** الحكم: «… WEEK 4 tte» عنوانٌ سليم
+    # تذيّلته قراءةٌ فاشلة، ورفضُه كاملًا يُضيّع عنوانًا صالحًا.
+    candidate = strip_trailing_fragment(candidate)
     candidate = re.sub(r"\s+", " ", candidate).strip(" ،؛-—:")
     if not candidate:
         return ""

@@ -91,6 +91,15 @@ class KeyframeConfig(BaseModel):
     # يدويًا لا يملكه كل مستخدم. غيابه لا يوقف المعالجة إطلاقًا — فقط
     # يترك نص الشاشة فارغًا.
     enable_ocr: bool = False
+    #: قصّ زينة الشاشة (شريط المتصفّح وشريط المهام) من كل لقطة.
+    #: **مُفعَّل افتراضيًّا**: رُصد على مخرج حقيقي أن اللقطات تحمل رابط
+    #: النظام بمعرّفاته ومفضّلات المحاضر وتطبيقاته المفتوحة وموقعه —
+    #: في مستندٍ يُوزَّع على طلاب. انظر ``video/screen_crop``.
+    crop_screen_chrome: bool = True
+    #: قصّ يدويّ بالنِّسب حين يُفضَّل على الاستنتاج. أي قيمة موجبة هنا
+    #: تُلغي الكشف التلقائي.
+    crop_top_ratio: float = 0.0
+    crop_bottom_ratio: float = 0.0
 
 
 class ClipRange(BaseModel):
@@ -153,6 +162,10 @@ class ApplicationConfig(BaseModel):
     # تنظيف الصوت قبل التفريغ (مرشّحات ffmpeg، بلا اعتمادية جديدة).
     # تقرير القبول: «صوت نظيف — الأثر الأكبر منفردًا» على الدقة.
     denoise_audio: bool = False
+    #: توحيد مستوى الصوت قبل التفريغ. **مُفعَّل افتراضيًّا** — انظر
+    #: ``FFmpegService.LOUDNORM_FILTER``: تسجيلٌ أهدأ من اللازم بـ15 dB
+    #: أضاع 75٪ من كلامه في قياس حقيقي. تعطيله خيار من يعرف ما يفعل.
+    normalize_audio: bool = True
     # نوع المحتوى — يحدّد استراتيجية كشف المشاهد واختيار الصور.
     #
     # كانت استراتيجية واحدة تُطبَّق على كل شيء، وهي معايرة على محاضرة
@@ -163,6 +176,10 @@ class ApplicationConfig(BaseModel):
     # القيم في ``config/profiles.py``. الاختيار صريح لا تلقائي: مُصنِّف
     # يخطئ يُفسد المخرج بلا أن يعرف أحد لماذا.
     content_profile: str = "slides"
+    #: سجلّ تدقيق إلحاقي لكل مهمّة — انظر ``utils/audit``. معطّل
+    #: افتراضيًا: المعلّم الفرد لا يحتاجه، والمؤسسة تُلزمه بسياسة
+    #: الجهاز (``require_audit_log``) فلا يستطيع المستخدم تعطيله.
+    audit_log: bool = False
 
 
 class TranscriptionConfig(BaseModel):
@@ -266,6 +283,14 @@ class TranscriptionConfig(BaseModel):
     # تقرير القبول أثبت أن الأخطاء شبه محصورة في أسماء الأعلام المنقولة
     # («كازا برانكا» ← «كذابرانكا»)، وهذا أرخص علاج لها.
     glossary: str = ""
+    #: مسحٌ تلقائي لنصّ الشاشة قبل التفريغ، وحقنُ ما يُستخرج في
+    #: ``glossary`` حين يتركها المستخدم فارغة.
+    #:
+    #: الأثر مقيس في ``video/screen_terms``: ملء الخانة رفع استرجاع
+    #: أسماء القوائم الإنجليزية من **صفر من 12 إلى 8 من 12** على تسجيل
+    #: حقيقي. وكانت المصطلحات تُستخرج فعلًا في مرحلة اللقطات — أي
+    #: **بعد** التفريغ، فلا تنفعه. المسح هنا يسبقه.
+    auto_screen_glossary: bool = True
     # 0 = اكتشاف تلقائي من عدد أنوية المعالج. الرقم الثابت 4 كان يترك
     # نصف الأداء على جهاز بثمانية أنوية، ويُثقِل جهازًا بنواتين.
     cpu_threads: int = 0
@@ -309,6 +334,26 @@ class DocumentConfig(BaseModel):
     subtitle_formats: list[str] = Field(default_factory=lambda: ["srt", "vtt"])
     # فهرس الأشكال بعد جدول المحتويات
     enable_figure_index: bool = True
+    #: رموز لغات تُترجَم إليها ملفّات الترجمة (``en``، ``fr``…).
+    #: فارغة = بلا ترجمة. تحتاج مزوّدًا — تستعمل مزوّد الحزمة التعليمية
+    #: نفسه، فلا إعداد ثانٍ ولا مفتاح ثانٍ.
+    translate_to: list[str] = Field(default_factory=list)
+
+    #: صيغ إخراج إضافية تُصيَّر من ``plan.json`` بعد مستند Word.
+    #:
+    #: الافتراضي يضمّ ما لا يكلّف شيئًا ولا يحتاج اعتمادًا خارجيًّا:
+    #: صفحة HTML (بحث ومزامنة مع الفيديو) وقائمة فصول. و``pdf``
+    #: يحتاج LibreOffice و``pptx`` يحتاج python-pptx، فيبقيان اختيارًا
+    #: صريحًا — تشغيلهما افتراضيًّا يعني سطر تحذير في سجلّ كل مستخدم
+    #: لا يملك الاعتمادين، وهو ضجيج بلا فائدة.
+    #:
+    #: و``study`` و``flashcards`` يتخطّيان أنفسهما بصمت حين تكون
+    #: الحزمة التعليمية معطّلة، فوجودهما في الافتراضي بلا كلفة: من
+    #: يفعّلها يجد دليله ولا يبحث عن مربّع ثانٍ يفعّله.
+    #:
+    #: الصيغ المتاحة: html · pdf · pptx · chapters · study · flashcards · scorm
+    export_formats: list[str] = Field(
+        default_factory=lambda: ["html", "chapters", "study", "flashcards"])
 
 
 class RewriteSettings(BaseModel):
@@ -327,6 +372,35 @@ class RewriteSettings(BaseModel):
     batch_chars: int = 3500
     make_outline: bool = True
     timeout_seconds: int = 180
+
+
+class StudySettings(BaseModel):
+    """الحزمة التعليمية — معطّلة افتراضيًا (ADR-018).
+
+    والمزوّد الافتراضي **محلّي** خلافًا لإعادة الصياغة. السبب أن هذه
+    ميزة يُفترض أن يجرّبها كل معلّم، وجعلُ التجربة مشروطة بمفتاح مدفوع
+    يعني أن أحدًا لن يجرّبها. ``ollama`` مجاني ويعمل بلا إنترنت، ومن
+    يملك مفتاح Claude يبدّل حقلًا واحدًا.
+    """
+    enabled: bool = False
+    provider: str = "ollama"          # ollama | anthropic | openai_compatible
+    model: str = ""                   # فارغ = افتراضي المزوّد
+    base_url: str = ""
+    api_key_env: str = ""
+    #: يُحفظ مشفَّرًا بمفتاح محلي — انظر utils/secret_store.py
+    api_key: str = ""
+    workspace_id: str = ""
+    timeout_seconds: int = 180
+    batch_chars: int = 2500
+    questions_per_batch: int = 3
+    max_questions: int = 20
+    max_objectives: int = 8
+    max_glossary: int = 25
+    max_flashcards: int = 30
+    augment_glossary: bool = True
+    #: عند تعذّر المزوّد: أخرج قائمة مصطلحات إحصائية بدل لا شيء.
+    #: ‏False يجعل غياب المزوّد يعني غياب الحزمة كلّها.
+    fallback_without_model: bool = True
 
 
 #: قيمٌ كانت افتراضياتٍ ثم استُبدلت بأفضل منها.
@@ -387,9 +461,14 @@ class AppConfig(BaseModel):
     frames: KeyframeConfig = Field(default_factory=KeyframeConfig)
     document: DocumentConfig = Field(default_factory=DocumentConfig)
     rewrite: RewriteSettings = Field(default_factory=RewriteSettings)
+    study: StudySettings = Field(default_factory=StudySettings)
 
     # آخر خطأ تحميل — تقرؤه الواجهة لتُعلم المستخدم بدل ابتلاعه
     load_error: str = ""
+    #: ``اسم الحقل: سبب القفل`` من سياسة الجهاز. تقرؤه الواجهة لتعطّل
+    #: الحقل **مع بيان السبب**. فارغ = لا سياسة.
+    policy_locked: dict = Field(default_factory=dict)
+    policy_notice: str = ""
 
     @classmethod
     def load(cls, path: Path | None = None) -> "AppConfig":
@@ -400,7 +479,7 @@ class AppConfig(BaseModel):
         **ونحتفظ بالسبب** في ``load_error`` لتعرضه الواجهة والسجلّ.
         """
         if path is None or not Path(path).exists():
-            return cls()
+            return _with_policy(cls())
         try:
             import yaml
             data = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
@@ -415,6 +494,10 @@ class AppConfig(BaseModel):
             if rewrite_data.get("api_key"):
                 rewrite_data["api_key"] = decrypt_field(
                     rewrite_data["api_key"], config_dir)
+            study_data = data.get("study") or {}
+            if study_data.get("api_key"):
+                study_data["api_key"] = decrypt_field(
+                    study_data["api_key"], config_dir)
 
             dropped = drop_superseded_defaults(data)
             if dropped:
@@ -423,7 +506,7 @@ class AppConfig(BaseModel):
                     "أُعيدت إلى التلقائي قيمٌ موروثة من افتراضات قديمة: "
                     + "، ".join(dropped))
 
-            return cls(**data)
+            return _with_policy(cls(**data))
         except Exception as exc:
             from utils.logger import logger
             message = (f"تعذّرت قراءة ملف الإعداد {path} ({exc}) — "
@@ -431,7 +514,7 @@ class AppConfig(BaseModel):
             logger.warning(message)
             fallback = cls()
             fallback.load_error = message
-            return fallback
+            return _with_policy(fallback)
 
     def save(self, path: Path) -> None:
         import yaml
@@ -450,8 +533,36 @@ class AppConfig(BaseModel):
         if data.get("rewrite", {}).get("api_key"):
             data["rewrite"]["api_key"] = encrypt_field(
                 data["rewrite"]["api_key"], path.parent)
+        if data.get("study", {}).get("api_key"):
+            data["study"]["api_key"] = encrypt_field(
+                data["study"]["api_key"], path.parent)
 
         serialized = yaml.safe_dump(data, allow_unicode=True, sort_keys=False)
         tmp = path.with_name(path.name + ".tmp")
         tmp.write_text(serialized, encoding="utf-8")
         tmp.replace(path)
+
+
+def _with_policy(config: "AppConfig") -> "AppConfig":
+    """يطبّق سياسة الجهاز على كل إعداد محمَّل — بلا استثناء.
+
+    الموضع هنا لا في المداخل مقصود. السياسة التي تُطبَّق في الواجهة
+    وسطر الأوامر ووضع الدفعات كلٌّ على حدة تبقى صحيحة حتى يُضاف مدخل
+    رابع ينساها — وذلك المدخل هو الثغرة التي تُبطل السياسة كلّها.
+    وهنا لا يوجد طريق إلى ``AppConfig`` لا يمرّ بهذه الدالة.
+
+    ولا تُفشل السياسة التحميل أبدًا: ملفّ سياسة تالف يترك الإعداد كما
+    هو ويُسجَّل، لأن معلّمًا مُوقَفًا عن عمله بسبب ملفّ أخطأ المسؤول في
+    كتابته ليس أمنًا.
+    """
+    try:
+        from config.policy import apply
+
+        policy = apply(config)
+        config.policy_locked = dict(policy.locked)
+        config.policy_notice = policy.notice
+    except Exception as exc:
+        from utils.logger import logger
+
+        logger.warning(f"تعذّر تطبيق سياسة الجهاز: {exc}")
+    return config

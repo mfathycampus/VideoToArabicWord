@@ -37,6 +37,7 @@ from PIL import Image
 from config.schemas import DocumentPlan, VideoMetadata
 from config.settings import DocumentConfig
 from core.exceptions import DocumentGenerationError
+from document.alt_text import describe
 from document.planner import assert_lossless
 from document.rtl_utils import (
     add_mixed_text,
@@ -62,6 +63,34 @@ from document.template import (
 )
 from utils.logger import logger
 from utils.timestamps import humanize_duration, seconds_to_display
+
+#: دون هذا العدد من الأقسام لا يُكتب جدول محتويات: ثلاثة أقسام تُرى
+#: كلّها في صفحة ونصف، والفهرس لها صفحةٌ ضائعة.
+MIN_TOC_SECTIONS = 3
+#: وكذلك فهرس الأشكال — ستّة أشكال فأكثر.
+MIN_INDEX_FIGURES = 6
+
+
+def _set_alt_text(picture, alt: str) -> None:
+    """يكتب النصّ البديل في ``wp:docPr`` — موضعه الرسمي في OOXML.
+
+    ‏python-docx لا تعرض خاصيّة له إطلاقًا، فالصور تخرج بـ``descr``
+    فارغ. وWord يعرض حينها «لا يوجد نص بديل» في مدقّق إمكانية الوصول
+    المدمج فيه، وهو أوّل ما يشغّله مسؤول الامتثال في أي مؤسسة.
+
+    ``title`` يُكتب أيضًا: بعض قارئات الشاشة القديمة تقرؤه بدل
+    ``descr``، وكتابته لا تكلّف شيئًا.
+    """
+    if not alt:
+        return
+    try:
+        doc_pr = picture._inline.docPr
+        doc_pr.set("descr", alt)
+        doc_pr.set("title", alt[:120])
+    except Exception:
+        # النصّ البديل لا يستحقّ إسقاط مستند. بنية python-docx الداخلية
+        # قد تتغيّر بين الإصدارات، والمستند بلا بديل أفضل من لا مستند.
+        pass
 
 
 class DocumentGenerator:
@@ -94,10 +123,14 @@ class DocumentGenerator:
         add_header(document, self.theme, plan.title)
         add_page_number_footer(document, self.theme, self.config.footer_text)
 
-        if self.config.enable_toc:
+        # فهرسٌ لا يملأ سطرين يأكل صفحة كاملة. رُصد على مخرج حقيقي:
+        # سبع صفحات، **اثنتان منها** فهرسان بسطرٍ واحد لكلٍّ منهما —
+        # لأن الفهرس يبدأ صفحة جديدة بطبعه. الفهرس دليلٌ على بنية، وما
+        # دون العتبة لا بنية فيه أصلًا.
+        if self.config.enable_toc and len(plan.sections) >= MIN_TOC_SECTIONS:
             add_table_of_contents(document, self.theme)
-        if getattr(self.config, "enable_figure_index", False) \
-                and plan.total_figures_in:
+        if (getattr(self.config, "enable_figure_index", False)
+                and plan.total_figures_in >= MIN_INDEX_FIGURES):
             add_figure_index(document, self.theme)
 
         self._add_abstract(document, plan)
@@ -244,7 +277,9 @@ class DocumentGenerator:
         run = paragraph.add_run()
 
         width, height = self._fit(path)
-        run.add_picture(str(path), width=Inches(width), height=Inches(height))
+        picture = run.add_picture(str(path), width=Inches(width),
+                                  height=Inches(height))
+        _set_alt_text(picture, describe(block, number))
         self._add_image_border(run)
 
         # التسمية فقرة LTR: تبدأ برقم وتنتهي بتوقيت، فترتيبها في فقرة

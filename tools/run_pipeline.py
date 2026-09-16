@@ -64,6 +64,29 @@ def main() -> int:
                         help="مصطلحات المادة، مفصولة بفواصل")
     parser.add_argument("--allow-download", action="store_true",
                         help="السماح بتنزيل النموذج إن لم يكن مثبّتًا")
+    parser.add_argument(
+        "--audit", action="store_true",
+        help="اكتب سطر تدقيق لكل مهمّة (من ومتى وهل غادر النصّ الجهاز)")
+    parser.add_argument(
+        "--study", action="store_true",
+        help="ولّد حزمة تعليمية: أهداف ومسرد وأسئلة وبطاقات مراجعة "
+             "(يحتاج Ollama محليًّا أو مفتاح مزوّد — انظر --study-provider)")
+    parser.add_argument(
+        "--study-provider", default=None,
+        choices=["ollama", "anthropic", "openai_compatible"],
+        help="مزوّد الحزمة التعليمية (الافتراضي ollama المحلي)")
+    parser.add_argument(
+        "--study-model", default=None,
+        help="اسم النموذج لدى المزوّد (فارغ = افتراضي المزوّد)")
+    parser.add_argument(
+        "--translate", default=None, metavar="لغات",
+        help="ترجم ملفّات الترجمة إلى لغات مفصولة بفواصل: en,fr,tr "
+             "(تستعمل مزوّد الحزمة التعليمية نفسه)")
+    parser.add_argument(
+        "--export", default=None, metavar="صيغ",
+        help="صيغ إضافية مفصولة بفواصل: html,pdf,pptx,chapters "
+             "(‏pdf يحتاج LibreOffice، و‏pptx تحتاج python-pptx). "
+             "استعمل --export none لتعطيلها كلّها")
     args = parser.parse_args()
 
     if not (args.video or args.audio or args.rebuild or args.batch
@@ -89,6 +112,24 @@ def main() -> int:
         config.application.content_profile = args.profile
     if args.glossary:
         config.whisper.glossary = args.glossary
+    if args.audit:
+        config.application.audit_log = True
+    if args.study:
+        config.study.enabled = True
+    if args.study_provider:
+        config.study.provider = args.study_provider
+    if args.study_model:
+        config.study.model = args.study_model
+    if args.translate:
+        config.document.translate_to = [
+            code.strip().lower() for code in args.translate.split(",")
+            if code.strip()]
+    if args.export is not None:
+        # ``--export none`` تعطيلٌ صريح. بلا هذه الحالة لا سبيل لإيقاف
+        # صيغةٍ مفعّلة في ملف الإعداد من سطر الأوامر إلا بتحرير الملف.
+        chosen = [f.strip().lower() for f in args.export.split(",") if f.strip()]
+        config.document.export_formats = (
+            [] if chosen in ([], ["none"], ["لا"]) else chosen)
     config.whisper.device = args.device
     config.application.output_dir = args.output
     setup_logger(args.output / "logs")

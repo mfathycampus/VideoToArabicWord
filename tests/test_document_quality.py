@@ -364,16 +364,22 @@ def test_toc_field_is_present():
     from document.planner import TimelinePlanner
     import tempfile
 
-    segments = [AudioSegment(id=1, start=0.0, end=5.0, text_raw="نص.",
-                             text_clean="نص.")]
+    # المستند يحتاج أقسامًا تستحقّ فهرسًا: الفهرس يبدأ صفحة جديدة
+    # بطبعه، فكتابته لقسم واحد تُهدر صفحة كاملة على سطر
+    # (‏``MIN_TOC_SECTIONS``). مقطع واحد مدّته خمس ثوانٍ لا فهرس له.
+    segments = [AudioSegment(id=i, start=float(i * 70), end=float(i * 70 + 60),
+                             text_raw=f"جملة القسم رقم {i} كاملة هنا.",
+                             text_clean=f"جملة القسم رقم {i} كاملة هنا.")
+                for i in range(1, 7)]
     transcript = TranscriptionResult(language="ar", full_text_raw="",
                                      full_text_clean="", segments=segments,
                                      words=[], engine={"name": "t"})
     metadata = VideoMetadata(filename="v.mp4", path=Path("v.mp4"),
-                             duration_seconds=10.0, width=1280, height=720,
+                             duration_seconds=430.0, width=1280, height=720,
                              fps=25.0, codec="h264", has_audio=True,
                              stored_width=1280, stored_height=720)
     plan = TimelinePlanner().build(transcript, [], "عنوان")
+    assert len(plan.sections) >= 3, "التجهيز نفسه لا يستحقّ فهرسًا"
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp) / "toc.docx"
         DocumentGenerator().generate(plan, metadata, Path(tmp), out)

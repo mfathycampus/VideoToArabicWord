@@ -51,6 +51,91 @@ def _friendly_error(detail: str) -> str:
     return detail[:300]
 
 
+# ---------------------------------------------------------------------
+# سجلّ الخروج الفعلي — ما غادر الجهاز حقًّا، لا ما أذِن به الإعداد
+# ---------------------------------------------------------------------
+# ADR-020 · **الإعداد نيّة، والسجلّ شهادة.**
+#
+# كان ``audit.text_left_device`` يُحسب من الإعداد عند بدء المهمّة: مزوّد
+# سحابيّ مُفعَّل ⇒ ``true``. ورُصد على مخرج حقيقي أن ذلك يكذب: الإعداد
+# كان ``anthropic``، والمزوّد سقط قبل أن يُرسل شيئًا، وسطر التدقيق قال
+# إن نصّ المحاضرة غادر الجهاز.
+#
+# وسجلٌّ يكذب لصالح التشدّد يفقد قيمته كدليل تمامًا كالذي يكذب لصالح
+# التساهل — فمراجعُ الامتثال الذي يجد سطرًا واحدًا مخالفًا للواقع لا
+# يثق بالملفّ كلّه.
+#
+# فالتسجيل الآن يقع **عند حدود الشبكة**: لحظة إرسال الطلب فعلًا، ومن
+# داخل المزوّد نفسه. ولا سبيل إلى ``complete`` سحابيّ لا يمرّ بها.
+
+_EGRESS: dict = {"sent": False, "providers": [], "attempts": []}
+
+
+def reset_egress() -> None:
+    """يُصفّر السجلّ عند بدء مهمّة — يستدعيه الـ pipeline."""
+    _EGRESS["sent"] = False
+    _EGRESS["providers"] = []
+    _EGRESS["attempts"] = []
+
+
+def record_egress(provider: str, sent: bool, detail: str = "") -> None:
+    """يسجّل محاولة إرسال. ``sent`` = غادرت البيانات فعلًا."""
+    name = str(provider or "?").strip().lower()
+    _EGRESS["attempts"].append(
+        {"provider": name, "sent": bool(sent), "detail": detail[:160]})
+    if sent:
+        _EGRESS["sent"] = True
+        if name not in _EGRESS["providers"]:
+            _EGRESS["providers"].append(name)
+
+
+def egress_report() -> dict:
+    """نسخة من السجلّ. ``sent=False`` مع محاولات = حاول ولم يُرسل."""
+    return {
+        "sent": _EGRESS["sent"],
+        "providers": list(_EGRESS["providers"]),
+        "attempts": list(_EGRESS["attempts"]),
+    }
+
+
+#: إعادة المحاولة على الأخطاء العابرة وحدها (تحديد معدّل، عطل خدمة،
+#: انقطاع شبكة). والتراجع أُسّي كي لا نُغرق خدمةً تشتكي أصلًا.
+MAX_ATTEMPTS = 3
+BACKOFF_SECONDS = 3.0
+
+
+def complete_with_retry(provider: "LLMProvider", system_prompt: str,
+                        user_prompt: str, max_tokens: int = 2048,
+                        timeout: int = 180) -> str:
+    """نداء المزوّد مع إعادة محاولة للأخطاء العابرة وحدها.
+
+    كان هذا المنطق حبيس ``TranscriptRewriter``، فلمّا احتاجته وحدةٌ
+    ثانية (``ai/study_builder``) كان البديل نسخَه — أي منطقَ إعادة
+    محاولة له نسختان تتباعدان عند أول تعديل. رُفع هنا ليُستعمل مرّة
+    واحدة، والرِّوَيتر يستدعيه كما تستدعيه الحزمة التعليمية.
+    """
+    import time
+
+    last: Optional[BaseException] = None
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        try:
+            return provider.complete(system_prompt, user_prompt,
+                                     max_tokens=max_tokens, timeout=timeout)
+        except RewriteUnavailableError as exc:
+            last = exc
+            if not getattr(exc, "retryable", False):
+                raise
+            if attempt == MAX_ATTEMPTS:
+                break
+            delay = BACKOFF_SECONDS * (2 ** (attempt - 1))
+            logger.warning(
+                f"خطأ عابر من المزوّد ({exc}) — "
+                f"إعادة المحاولة {attempt}/{MAX_ATTEMPTS - 1} "
+                f"بعد {delay:.0f} ثانية.")
+            time.sleep(delay)
+    raise last  # type: ignore[misc]
+
+
 @dataclass
 class ProviderInfo:
     name: str
@@ -165,14 +250,20 @@ class OpenAICompatibleProvider(LLMProvider):
                      "Authorization": f"Bearer {self.api_key}"})
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
+                # الاتصال قام والردّ وصل ⇒ النصّ غادر الجهاز يقينًا.
+                record_egress(self.info.name, True)
                 data = json.loads(response.read())
             return data["choices"][0]["message"]["content"]
         except urllib.error.HTTPError as exc:
+            # ردٌّ بخطأ يعني أن الطلب **وصل** — أي أن النصّ غادر.
+            record_egress(self.info.name, True, f"HTTP {exc.code}")
             detail = exc.read().decode("utf-8", "replace")[:300]
             raise RewriteUnavailableError(
                 f"رفضت الخدمة الطلب ({exc.code}): {detail}",
                 retryable=exc.code == 429 or exc.code >= 500) from exc
         except urllib.error.URLError as exc:
+            # لم يُفتح اتصال: لم يغادر شيء.
+            record_egress(self.info.name, False, str(exc))
             raise RewriteUnavailableError(
                 f"تعذر الاتصال بالخدمة: {exc}", retryable=True) from exc
 
@@ -360,8 +451,17 @@ class AnthropicProvider(LLMProvider):
         request = urllib.request.Request(
             f"{self.base_url}/v1/messages",
             data=json.dumps(body).encode("utf-8"), headers=headers)
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            return json.loads(response.read())
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                record_egress(self.info.name, True)
+                return json.loads(response.read())
+        except urllib.error.HTTPError as exc:
+            # ردٌّ بخطأ يعني أن الطلب وصل — النصّ غادر ولو رُفض.
+            record_egress(self.info.name, True, f"HTTP {exc.code}")
+            raise
+        except urllib.error.URLError as exc:
+            record_egress(self.info.name, False, str(exc))
+            raise
 
     @staticmethod
     def _extract_text(data: dict) -> str:

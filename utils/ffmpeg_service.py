@@ -1,6 +1,7 @@
 """واجهة موحّدة لكل استدعاءات FFmpeg — لا يُستدعى ffmpeg خارج هذه الوحدة."""
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 from typing import Optional
@@ -32,22 +33,64 @@ class FFmpegService:
             raise FFmpegExecutionError(
                 f"تجاوز FFmpeg المهلة ({timeout}s).") from exc
 
-    # سلسلة تنظيف محافظة: تُزيل ما يضرّ التفريغ ولا تمسّ الكلام.
-    #   highpass=80   : يقطع هدير المكيّف وضجيج المروحة تحت 80Hz
-    #   afftdn        : خفض ضوضاء طيفي خفيف
-    #   loudnorm      : توحيد المستوى — تسجيل يتذبذب فيه بُعد الميكروفون
-    #                   يُربك VAD فيبتلع مقاطع كاملة
-    DENOISE_FILTER = "highpass=f=80,afftdn=nf=-25,loudnorm=I=-16:TP=-1.5:LRA=11"
+    #: توحيد المستوى. **مُطبَّق افتراضيًّا** — وهذا أهمّ سطر في الملفّ.
+    #:
+    #: كان جزءًا من سلسلة ``--denoise`` المعطّلة افتراضيًّا، والتعليق
+    #: فوقه يقول إن تذبذب المستوى «يُربك VAD فيبتلع مقاطع كاملة». ثم
+    #: وقع ذلك بالضبط على تسجيل حقيقي، وقِيس:
+    #:
+    #:   تسجيل شاشة 5:12 · وسيط ‎-36.5 dBFS · ذروة ‎-26.6
+    #:   المفرَّغ: 77 ثانية من 312 = **24.7٪**
+    #:   والمقطع 193–283s — 58 ثانية منه كلامٌ فعليّ — خرج **فارغًا**
+    #:   و``loudnorm`` يرفع ذلك المقطع من ‎-36.0 إلى ‎-20.7 dBFS
+    #:
+    #: أي أن علاج أشدّ أعطال البرنامج كان مكتوبًا وموصوفًا ومعطَّلًا.
+    #: التطبيع رخيص (مرور واحد على الصوت المستخرَج أصلًا) ولا يُتلف
+    #: صوتًا سليمًا — فلا سبب لجعله اختيارًا.
+    LOUDNORM_FILTER = "loudnorm=I=-16:TP=-1.5:LRA=11"
+
+    #: خفض الضوضاء وحده — يبقى اختياريًّا. ``afftdn`` عدوانيّ على
+    #: أصوات هادئة أو مسجَّلة بميكروفون ضعيف، فتشغيله للجميع يُتلف
+    #: صوتًا سليمًا ليُصلح صوتًا رديئًا.
+    DENOISE_FILTER = "highpass=f=80,afftdn=nf=-25"
+
+    #: تحت هذه الذروة يُعدّ التسجيل هادئًا ويُسجَّل تنبيه. الرقم من
+    #: القياس أعلاه: ذروة ‎-26.6 dBFS كانت تُنتج تفريغًا ربعَ كامل.
+    QUIET_PEAK_DBFS = -20.0
+
+    def audio_levels(self, media_path: Path,
+                     timeout: int = 180) -> Optional[dict]:
+        """يقيس ذروة الصوت ومتوسّطه بـ``volumedetect`` — بلا فكّ كامل.
+
+        يُستعمل للتشخيص لا للقرار: التطبيع يُطبَّق دائمًا، وهذا يقول
+        للمستخدم **لماذا** كان تفريغه ضعيفًا قبل الإصلاح.
+        """
+        result = self._run([
+            "-i", str(media_path), "-vn", "-map", "0:a:0",
+            "-af", "volumedetect", "-f", "null", "-"], timeout=timeout)
+        levels: dict = {}
+        for key, field in (("max_volume", "peak_db"),
+                           ("mean_volume", "mean_db")):
+            match = re.search(rf"{key}:\s*(-?\d+(?:\.\d+)?) dB",
+                              result.stderr or "")
+            if match:
+                levels[field] = float(match.group(1))
+        return levels or None
 
     def extract_audio(self, video_path: Path, output_path: Path,
                       sample_rate: int = 16000,
                       start_seconds: float = 0.0,
                       end_seconds: Optional[float] = None,
-                      denoise: bool = False) -> Path:
+                      denoise: bool = False,
+                      normalize: bool = True) -> Path:
         """يستخرج صوتًا أحاديًا 16kHz PCM — الصيغة التي يتوقعها Whisper.
 
         ``-ss`` قبل ``-i`` للبحث السريع (يقفز بلا فكّ ترميز)، و ``-to``
         بعده لأنه يُحسب من نقطة البدء.
+
+        ``normalize`` مُفعَّل افتراضيًّا — انظر ``LOUDNORM_FILTER``.
+        ``denoise`` يبقى اختياريًّا ويُضاف **قبل** التطبيع: التنظيف ثم
+        التسوية، لا العكس؛ تطبيعٌ يسبق خفض الضوضاء يرفع الضوضاء معه.
         """
         output_path.parent.mkdir(parents=True, exist_ok=True)
         args: list[str] = []
@@ -60,8 +103,13 @@ class FFmpegService:
             "-vn",                       # تجاهل الفيديو
             "-map", "0:a:0",             # أول مسار صوتي فقط
         ]
+        chain = []
         if denoise:
-            args += ["-af", self.DENOISE_FILTER]
+            chain.append(self.DENOISE_FILTER)
+        if normalize:
+            chain.append(self.LOUDNORM_FILTER)
+        if chain:
+            args += ["-af", ",".join(chain)]
         args += [
             "-acodec", "pcm_s16le",
             "-ar", str(sample_rate),
