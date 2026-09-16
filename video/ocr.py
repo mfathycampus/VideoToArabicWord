@@ -195,11 +195,12 @@ def extract_text(image_path: Path, timeout_seconds: float = 20.0) -> str:
 
     with tempfile.TemporaryDirectory(prefix="ocr_") as tmp:
         out_base = Path(tmp) / "out"
+        source = _prepare_for_ocr(Path(image_path), Path(tmp))
         # ``tsv`` بدل النصّ الخام: يعطي إحداثيات كل كلمة **وثقتها**،
         # وهي ما يفصل السطر المقروء عن الضوضاء. الأمر نفسه والزمن نفسه.
         try:
             result = subprocess.run(
-                [exe, str(image_path), str(out_base),
+                [exe, str(source), str(out_base),
                  "-l", LANGUAGES, "--psm", "3", "tsv"],
                 capture_output=True, text=True, encoding="utf-8",
                 errors="replace", timeout=timeout_seconds)
@@ -224,6 +225,40 @@ def extract_text(image_path: Path, timeout_seconds: float = 20.0) -> str:
         except OSError:
             return ""
         return _clean(_confident_lines(raw))
+
+
+#: عرض الصورة المستهدف قبل OCR. نصّ واجهات الويب ~11px في لقطة عرضها
+#: 1366 — دون ما يقرأه Tesseract جيدًا (~20px لارتفاع الحرف).
+#:
+#: **مقيس** على لقطة حقيقية من «متابعة تحضير المعلمين» (67 كلمة مرجعية
+#: ظاهرة بوضوح، ثقة ≥ 75): الأصل JPEG ‏15/67 · رمادي ‏19/67 ·
+#: رمادي ×2 ‏53/67 · رمادي ×3 ‏59/67. والزمن +25٪ لكل لقطة.
+OCR_TARGET_WIDTH = 2732
+OCR_MAX_UPSCALE = 2.0
+
+
+def _prepare_for_ocr(image_path: Path, workdir: Path) -> Path:
+    """تدرّج رمادي وتكبير إلى ``OCR_TARGET_WIDTH`` وحفظ PNG بلا فقد.
+
+    أي فشل يُرجع الصورة الأصلية: المعالجة تحسينٌ لا شرط.
+    """
+    try:
+        from PIL import Image, ImageOps
+
+        with Image.open(image_path) as image:
+            gray = ImageOps.grayscale(image)
+            scale = max(1.0, min(OCR_MAX_UPSCALE,
+                                 OCR_TARGET_WIDTH / float(gray.width)))
+            if scale > 1.0:
+                gray = gray.resize(
+                    (int(gray.width * scale), int(gray.height * scale)),
+                    Image.Resampling.LANCZOS)
+            prepared = workdir / "ocr_input.png"
+            gray.save(prepared)
+            return prepared
+    except Exception as exc:                    # noqa: BLE001 — تحسين اختياري
+        logger.debug(f"تعذّر تجهيز الصورة لـOCR ({exc}) — تُقرأ كما هي.")
+        return image_path
 
 
 def _confident_lines(tsv_text: str) -> str:

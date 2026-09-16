@@ -114,3 +114,38 @@ def test_ocr_presence_alone_no_longer_counts():
     plan = DocumentPlan(title="مستند", sections=[
         DocumentSection(title="قسم", start_timestamp=0.0, blocks=[block])])
     assert _captioning(plan).value == 0.0
+
+
+def test_small_screenshots_are_upscaled_to_grayscale_png(tmp_path):
+    """‏15/67 كلمة من لقطة 1366px كما هي، و53/67 بعد رمادي ×2."""
+    from PIL import Image
+
+    from video.ocr import OCR_MAX_UPSCALE, _prepare_for_ocr
+
+    src = tmp_path / "shot.jpg"
+    Image.new("RGB", (1366, 630), (200, 30, 30)).save(src)
+    prepared = _prepare_for_ocr(src, tmp_path)
+
+    with Image.open(prepared) as image:
+        assert prepared.suffix == ".png"
+        assert image.mode == "L"
+        assert image.width == int(1366 * OCR_MAX_UPSCALE)
+
+
+def test_large_frames_are_not_upscaled(tmp_path):
+    from PIL import Image
+
+    from video.ocr import _prepare_for_ocr
+
+    src = tmp_path / "big.png"
+    Image.new("RGB", (3000, 1600)).save(src)
+    with Image.open(_prepare_for_ocr(src, tmp_path)) as image:
+        assert image.width == 3000
+
+
+def test_unreadable_image_falls_back_to_the_original(tmp_path):
+    from video.ocr import _prepare_for_ocr
+
+    broken = tmp_path / "broken.jpg"
+    broken.write_bytes(b"not an image")
+    assert _prepare_for_ocr(broken, tmp_path) == broken
