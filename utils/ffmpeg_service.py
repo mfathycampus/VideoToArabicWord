@@ -21,8 +21,11 @@ class FFmpegService:
             self._exe = resolve_ffmpeg()
         return self._exe
 
-    def _run(self, args: list[str], timeout: int = 3600) -> subprocess.CompletedProcess:
-        cmd = [self.executable, "-y", "-hide_banner", "-loglevel", "error", *args]
+    def _run(self, args: list[str], timeout: int = 3600,
+             loglevel: str = "error") -> subprocess.CompletedProcess:
+        # ``loglevel`` قابل للتغيير لأن بعض المرشّحات (``volumedetect``)
+        # تطبع نتيجتها بمستوى ``info`` — و``error`` يُخفيها فيعود القياس فارغًا.
+        cmd = [self.executable, "-y", "-hide_banner", "-loglevel", loglevel, *args]
         logger.debug(f"ffmpeg: {' '.join(cmd[:8])} …")
         try:
             return subprocess.run(
@@ -67,7 +70,8 @@ class FFmpegService:
         """
         result = self._run([
             "-i", str(media_path), "-vn", "-map", "0:a:0",
-            "-af", "volumedetect", "-f", "null", "-"], timeout=timeout)
+            "-af", "volumedetect", "-f", "null", "-"],
+            timeout=timeout, loglevel="info")
         levels: dict = {}
         for key, field in (("max_volume", "peak_db"),
                            ("mean_volume", "mean_db")):

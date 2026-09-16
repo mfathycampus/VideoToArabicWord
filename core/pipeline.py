@@ -451,9 +451,11 @@ class VideoToDocPipeline:
         """
         try:
             levels = self.ffmpeg.audio_levels(media_path)
-        except Exception:
+        except Exception as exc:
+            logger.debug(f"تعذّر قياس مستوى الصوت: {exc}")
             return
         if not levels or "peak_db" not in levels:
+            logger.debug("قياس مستوى الصوت لم يُرجع قيمًا.")
             return
         peak = levels["peak_db"]
         mean = levels.get("mean_db")

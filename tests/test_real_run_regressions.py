@@ -376,3 +376,65 @@ def test_figure_caption_falls_back_to_screen_text_not_to_emptiness():
     caption = _figure_caption(keyframe)
     assert "Islamic Education" in caption
     assert caption != ""
+
+
+# ---------------------------------------------------------------------
+# قياس مستوى الصوت كان ميتًا: ``-loglevel error`` يُخفي ``volumedetect``
+# ---------------------------------------------------------------------
+def test_audio_levels_asks_ffmpeg_for_info_level_output(monkeypatch):
+    """‏``volumedetect`` يطبع ``max_volume`` بمستوى info.
+
+    ‏``_run`` كان يفرض ``-loglevel error`` على كل أمر، فيعود stderr بلا
+    أرقام، فتعيد ``audio_levels`` ‏None دائمًا، فلا يظهر في السجل تحذير
+    «المصدر هادئ» أبدًا — في التشغيل الحقيقي نفسه الذي أُضيف من أجله.
+    """
+    import subprocess
+
+    from utils.ffmpeg_service import FFmpegService
+
+    captured = {}
+
+    class Result:
+        returncode = 0
+        stderr = ("[Parsed_volumedetect_0 @ 0x1] mean_volume: -36.5 dB\n"
+                  "[Parsed_volumedetect_0 @ 0x1] max_volume: -26.6 dB\n")
+
+    def fake_subprocess_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return Result()
+
+    service = FFmpegService()
+    service._exe = "ffmpeg"
+    monkeypatch.setattr(subprocess, "run", fake_subprocess_run)
+
+    levels = service.audio_levels(Path("v.mp4"))
+
+    cmd = captured["cmd"]
+    assert cmd[cmd.index("-loglevel") + 1] == "info"
+    assert levels == {"peak_db": -26.6, "mean_db": -36.5}
+
+
+def test_other_ffmpeg_commands_stay_quiet(monkeypatch, tmp_path):
+    """التغيير لا يُغرق بقية الأوامر بمخرجات info."""
+    import subprocess
+
+    from utils.ffmpeg_service import FFmpegService
+
+    captured = {}
+
+    class Result:
+        returncode = 0
+        stderr = ""
+
+    def fake_subprocess_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        Path(cmd[-1]).write_bytes(b"x" * 16)
+        return Result()
+
+    service = FFmpegService()
+    service._exe = "ffmpeg"
+    monkeypatch.setattr(subprocess, "run", fake_subprocess_run)
+    service.extract_audio(tmp_path / "v.mp4", tmp_path / "a.wav")
+
+    cmd = captured["cmd"]
+    assert cmd[cmd.index("-loglevel") + 1] == "error"
