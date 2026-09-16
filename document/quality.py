@@ -302,10 +302,87 @@ def _figure_distinctness(figure_blocks: list) -> Metric:
         f"{duplicates} صورة نصّها مُحتوى داخل صورة أخرى")
 
 
+# ── الاكتمال: هل وصل الكلام أصلًا؟ ───────────────────────────────────
+
+#: تحت هذه النسبة من مدّة المصدر مغطّاةً بمقاطع مفرَّغة يُعدّ التفريغ
+#: ناقصًا. قياس حقيقي: تسجيل «متابعة تحضير المعلمين» كان 57٪ من ثوانيه
+#: كلامًا، وخرج مفرَّغًا 24٪ — ومرّ من البوابة بدرجة 75٪.
+MIN_TRANSCRIPT_COVERAGE_PCT = 40.0
+
+#: الكلام العربي الطبيعي 100–150 كلمة/دقيقة. محاضرةٌ فيها صمتٌ ونقرٌ على
+#: الشاشة قد تنزل إلى النصف؛ ما دون ذلك يعني كلامًا لم يُفرَّغ.
+MIN_WORDS_PER_MINUTE = 45.0
+
+#: فجوة بلا تفريغ أطول من هذا تُسمّى في التحذير بزمنها.
+LONG_GAP_SECONDS = 30.0
+
+
+def completeness(segments: Iterable, duration_seconds: Optional[float],
+                 start_offset: float = 0.0) -> tuple[dict, list[str]]:
+    """يقيس اكتمال التفريغ نفسه — ما لا تراه مقاييس قابلية القراءة.
+
+    مستندٌ جميل الفقرات من ربع الكلام يمرّ من كل مقياس شكلي. هذه
+    الأرقام لا تدخل درجة القراءة (موضوعها مختلف)، بل تُسجَّل في
+    ``diagnostics`` وتُطلق تحذيرات صريحة.
+    """
+    segs = sorted(segments, key=lambda s: s.start)
+    if not duration_seconds or duration_seconds <= 0:
+        return {}, []
+
+    covered = sum(max(0.0, s.end - s.start) for s in segs)
+    words = sum(len((s.text_clean or s.text_raw or "").split()) for s in segs)
+    end = start_offset + duration_seconds
+
+    gaps: list[tuple[float, float]] = []
+    cursor = start_offset
+    for seg in segs:
+        if seg.start - cursor > 0:
+            gaps.append((cursor, seg.start))
+        cursor = max(cursor, seg.end)
+    if end - cursor > 0:
+        gaps.append((cursor, end))
+    longest = max(gaps, key=lambda g: g[1] - g[0], default=None)
+
+    coverage = min(100.0, 100.0 * covered / duration_seconds)
+    wpm = words / (duration_seconds / 60.0)
+    info = {
+        "transcript_coverage_pct": round(coverage, 1),
+        "transcript_words": words,
+        "words_per_minute": round(wpm, 1),
+        "longest_gap_seconds": (round(longest[1] - longest[0], 1)
+                                if longest else 0.0),
+        "long_gaps": [[round(a, 1), round(b, 1)] for a, b in gaps
+                      if b - a >= LONG_GAP_SECONDS],
+    }
+
+    warnings: list[str] = []
+    if coverage < MIN_TRANSCRIPT_COVERAGE_PCT:
+        warnings.append(
+            f"transcript_coverage: {coverage:.0f}% فقط من مدّة المصدر مفرَّغة "
+            f"(الحدّ {MIN_TRANSCRIPT_COVERAGE_PCT:.0f}٪) — غالبًا ضاع كلام")
+    if wpm < MIN_WORDS_PER_MINUTE:
+        warnings.append(
+            f"words_per_minute: {wpm:.0f} كلمة/دقيقة "
+            f"(الطبيعي 100–150) — التفريغ ناقص أو الصوت ضعيف")
+    for a, b in info["long_gaps"]:
+        warnings.append(
+            f"transcript_gap: {b - a:.0f} ثانية بلا تفريغ "
+            f"({seconds_label(a)} ← {seconds_label(b)})")
+    return info, warnings
+
+
+def seconds_label(seconds: float) -> str:
+    seconds = int(round(seconds))
+    return f"{seconds // 60}:{seconds % 60:02d}"
+
+
 # ── التقييم ──────────────────────────────────────────────────────────
 
 def evaluate(plan: DocumentPlan,
-             keyframes: Iterable[KeyframeMetadata] = ()) -> QualityReport:
+             keyframes: Iterable[KeyframeMetadata] = (),
+             segments: Optional[Iterable] = None,
+             duration_seconds: Optional[float] = None,
+             start_offset: float = 0.0) -> QualityReport:
     """يقيس قابلية قراءة الخطة، ويفصل الخلل البنيوي عن الدرجة."""
     text_blocks: list = []
     figure_blocks: list = []
@@ -365,6 +442,12 @@ def evaluate(plan: DocumentPlan,
         if metric.applicable and metric.value < 50.0:
             warnings.append(f"{metric.name}: {metric.value:.0f}% — {metric.detail}")
 
+    completeness_info: dict = {}
+    if segments is not None:
+        completeness_info, completeness_warnings = completeness(
+            segments, duration_seconds, start_offset)
+        warnings.extend(completeness_warnings)
+
     keyframe_list = list(keyframes)
     diagnostics = {
         "text_blocks": len(text_blocks),
@@ -381,6 +464,7 @@ def evaluate(plan: DocumentPlan,
         "keyframes_available": len(keyframe_list),
         "keyframes_with_screen_text": sum(
             1 for k in keyframe_list if k.ocr_text.strip()),
+        **completeness_info,
     }
 
     return QualityReport(

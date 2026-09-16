@@ -275,3 +275,53 @@ def test_paragraph_balance_detail_names_short_fragments():
     assert metric.value == 0.0
     assert "2 فقرة أقصر" in metric.detail
     assert "0 أطول" in metric.detail
+
+
+# ── الاكتمال ─────────────────────────────────────────────────────────
+class _Seg:
+    def __init__(self, start, end, text):
+        self.start, self.end = start, end
+        self.text_raw = self.text_clean = text
+
+
+def test_sparse_transcript_is_flagged_even_when_paragraphs_read_well():
+    """تسجيل 5:12 حقيقي: 24٪ مفرَّغة، وفجوة 89 ثانية، ودرجة قراءة 75٪."""
+    from document.quality import completeness
+
+    segments = [_Seg(0.5, 13.2, "السلام عليكم " * 4),
+                _Seg(173.7, 193.4, "كلمة " * 20),
+                _Seg(282.3, 312.5, "كلمة " * 15)]
+    info, warnings = completeness(segments, 312.6)
+
+    assert info["transcript_coverage_pct"] < 40
+    assert info["longest_gap_seconds"] == pytest.approx(160.5, abs=0.1)
+    assert [193.4, 282.3] in info["long_gaps"]
+    assert any(w.startswith("transcript_coverage") for w in warnings)
+    assert any(w.startswith("words_per_minute") for w in warnings)
+    assert any("3:13 ← 4:42" in w for w in warnings)
+
+
+def test_dense_transcript_raises_no_completeness_warning():
+    from document.quality import completeness
+
+    segments = [_Seg(t, t + 9.5, "كلمة " * 20) for t in range(0, 300, 10)]
+    info, warnings = completeness(segments, 300.0)
+
+    assert info["transcript_coverage_pct"] >= 90
+    assert warnings == []
+
+
+def test_clip_offset_does_not_invent_a_leading_gap():
+    from document.quality import completeness
+
+    segments = [_Seg(t, t + 9.5, "كلمة " * 20) for t in range(300, 600, 10)]
+    info, warnings = completeness(segments, 300.0, start_offset=300.0)
+    assert info["long_gaps"] == []
+
+
+def test_evaluate_without_segments_keeps_old_behaviour():
+    from document.quality import evaluate
+
+    plan = _plan([DocumentSection(title="فصل الخوارزميات",
+                                  blocks=[_para(SENTENCE * 3, [1])])])
+    assert "transcript_coverage_pct" not in evaluate(plan).diagnostics

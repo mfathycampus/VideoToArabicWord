@@ -647,7 +647,12 @@ class VideoToDocPipeline:
             plan = self._build_plan(transcript, keyframes, video_path,
                                     metadata, emit)
             from document.quality import assert_quality_gate, evaluate
-            quality = evaluate(plan, keyframes)
+            clip_start = clip.start_seconds or 0.0
+            clip_end = clip.end_seconds or metadata.duration_seconds
+            quality = evaluate(plan, keyframes,
+                               segments=transcript.segments,
+                               duration_seconds=max(0.0, clip_end - clip_start),
+                               start_offset=clip_start)
             # البوابة تفشل على الخلل البنيوي وحده. درجة قابلية القراءة
             # تُسجَّل وتُتابَع ولا تُفرَض بعد: المخرج الحالي ضعيف فيها
             # بحكم تصميمه، ففرض عتبة اليوم يُسقط كل مهمة عقابًا على عيب
