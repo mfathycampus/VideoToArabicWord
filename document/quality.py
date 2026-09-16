@@ -191,10 +191,15 @@ def _paragraph_balance(text_blocks: list) -> Metric:
     lengths = [len(_text_of(b).strip()) for b in text_blocks]
     within = sum(1 for n in lengths
                  if MIN_PARAGRAPH_CHARS <= n <= MAX_PARAGRAPH_CHARS)
-    longest = max(lengths, default=0)
+    short = sum(1 for n in lengths if n < MIN_PARAGRAPH_CHARS)
+    long_ = sum(1 for n in lengths if n > MAX_PARAGRAPH_CHARS)
+    # التفصيل يسمّي سبب الرسوب الفعلي. النسخة السابقة كانت تذكر أطول فقرة
+    # وحدها، فمستندٌ كلّ فقراته شظايا نال 0٪ برسالة «أطول فقرة 139 حرفًا
+    # (الحدّ 1400)» — توحي بأن كل شيء سليم.
     return Metric(
         "paragraph_balance", _pct(within, len(lengths)), 0.20,
-        f"أطول فقرة {longest} حرفًا (الحدّ {MAX_PARAGRAPH_CHARS})")
+        f"{short} فقرة أقصر من {MIN_PARAGRAPH_CHARS} حرفًا · "
+        f"{long_} أطول من {MAX_PARAGRAPH_CHARS} — من {len(lengths)}")
 
 
 def _section_titling(plan: DocumentPlan) -> Metric:

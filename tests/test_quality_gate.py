@@ -259,3 +259,19 @@ def test_filler_is_reported_but_never_scored():
 
     assert report.diagnostics["filler_per_1000_words"] > 0
     assert all(m.name != "filler" for m in report.metrics)
+
+
+def test_paragraph_balance_detail_names_short_fragments():
+    """0٪ بسبب الشظايا يجب أن يقول «أقصر» لا «أطول فقرة 139 (الحدّ 1400)»."""
+    from document.quality import _paragraph_balance
+
+    class Block:
+        def __init__(self, text):
+            self.kind = "paragraph"
+            self.text = text
+            self.bullets = []
+
+    metric = _paragraph_balance([Block("جملة قصيرة."), Block("أخرى.")])
+    assert metric.value == 0.0
+    assert "2 فقرة أقصر" in metric.detail
+    assert "0 أطول" in metric.detail
