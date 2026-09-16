@@ -455,6 +455,105 @@ class TranscriptionEngine:
                              checkpoint, resume)
 
     # ------------------------------------------------------------------
+    @staticmethod
+    def find_gaps(segments: List[AudioSegment], start: float, end: float,
+                  min_seconds: float) -> List[tuple[float, float]]:
+        """فجوات بلا مقاطع أطول من ``min_seconds`` داخل [start, end]."""
+        gaps: List[tuple[float, float]] = []
+        cursor = start
+        for seg in sorted(segments, key=lambda sg: sg.start):
+            if seg.start - cursor >= min_seconds:
+                gaps.append((cursor, seg.start))
+            cursor = max(cursor, seg.end)
+        if end - cursor >= min_seconds:
+            gaps.append((cursor, end))
+        return gaps
+
+    @staticmethod
+    def _read_wav_slice(path: Path, start: float, end: float):
+        """مقطع من WAV أحادي 16 بت كمصفوفة float32 — بلا تحميل الملفّ كلّه.
+
+        محاضرة ثلاث ساعات مفكوكةً كاملةً ≈ 700MB ذاكرة؛ الفجوة ثوانٍ.
+        """
+        import wave
+
+        import numpy as np
+
+        with wave.open(str(path), "rb") as handle:
+            if handle.getsampwidth() != 2 or handle.getnchannels() != 1:
+                return None, 0
+            rate = handle.getframerate()
+            first = max(0, int(start * rate))
+            handle.setpos(min(first, handle.getnframes()))
+            frames = handle.readframes(max(0, int((end - start) * rate)))
+        samples = np.frombuffer(frames, dtype=np.int16).astype(np.float32)
+        return samples / 32768.0, rate
+
+    def _refill_gaps(self, model, options: dict, audio_path: Path,
+                     segments: List[AudioSegment], offset: float,
+                     duration: float, cancel_token, progress_callback
+                     ) -> List[AudioSegment]:
+        """يعيد تفريغ الفجوات التي فيها صوت، بلا VAD. انظر ``gap_refill``."""
+        import numpy as np
+
+        cfg = self.config
+        # الأزمنة هنا بزمن الملفّ الممرَّر (بقيّة الصوت عند الاستئناف)
+        local = [AudioSegment(id=sg.id, start=sg.start - offset,
+                              end=sg.end - offset, text_raw="", text_clean="")
+                 for sg in segments]
+        gaps = self.find_gaps(local, 0.0, duration, cfg.gap_refill_min_seconds)
+        if not gaps:
+            return []
+
+        refill_options = dict(options, vad_filter=False, vad_parameters=None)
+        added: List[AudioSegment] = []
+        audible = skipped = 0
+        for number, (gap_start, gap_end) in enumerate(gaps, start=1):
+            if cancel_token:
+                cancel_token.raise_if_cancelled()
+            try:
+                samples, rate = self._read_wav_slice(audio_path, gap_start, gap_end)
+            except Exception as exc:                # noqa: BLE001
+                logger.debug(f"تعذّر قراءة الفجوة من الصوت: {exc}")
+                return added
+            if samples is None or rate != 16000 or not len(samples):
+                logger.debug("الصوت ليس WAV أحاديًّا 16kHz — لا سدّ للفجوات.")
+                return added
+            rms = float(np.sqrt(np.mean(np.square(samples))))
+            level = 20.0 * np.log10(max(rms, 1e-9))
+            if level < cfg.gap_refill_min_rms_dbfs:
+                skipped += 1
+                continue
+            audible += 1
+            if progress_callback:
+                progress_callback(
+                    min(1.0, gap_end / duration) if duration else 1.0,
+                    f"سدّ فجوات التفريغ {number} من {len(gaps)}…")
+            pieces, _info = model.transcribe(samples, **refill_options)
+            shift = gap_start + offset
+            for piece in pieces:
+                start = piece.start + shift
+                end = min(piece.end + shift, gap_end + offset)
+                raw = piece.text.strip()
+                clean = clean_segment_text(raw)
+                if not clean or end <= start:
+                    continue
+                piece_words = [
+                    WordTimestamp(word=w.word.strip(), start=w.start + shift,
+                                  end=w.end + shift,
+                                  probability=getattr(w, "probability", None))
+                    for w in (piece.words or [])]
+                added.append(AudioSegment(id=0, start=start, end=end,
+                                          text_raw=raw, text_clean=clean,
+                                          words=piece_words))
+        covered = sum(sg.end - sg.start for sg in added)
+        logger.info(
+            f"سدّ الفجوات: {len(gaps)} فجوة ≥ {cfg.gap_refill_min_seconds:.0f} ث · "
+            f"{audible} فيها صوت · {skipped} صامتة · "
+            f"أُضيف {len(added)} مقطعًا ({covered:.0f} ث)")
+        return added
+
+    # ------------------------------------------------------------------
     def _run(
         self,
         audio_path: Path,
@@ -570,6 +669,18 @@ class TranscriptionEngine:
                         f"التفريغ {fraction * 100:.1f}% "
                         f"({(seg.end + offset) / 60:.0f} من "
                         f"{total / 60:.0f} دقيقة){eta}")
+
+            if cfg.vad_filter and cfg.gap_refill:
+                local = [sg for sg in segments if sg.end > offset]
+                refilled = self._refill_gaps(
+                    model, options, audio_path, local, offset,
+                    remaining_total, cancel_token, progress_callback)
+                if refilled:
+                    segments = sorted(segments + refilled, key=lambda sg: sg.start)
+                    for new_id, sg in enumerate(segments, start=1):
+                        sg.id = new_id
+                    words = sorted((w for sg in segments for w in sg.words),
+                                   key=lambda w: w.start)
 
             # ترتيب مقصود: الطيّ أولًا ثم القسمة. حلقة التكرار تُطوى
             # إلى مقطع واحد قد يكون طويلًا، فتقسمه الخطوة التالية.

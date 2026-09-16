@@ -34,6 +34,7 @@ from config.settings import AppConfig, default_config_path  # noqa: E402
 #: يجمع الإصلاحات المرشَّحة ليُعرف أثرها مجتمعة.
 VARIANTS: dict[str, dict] = {
     "current": {},
+    "no_gap_refill": {"gap_refill": False},
     "no_hallucination_skip": {"hallucination_silence_threshold": None},
     "vad_threshold_0.35": {"vad_threshold": 0.35},
     "vad_off": {"vad_filter": False},
