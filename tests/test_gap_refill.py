@@ -115,3 +115,42 @@ def test_non_wav_input_disables_refill_quietly(tmp_path):
     engine, model = _engine(), FakeModel()
     assert engine._refill_gaps(model, {}, fake, [_seg(20, 30)],
                                0.0, 30.0, None, None) == []
+
+
+def test_refill_disables_temperature_fallback(tmp_path):
+    """التسلسل الاحتياطي أعاد فكّ النوافذ مرارًا: ~8 دقائق لأربع فجوات."""
+    audio = _wav(tmp_path / "a.wav", [(10, 0.3), (30, 0.3), (10, 0.3)])
+    engine, model = _engine(), FakeModel()
+    engine._refill_gaps(model, {"temperature": [0.0, 0.2, 0.4]}, audio,
+                        [_seg(0, 10), _seg(40, 50)], 0.0, 50.0, None, None)
+    assert model.calls[0][1]["temperature"] == 0.0
+
+
+@pytest.mark.parametrize("attrs", [
+    {"compression_ratio": 6.0, "avg_logprob": -0.2, "no_speech_prob": 0.1},
+    {"compression_ratio": 1.5, "avg_logprob": -1.4, "no_speech_prob": 0.1},
+    {"compression_ratio": 1.5, "avg_logprob": -0.7, "no_speech_prob": 0.9},
+])
+def test_untrustworthy_refill_pieces_are_dropped(tmp_path, attrs):
+    audio = _wav(tmp_path / "a.wav", [(10, 0.3), (30, 0.3), (10, 0.3)])
+    engine = _engine()
+
+    class LoopModel(FakeModel):
+        def transcribe(self, samples, **options):
+            piece = SimpleNamespace(start=1.0, end=4.0, words=[],
+                                    text=" ونشونا، " * 37, **attrs)
+            return iter([piece]), SimpleNamespace()
+
+    added = engine._refill_gaps(LoopModel(), {}, audio,
+                                [_seg(0, 10), _seg(40, 50)], 0.0, 50.0,
+                                None, None)
+    assert added == []
+
+
+def test_repeats_ending_in_punctuation_are_collapsed():
+    """نجت «ونشونا، ونشونا، …» ×37 لأن ``\\b`` لا يقع بعد فاصلة."""
+    from audio.text_cleaner import clean_segment_text
+
+    assert clean_segment_text("ونشونا، " * 37 + "فعندي هنا") == "ونشونا، فعندي هنا"
+    assert clean_segment_text("شكرا لكم شكرا لكم شكرا لكم") == "شكرا لكم"
+    assert clean_segment_text("قال نعم نعم ثم مضى") == "قال نعم نعم ثم مضى"

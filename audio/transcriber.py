@@ -489,6 +489,23 @@ class TranscriptionEngine:
         samples = np.frombuffer(frames, dtype=np.int16).astype(np.float32)
         return samples / 32768.0, rate
 
+    #: عتبات Whisper المرجعية لرفض فكٍّ فاشل — تُطبَّق هنا يدويًّا لأن
+    #: ``temperature=0`` يُلغي إعادة المحاولة التي كانت تستعملها.
+    REFILL_MAX_COMPRESSION = 2.4
+    REFILL_MIN_AVG_LOGPROB = -1.0
+
+    def _untrustworthy(self, piece) -> bool:
+        """مقطعٌ مكرَّر (نسبة ضغط عالية) أو منخفض الثقة جدًّا."""
+        ratio = getattr(piece, "compression_ratio", None)
+        logprob = getattr(piece, "avg_logprob", None)
+        no_speech = getattr(piece, "no_speech_prob", None)
+        if isinstance(ratio, (int, float)) and ratio > self.REFILL_MAX_COMPRESSION:
+            return True
+        if isinstance(logprob, (int, float)) and logprob < self.REFILL_MIN_AVG_LOGPROB:
+            return True
+        return (isinstance(no_speech, (int, float)) and no_speech > 0.6
+                and isinstance(logprob, (int, float)) and logprob < -0.5)
+
     def _refill_gaps(self, model, options: dict, audio_path: Path,
                      segments: List[AudioSegment], offset: float,
                      duration: float, cancel_token, progress_callback
@@ -505,9 +522,13 @@ class TranscriptionEngine:
         if not gaps:
             return []
 
-        refill_options = dict(options, vad_filter=False, vad_parameters=None)
+        # ‏``temperature=0``: بلا تسلسل الحرارات الاحتياطي. على صوتٍ صعب
+        # يُعاد فكّ النافذة حتى ستّ مرّات — وهو ما جعل السدّ يستغرق
+        # ~8 دقائق لـ4 فجوات في القياس الأول، وأنتج حلقة «ونشونا» ×37.
+        refill_options = dict(options, vad_filter=False, vad_parameters=None,
+                              temperature=0.0)
         added: List[AudioSegment] = []
-        audible = skipped = 0
+        audible = skipped = rejected = 0
         for number, (gap_start, gap_end) in enumerate(gaps, start=1):
             if cancel_token:
                 cancel_token.raise_if_cancelled()
@@ -532,6 +553,9 @@ class TranscriptionEngine:
             pieces, _info = model.transcribe(samples, **refill_options)
             shift = gap_start + offset
             for piece in pieces:
+                if self._untrustworthy(piece):
+                    rejected += 1
+                    continue
                 start = piece.start + shift
                 end = min(piece.end + shift, gap_end + offset)
                 raw = piece.text.strip()
@@ -550,7 +574,8 @@ class TranscriptionEngine:
         logger.info(
             f"سدّ الفجوات: {len(gaps)} فجوة ≥ {cfg.gap_refill_min_seconds:.0f} ث · "
             f"{audible} فيها صوت · {skipped} صامتة · "
-            f"أُضيف {len(added)} مقطعًا ({covered:.0f} ث)")
+            f"أُضيف {len(added)} مقطعًا ({covered:.0f} ث) · "
+            f"رُفض {rejected} غير موثوق")
         return added
 
     # ------------------------------------------------------------------

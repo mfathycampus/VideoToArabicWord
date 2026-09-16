@@ -14,7 +14,10 @@ _TATWEEL = "ـ"
 _DIACRITICS = re.compile(r"[ؐ-ًؚ-ٟۖ-ۭ]")
 _MULTISPACE = re.compile(r"\s+")
 _SPACE_BEFORE_PUNCT = re.compile(r"\s+([،.؛؟!:])")
-_REPEATED_PHRASE = re.compile(r"\b(.{4,40}?)(?:\s+\1\b){2,}")
+#: الحدّ الأخير ``(?!\w)`` لا ``\b``: عبارةٌ تنتهي بعلامة ترقيم
+#: («ونشونا، ونشونا، …») لا حدَّ كلمةٍ بعدها — فنجت حلقة من 37 تكرارًا
+#: إلى المخرج في تشغيلٍ حقيقي.
+_REPEATED_PHRASE = re.compile(r"\b(.{4,40}?)(?:\s+\1(?!\w)){2,}")
 
 
 def normalize_arabic(text: str, strip_diacritics: bool = False) -> str:
