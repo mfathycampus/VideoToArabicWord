@@ -200,3 +200,29 @@ def test_progress_is_reported(monkeypatch, tmp_path):
     scan_video(tmp_path / "v.mp4", _FFmpeg(frames=3), 60.0,
                progress=lambda done, total: seen.append((done, total)))
     assert seen, "المسح يستغرق نحو دقيقة ومرّ بلا إشارة تقدّم"
+
+
+# ── ضجيجٌ رُصد في قاموسٍ حقيقي حُقن في التفريغ ─────────────────────────
+def test_real_run_noise_does_not_reach_the_glossary():
+    """«Wook، Reset rove، Loading، show، feedback» خرجت مصطلحاتٍ فعلًا."""
+    from video.screen_terms import terms_from_screen_text
+
+    terms = dict(terms_from_screen_text([
+        "Holy Quran", "Holy Quran", "Lesson Feedback", "feedback",
+        "Wook", "Reset rove", "Loading", "show",
+        "Planned", "Plonned", "Pranned", "Planned Planned"]))
+
+    for noise in ("Wook", "Reset rove", "Loading", "show", "feedback",
+                  "Plonned", "Pranned", "Planned Planned"):
+        assert noise not in terms
+    assert "Holy Quran" in terms
+    assert "Lesson Feedback" in terms
+
+
+def test_ocr_misreadings_fold_into_the_frequent_reading():
+    from video.screen_terms import _drop_misreadings
+
+    folded = dict(_drop_misreadings([("Lesson Planner", 3),
+                                     ("Lesson Plonner", 1),
+                                     ("Math Education", 2)]))
+    assert folded == {"Lesson Planner": 4, "Math Education": 2}

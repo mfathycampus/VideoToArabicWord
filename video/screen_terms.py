@@ -76,6 +76,28 @@ _CHROME = {
     "september", "october", "november", "december",
 }
 
+#: كلمات تُطرح **حين تقف وحدها** فقط — داخل عبارة تبقى:
+#: «Lesson Feedback» تسمية شاشة، و«feedback» وحدها ضجيج.
+_STANDALONE_NOISE = {
+    # كلمات حالة وتنقّل في تطبيقات الويب — رُصدت حرفيًّا في قاموسٍ
+    # حقيقي («Loading»، «show»، «Week»، «feedback») تُحقن في كل نافذة
+    # تفريغ فتزيد الهلوسة ولا ترفع دقّة شيء.
+    "loading", "show", "hide", "reset", "refresh", "filter", "sort",
+    "submit", "apply", "update", "more", "less", "yes", "login", "logout",
+    "sign", "name", "email", "today", "week", "month", "day", "year",
+    "timeline", "feedback", "status", "planned", "pending", "done",
+    "active", "total", "none", "error", "success", "welcome", "account",
+}
+
+#: عبارة ظهرت مرّة واحدة تُقبل فقط إن بدت مصطلحًا لا شظيّة: كلمتان
+#: فأكثر كلٌّ منهما ≥ 5 أحرف، أو كلمة واحدة طويلة. «Wook» و«Reset rove»
+#: قراءاتٌ فاشلة تظهر مرّة؛ «Lesson Planner» تسمية واجهة.
+MIN_SINGLE_WORD_CHARS = 8
+
+#: قراءتان متشابهتان بهذه النسبة فأكثر = الكلمة نفسها بخطأ OCR
+#: («Planned»/«Plonned»/«Pranned»). تبقى الأكثر تكرارًا.
+SIMILAR_READING_RATIO = 0.8
+
 
 def _phrases(line: str) -> List[str]:
     """يقطع السطر إلى عبارات إنجليزية متّصلة.
@@ -113,6 +135,11 @@ def terms_from_screen_text(texts: Iterable[str]) -> List[tuple[str, int]]:
             for phrase in _phrases(line):
                 words = [w for w in phrase.split()
                          if w.lower() not in _CHROME]
+                if len(words) == 1 and _is_standalone_noise(words[0]):
+                    continue
+                # «Planned Planned»: بطاقات متجاورة تُقرأ سطرًا واحدًا
+                words = [w for i, w in enumerate(words)
+                         if i == 0 or w.lower() != words[i - 1].lower()]
                 cleaned = " ".join(words)
                 if len(cleaned) >= MIN_TERM_CHARS:
                     counter[cleaned] += 1
@@ -123,8 +150,49 @@ def terms_from_screen_text(texts: Iterable[str]) -> List[tuple[str, int]]:
     # الفاشلة تظهر مرّة، وتسمية الواجهة تتكرّر. على تسجيل حقيقي كان
     # المتكرّر «Drop Classes» و«Current Student Selection»، والمفرد
     # «House» و«Quick Data» — ضوضاء تزاحم المفيد على سقف الحروف.
+    ranked = _drop_misreadings(ranked)
     repeated = [item for item in ranked if item[1] > 1]
-    return repeated if len(repeated) >= 3 else ranked
+    if len(repeated) >= 3:
+        return repeated
+    return repeated + [item for item in ranked
+                       if item[1] == 1 and _plausible_single(item[0])]
+
+
+def _is_standalone_noise(word: str) -> bool:
+    """كلمة واجهة عامّة — أو قراءةٌ مشوّهة لها («Plonned»، «Wook»)."""
+    from difflib import SequenceMatcher
+
+    folded = word.lower()
+    if folded in _STANDALONE_NOISE:
+        return True
+    return any(abs(len(folded) - len(noise)) <= 1
+               and SequenceMatcher(None, folded, noise).ratio()
+               >= SIMILAR_READING_RATIO
+               for noise in _STANDALONE_NOISE if len(noise) >= 5)
+
+
+def _plausible_single(phrase: str) -> bool:
+    words = phrase.split()
+    if len(words) == 1:
+        return len(words[0]) >= MIN_SINGLE_WORD_CHARS
+    return all(len(w) >= 5 for w in words)
+
+
+def _drop_misreadings(ranked: List[tuple[str, int]]) -> List[tuple[str, int]]:
+    """يطوي القراءات المشوّهة إلى أكثرها تكرارًا، ويجمع عدّاتها."""
+    from difflib import SequenceMatcher
+
+    kept: List[list] = []
+    for phrase, count in ranked:           # مرتّبة بالتكرار تنازليًّا
+        for entry in kept:
+            if SequenceMatcher(None, phrase.lower(),
+                               entry[0].lower()).ratio() >= SIMILAR_READING_RATIO:
+                entry[1] += count
+                break
+        else:
+            kept.append([phrase, count])
+    return sorted(((p, c) for p, c in kept),
+                  key=lambda item: (-item[1], -len(item[0])))
 
 
 def as_glossary(terms: Sequence[tuple[str, int]],
