@@ -380,6 +380,7 @@ def seconds_label(seconds: float) -> str:
 
 _LATIN_TOKEN = re.compile(r"[A-Za-z][A-Za-z0-9&+\-]{2,}")
 _NUMBER_TOKEN = re.compile(r"[0-9٠-٩]+(?:[.,][0-9٠-٩]+)?")
+_TIME_STAMP = re.compile(r"\b\d{1,2}:\d{2}(?::\d{2})?\b")
 _ARABIC_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
 
 
@@ -404,7 +405,8 @@ def unsupported_tokens(plan: DocumentPlan, segments: Iterable,
         written.append(section.title or "")
         for block in section.blocks:
             written.append(_text_of(block) if block.image_id is None else "")
-    text = " ".join(written)
+    # الأزمنة («المقطع الزمني 00:00:00») يولّدها البرنامج لا النموذج.
+    text = _TIME_STAMP.sub(" ", " ".join(written))
 
     latin = sorted({t for t in _LATIN_TOKEN.findall(text)
                     if t.lower() not in source_latin})

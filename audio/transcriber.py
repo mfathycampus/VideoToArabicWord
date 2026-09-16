@@ -520,6 +520,8 @@ class TranscriptionEngine:
                  for sg in segments]
         gaps = self.find_gaps(local, 0.0, duration, cfg.gap_refill_min_seconds)
         if not gaps:
+            logger.info(f"سدّ الفجوات: لا فجوة ≥ {cfg.gap_refill_min_seconds:.0f} ث "
+                        f"(مدّة {duration:.0f} ث، {len(local)} مقطعًا).")
             return []
 
         # ‏``temperature=0``: بلا تسلسل الحرارات الاحتياطي. على صوتٍ صعب
@@ -535,10 +537,12 @@ class TranscriptionEngine:
             try:
                 samples, rate = self._read_wav_slice(audio_path, gap_start, gap_end)
             except Exception as exc:                # noqa: BLE001
-                logger.debug(f"تعذّر قراءة الفجوة من الصوت: {exc}")
+                logger.warning(f"سدّ الفجوات أُوقف: تعذّرت قراءة الصوت ({exc}).")
                 return added
             if samples is None or rate != 16000 or not len(samples):
-                logger.debug("الصوت ليس WAV أحاديًّا 16kHz — لا سدّ للفجوات.")
+                logger.warning(
+                    f"سدّ الفجوات أُوقف: الصوت ليس WAV أحاديًّا 16kHz "
+                    f"({audio_path.name}، معدّل {rate}).")
                 return added
             rms = float(np.sqrt(np.mean(np.square(samples))))
             level = 20.0 * np.log10(max(rms, 1e-9))
@@ -695,6 +699,9 @@ class TranscriptionEngine:
                         f"({(seg.end + offset) / 60:.0f} من "
                         f"{total / 60:.0f} دقيقة){eta}")
 
+            if not (cfg.vad_filter and cfg.gap_refill):
+                logger.info(f"سدّ الفجوات معطَّل (vad_filter={cfg.vad_filter}، "
+                            f"gap_refill={cfg.gap_refill}).")
             if cfg.vad_filter and cfg.gap_refill:
                 local = [sg for sg in segments if sg.end > offset]
                 refilled = self._refill_gaps(

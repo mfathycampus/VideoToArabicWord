@@ -272,6 +272,25 @@ class TranscriptRewriter:
             paragraphs = [p.strip() for p in parsed.get("paragraphs", [])
                           if isinstance(p, str) and p.strip()]
 
+        if not paragraphs and parsed is not None and not failed:
+            # ردٌّ سليم بلا فقرات: رُصد على أوّل دفعة من تسجيلٍ عامّيّ مشوَّه
+            # — النموذج أحجم عن الكتابة كليًّا بعد تعليمة «لا تخمّن»، فخرج
+            # القسم الأول خامًا بـ«المتاجر». محاولةٌ ثانية تطلب المفهوم وحده.
+            try:
+                raw = self._complete_with_retry(
+                    SYSTEM_PROMPT,
+                    f"{context}التفريغ الخام (يبدأ عند {start}):\n\n{source}{note}"
+                    "\n\nتنبيه: أعِد فقرةً واحدة على الأقل تلخّص ما يُفهم من هذا "
+                    "المقطع بمساعدة السياق، ولو جملة قصيرة، وضع [غير واضح] "
+                    "مكان ما لا يُفهم. لا تُعِد paragraphs فارغة.")
+                retry = _extract_json(raw)
+                if retry:
+                    parsed = retry
+                    paragraphs = [p.strip() for p in retry.get("paragraphs", [])
+                                  if isinstance(p, str) and p.strip()]
+            except Exception as exc:
+                logger.warning(f"دفعة {start}: فشلت المحاولة الثانية: {exc}")
+
         if not paragraphs:
             # لا نُسقط المحتوى أبدًا: نرجع إلى النص الخام لهذه الدفعة.
             #

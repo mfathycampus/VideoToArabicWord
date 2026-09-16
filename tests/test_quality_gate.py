@@ -354,3 +354,11 @@ def test_screen_text_and_arabic_digits_count_as_a_source():
                                height=10, selection_reason="stable_frame",
                                ocr_text="Lesson Planner")]
     assert unsupported_tokens(plan, segments, frames) == {"latin": [], "numbers": []}
+
+
+def test_generated_timestamps_are_not_flagged_as_invented():
+    from document.quality import unsupported_tokens
+
+    plan = _plan([DocumentSection(title="المقطع الزمني 00:00:00", blocks=[
+        _para("نص عند 01:15 من التسجيل.", [1])])])
+    assert unsupported_tokens(plan, [_Seg(0, 5, "نص")]) == {"latin": [], "numbers": []}

@@ -330,3 +330,26 @@ def test_screen_context_is_capped(monkeypatch):
 
     screen_line = [l for l in prompts[0][1].splitlines() if "نصوص ظاهرة" in l][0]
     assert len(screen_line) < TR.SCREEN_CONTEXT_CHARS + 100
+
+
+def test_empty_paragraphs_get_one_retry(monkeypatch):
+    """رُصد: أوّل دفعة خرجت خامًا لأن النموذج أعاد paragraphs فارغة."""
+    from ai.rewriter import TranscriptRewriter as TR
+
+    replies = [json.dumps({"title": "", "paragraphs": []}),
+               json.dumps({"title": "الدخول إلى النظام", "summary": "م.",
+                           "paragraphs": ["يدخل المستخدم إلى لوحة الإدارة."]},
+                          ensure_ascii=False)]
+    prompts = []
+
+    def fake_complete(self, system_prompt, user_prompt, max_tokens=2048):
+        prompts.append(user_prompt)
+        return replies[len(prompts) - 1]
+
+    monkeypatch.setattr(TR, "_complete_with_retry", fake_complete)
+    rw = TR(provider=None, config=RewriteConfig(enabled=True))
+    out = rw._rewrite_batch(make_transcript(3).segments, [])
+
+    assert len(prompts) == 2 and "لا تُعِد paragraphs فارغة" in prompts[1]
+    assert out["failed"] is False
+    assert out["paragraphs"] == ["يدخل المستخدم إلى لوحة الإدارة."]
