@@ -962,7 +962,8 @@ class VideoToDocPipeline:
                                   model=settings.model,
                                   batch_chars=settings.batch_chars,
                                   make_outline=settings.make_outline,
-                                  timeout_seconds=settings.timeout_seconds))
+                                  timeout_seconds=settings.timeout_seconds,
+                                  glossary=self.config.whisper.glossary or ""))
                 plan = rewriter.build_plan(
                     transcript, keyframes, title, subtitle,
                     lambda f, m: emit(Stage.MATCHING, 0.1 + f * 0.8, m))

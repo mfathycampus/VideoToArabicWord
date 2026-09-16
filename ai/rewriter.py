@@ -58,6 +58,17 @@ SYSTEM_PROMPT = """أنت محرّر عربي محترف. مهمتك تحويل 
 6. إن ورد مصطلح أجنبي، أبقِه كما هو.
 7. لا تخاطب القارئ ولا تعلّق على المهمة.
 
+التفريغ **آلي** ومن كلام قد يكون عاميًّا، وفيه أخطاء سمعية متوقَّعة
+(كلمة تُسمع بكلمة قريبة اللفظ بعيدة المعنى: «تحضير» ← «تخدير»،
+«المدارس» ← «المتاجر»). لذلك:
+9. استعمل «السياق» المُعطى (عنوان التسجيل، نصوص الشاشة، المصطلحات)
+   لفهم الموضوع. إن تعارضت كلمة في التفريغ معه تعارضًا واضحًا فهي على
+   الأرجح خطأ سمعي: صحّحها إلى ما يدلّ عليه السياق.
+10. ما لا يُفهم من التفريغ ولا يحسمه السياق: احذفه أو اكتب [غير واضح].
+    لا تخمّن له معنى، ولا تبنِ عليه جملة أو فقرة أو عنوانًا.
+11. إن كان الكلام شرحًا لخطوات على شاشة نظام أو برنامج، فاكتب الخطوات
+    بترتيبها بصيغة إجرائية واضحة، وأبقِ أسماء الأزرار والقوائم كما تظهر.
+
 8. إن أُعطيت أزمنة لقطات شاشة، اكتب لكل زمن تعليقًا وصفيًا (6-14 كلمة)
    مأخوذًا مما يقوله النص عند ذلك الوقت — لا تصف ما لا يذكره النص.
    وإن لم تُعطَ أزمنة، اجعل "figures" قائمة فارغة.
@@ -105,6 +116,12 @@ class RewriteConfig:
     batch_chars: int = 3500
     make_outline: bool = True
     timeout_seconds: int = 180
+    #: مصطلحات المادة — تُمرَّر سياقًا يساعد على تصحيح الأخطاء السمعية.
+    glossary: str = ""
+    #: يُرسل نصّ الشاشة (OCR) سياقًا مع كل دفعة. أقوى دليل على موضوع
+    #: المحاضرة، لكنه قد يحمل أسماء أشخاص ظاهرة على الشاشة — فيُعطَّل
+    #: حيث تمنع السياسة إرسالها إلى مزوّد سحابي.
+    include_screen_text: bool = True
 
 
 def _extract_json(raw: str) -> Optional[dict]:
@@ -138,6 +155,8 @@ class TranscriptRewriter:
         self.config = config
         #: سبب آخر فشل دفعة — يُرفَع مع الاستثناء النهائي ليصل للمستخدم.
         self._last_failure: str = ""
+        #: عنوان التسجيل (من اسم الملفّ) — يُضبط في ``build_plan``.
+        self._source_title: str = ""
 
     def _complete_with_retry(self, system_prompt: str, user_prompt: str,
                              max_tokens: int = 2048) -> str:
@@ -229,11 +248,12 @@ class TranscriptRewriter:
             note = ("\n\nلقطات الشاشة المرافقة لهذا المقطع عند الأزمنة التالية: "
                     f"{stamps}\nاكتب تعليقًا وصفيًا لكل زمن في حقل figures، "
                     "بنفس صيغة الزمن المعطاة.")
+        context = self._context_block(figures)
         failed = False
         try:
             raw = self._complete_with_retry(
                 SYSTEM_PROMPT,
-                f"التفريغ الخام (يبدأ عند {start}):\n\n{source}{note}")
+                f"{context}التفريغ الخام (يبدأ عند {start}):\n\n{source}{note}")
             parsed = _extract_json(raw)
         except Exception as exc:
             # الفشل معزول عند حدود الدفعة. النسخة السابقة كانت تُعيد رفع
@@ -369,8 +389,10 @@ class TranscriptRewriter:
         listing = "\n".join(
             f"- {s['title']}: {s['summary']}" for s in sections)
         try:
+            head = (f"عنوان التسجيل: {self._source_title}\n"
+                    if self._source_title else "")
             raw = self._complete_with_retry(
-                OUTLINE_PROMPT, f"أقسام الوثيقة:\n{listing}", max_tokens=800)
+                OUTLINE_PROMPT, f"{head}أقسام الوثيقة:\n{listing}", max_tokens=800)
             parsed = _extract_json(raw) or {}
         except Exception as exc:
             # الملخّص التنفيذي تحسين لا شرط: فشله لا يُفشل الصياغة كلها
@@ -393,6 +415,39 @@ class TranscriptRewriter:
                            if isinstance(p, str) and p.strip()][:6],
         }
 
+    #: سقف نصّ الشاشة المُرسَل مع الدفعة الواحدة — سياقٌ لا حمولة.
+    SCREEN_CONTEXT_CHARS = 700
+
+    def _context_block(self, figures: List[KeyframeMetadata]) -> str:
+        """سياق يحسم الأخطاء السمعية: العنوان، ونصّ الشاشة، والمصطلحات.
+
+        رُصد على تسجيل حقيقي («متابعة تحضير المعلمين»): النموذج لم يرَ
+        إلا التفريغ المشوَّه، فكتب «لوحة إدارة المتاجر» و«المعلمات
+        الإحصائية كالميدل والمتوسط» — بينما نصّ الشاشة المحفوظ يقول
+        «High School» و«Lesson Planner» و«Math Education».
+        """
+        lines: List[str] = []
+        if self._source_title:
+            lines.append(f"- عنوان التسجيل: {self._source_title}")
+        if self.config.include_screen_text:
+            seen: set[str] = set()
+            screen: List[str] = []
+            for figure in figures:
+                for line in (figure.ocr_text or "").splitlines():
+                    line = " ".join(line.split())
+                    if len(line) >= 4 and line.lower() not in seen:
+                        seen.add(line.lower())
+                        screen.append(line)
+            text = " | ".join(screen)[:self.SCREEN_CONTEXT_CHARS]
+            if text:
+                lines.append(f"- نصوص ظاهرة على الشاشة (قراءة آلية قد تحوي أخطاء): {text}")
+        glossary = " ".join((self.config.glossary or "").split())
+        if glossary:
+            lines.append(f"- مصطلحات محتملة: {glossary[:400]}")
+        if not lines:
+            return ""
+        return "السياق:\n" + "\n".join(lines) + "\n\n"
+
     # ------------------------------------------------------------------
     def build_plan(
         self,
@@ -402,6 +457,7 @@ class TranscriptRewriter:
         subtitle: str = "",
         progress_callback: Optional[Callable[[float, str], None]] = None,
     ) -> DocumentPlan:
+        self._source_title = fallback_title
         batches = self._batch(transcript.segments)
         if not batches:
             raise RewriteUnavailableError("لا يوجد نص لإعادة صياغته.")

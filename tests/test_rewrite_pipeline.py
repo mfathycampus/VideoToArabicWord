@@ -269,3 +269,64 @@ def test_paragraph_times_spread_inside_a_single_segment(server, monkeypatch):
     assert times == sorted(times)
     assert len(set(times)) == 3, f"أزمنة متطابقة: {times}"
     assert 10.0 <= times[0] < times[-1] < 40.0
+
+
+# ── السياق الذي يحسم الأخطاء السمعية ───────────────────────────────────
+def _recording_rewriter(monkeypatch, **config):
+    from ai.rewriter import TranscriptRewriter as TR
+
+    prompts = []
+
+    def fake_complete(self, system_prompt, user_prompt, max_tokens=2048):
+        prompts.append((system_prompt, user_prompt))
+        return json.dumps({"title": "متابعة تحضير المعلمات", "summary": "م.",
+                           "paragraphs": ["فقرة."]}, ensure_ascii=False)
+
+    monkeypatch.setattr(TR, "_complete_with_retry", fake_complete)
+    rw = TR(provider=type("P", (), {"info": type("I", (), {"name": "fake"})(),
+                                    "model": "m"})(),
+            config=RewriteConfig(enabled=True, **config))
+    return rw, prompts
+
+
+def test_model_sees_title_screen_text_and_glossary(monkeypatch):
+    """رُصد حقيقةً: «المدارس» ← «المتاجر» لأن النموذج لم يرَ «High School»."""
+    rw, prompts = _recording_rewriter(monkeypatch, glossary="Lesson Planner")
+    frames = keyframes(1)
+    frames[0].ocr_text = "MRNS Elementary School\nLesson Feedback"
+
+    rw.build_plan(make_transcript(3), frames, "متابعة تحضير المعلمين")
+
+    system, user = prompts[0]
+    assert "خطأ سمعي" in system and "[غير واضح]" in system
+    assert "عنوان التسجيل: متابعة تحضير المعلمين" in user
+    assert "MRNS Elementary School" in user
+    assert "Lesson Planner" in user
+    # السياق يسبق التفريغ، والتفريغ ما زال كاملًا
+    assert user.index("السياق") < user.index("التفريغ الخام")
+    # والملخّص التنفيذي يرى العنوان أيضًا
+    assert "عنوان التسجيل" in prompts[-1][1]
+
+
+def test_screen_text_can_be_withheld(monkeypatch):
+    """نصّ الشاشة قد يحمل أسماء أشخاص — والإعداد يمنع إرساله."""
+    rw, prompts = _recording_rewriter(monkeypatch, include_screen_text=False)
+    frames = keyframes(1)
+    frames[0].ocr_text = "Abdullah Omran"
+
+    rw.build_plan(make_transcript(3), frames, "درس")
+
+    assert all("Abdullah" not in user for _, user in prompts)
+
+
+def test_screen_context_is_capped(monkeypatch):
+    from ai.rewriter import TranscriptRewriter as TR
+
+    rw, prompts = _recording_rewriter(monkeypatch)
+    frames = keyframes(1)
+    frames[0].ocr_text = "\n".join(f"Menu item number {i}" for i in range(500))
+
+    rw.build_plan(make_transcript(3), frames, "درس")
+
+    screen_line = [l for l in prompts[0][1].splitlines() if "نصوص ظاهرة" in l][0]
+    assert len(screen_line) < TR.SCREEN_CONTEXT_CHARS + 100
