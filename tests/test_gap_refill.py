@@ -154,3 +154,23 @@ def test_repeats_ending_in_punctuation_are_collapsed():
     assert clean_segment_text("ونشونا، " * 37 + "فعندي هنا") == "ونشونا، فعندي هنا"
     assert clean_segment_text("شكرا لكم شكرا لكم شكرا لكم") == "شكرا لكم"
     assert clean_segment_text("قال نعم نعم ثم مضى") == "قال نعم نعم ثم مضى"
+
+
+def test_gap_inside_a_long_raw_segment_is_found_from_word_timings(tmp_path):
+    """مقطعٌ خام 190–285 كلماته في طرفيه: الفجوة بينها لا بين المقاطع."""
+    from config.schemas import WordTimestamp
+
+    audio = _wav(tmp_path / "a.wav", [(300, 0.3)])
+    long_raw = AudioSegment(
+        id=1, start=190.0, end=285.0, text_raw="أ ب", text_clean="أ ب",
+        words=[WordTimestamp(word="أ", start=190.0, end=193.0),
+               WordTimestamp(word="ب", start=282.0, end=285.0)])
+    engine, model = _engine(), FakeModel()
+
+    added = engine._refill_gaps(
+        model, {}, audio, [_seg(0, 190), long_raw, _seg(285, 300)],
+        0.0, 300.0, None, None)
+
+    assert len(model.calls) == 1
+    assert model.calls[0][0] == pytest.approx(89 * 16000, abs=16)
+    assert added[0].start == pytest.approx(194.0)

@@ -515,9 +515,18 @@ class TranscriptionEngine:
 
         cfg = self.config
         # الأزمنة هنا بزمن الملفّ الممرَّر (بقيّة الصوت عند الاستئناف)
-        local = [AudioSegment(id=sg.id, start=sg.start - offset,
-                              end=sg.end - offset, text_raw="", text_clean="")
-                 for sg in segments]
+        # الفجوة تُقاس من **الكلمات** لا من حدود المقاطع الخام. رُصد في
+        # تشغيل الواجهة: مقطعٌ خام واحد امتدّ فوق الفجوة 3:13–4:42 كلّها
+        # (كلمات قليلة في طرفيه)، فلم تُرَ فجوةٌ فلم يُسَدّ شيء — ثم كشفتها
+        # ``split_long_segments`` بعد ذلك بتقسيمه على توقيت الكلمات.
+        local: List[AudioSegment] = []
+        for sg in segments:
+            spans = ([(w.start, w.end) for w in sg.words if w.end > w.start]
+                     or [(sg.start, sg.end)])
+            for start, end in spans:
+                local.append(AudioSegment(id=sg.id, start=start - offset,
+                                          end=end - offset, text_raw="",
+                                          text_clean=""))
         gaps = self.find_gaps(local, 0.0, duration, cfg.gap_refill_min_seconds)
         if not gaps:
             logger.info(f"سدّ الفجوات: لا فجوة ≥ {cfg.gap_refill_min_seconds:.0f} ث "
