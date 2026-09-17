@@ -465,12 +465,16 @@ def test_ocr_text_renders_under_the_figure_when_present(tmp_path):
         stored_width=1280, stored_height=720)
 
     plan = TimelinePlanner().build(transcript, [keyframe], "lecture.mp4")
-    docx = DocumentGenerator(DocumentConfig()).generate(
+    shown = DocumentGenerator(DocumentConfig(show_screen_text=True)).generate(
         plan, metadata, images, tmp_path / "ocr_doc.docx")
-
-    doc = Document(str(docx))
-    body = "\n".join(p.text for p in doc.paragraphs)
+    body = "\n".join(p.text for p in Document(str(shown)).paragraphs)
     assert "النص الظاهر على الشاشة" in body
+
+    # الافتراضي لا يطبعه: عشرات الأسطر وأسماء أشخاص تحت كل صورة
+    hidden = DocumentGenerator(DocumentConfig()).generate(
+        plan, metadata, images, tmp_path / "ocr_hidden.docx")
+    body = "\n".join(p.text for p in Document(str(hidden)).paragraphs)
+    assert "النص الظاهر على الشاشة" not in body
     assert "تعريف: المشتقة هي معدل التغيّر اللحظي" in body
 
 

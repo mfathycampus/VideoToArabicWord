@@ -353,3 +353,65 @@ def set_paragraph_ltr(paragraph, alignment=None) -> None:
     pPr.insert_element_before(bidi, *_PPR_AFTER_BIDI)
     if alignment is not None:
         paragraph.alignment = alignment
+
+
+# ── محاذاة الفقرات ثنائية الاتجاه كما يقرؤها Word ─────────────────────
+#
+# ‏Word (وضع التوافق 15، الذي يرفعه ``template._modernize_compatibility``)
+# يقرأ ``w:jc`` في فقرةٍ ``w:bidi`` **منطقيًّا**: ‏``left`` = بداية السطر
+# (اليمين في العربية)، و``right`` = نهايته (اليسار). وهو ما يكتبه Word نفسه
+# حين تحاذي فقرةً عربية يمينًا وتحفظ: ``<w:bidi/><w:jc w:val="left"/>``.
+#
+# والشيفرة كانت تكتب ``right`` ظنًّا أنه اتجاهٌ مرئي — فظهر كل نصٍّ عربي
+# ملتصقًا باليسار، بالعناوين والفقرات، مع أن XML يقول «يمين». وكل
+# اختبارٍ سابق فحص **وجود** ``w:jc=right`` وترتيبه بعد ``w:bidi``، أي
+# فحص ما كُتب لا ما يُعرض.
+#
+# الإصلاح في موضع واحد عند الحفظ: الشيفرة كلّها تبقى تقول «RIGHT» بمعناها
+# المرئي، وهذه الدالة تترجمه إلى لغة Word.
+_JC_FLIP = {"right": "left", "left": "right"}
+_FALSE_VALUES = {"0", "false", "off"}
+
+
+def _is_bidi(pPr) -> bool:
+    bidi = pPr.find(qn("w:bidi"))
+    return bidi is not None and bidi.get(qn("w:val"), "1") not in _FALSE_VALUES
+
+
+def flip_bidi_alignment(element) -> int:
+    """يعكس ``w:jc`` يمين/يسار في كل ``w:pPr`` ثنائي الاتجاه تحت العنصر.
+
+    يُستدعى **مرّة واحدة** قبل الحفظ؛ استدعاؤه مرتين يُعيد الخطأ.
+    يعيد عدد ما عُكس.
+    """
+    flipped = 0
+    for pPr in element.iter(qn("w:pPr")):
+        if not _is_bidi(pPr):
+            continue
+        jc = pPr.find(qn("w:jc"))
+        if jc is None:
+            continue
+        value = jc.get(qn("w:val"))
+        if value in _JC_FLIP:
+            jc.set(qn("w:val"), _JC_FLIP[value])
+            flipped += 1
+    return flipped
+
+
+def finalize_bidi_alignment(document) -> int:
+    """يطبّق ``flip_bidi_alignment`` على المتن والأنماط والترويسات والتذييلات."""
+    parts = [document.element, document.styles.element]
+    for section in document.sections:
+        for header_footer in (section.header, section.footer,
+                              section.first_page_header, section.first_page_footer,
+                              section.even_page_header, section.even_page_footer):
+            if not header_footer.is_linked_to_previous:
+                parts.append(header_footer._element)
+    seen: set[int] = set()
+    total = 0
+    for part in parts:
+        if id(part) in seen:
+            continue
+        seen.add(id(part))
+        total += flip_bidi_alignment(part)
+    return total

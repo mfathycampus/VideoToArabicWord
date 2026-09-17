@@ -119,3 +119,35 @@ def test_document_roundtrips(doc, tmp_path):
     doc.save(str(out))
     reopened = Document(str(out))
     assert "مرحبا بالعالم" in reopened.paragraphs[-1].text
+
+
+def test_right_aligned_arabic_is_written_as_word_reads_it():
+    """‏Word يقرأ jc منطقيًّا في فقرة bidi: left = يمين الصفحة.
+
+    كُتب ``right`` سنواتٍ فظهر كل نص عربي على اليسار — ولم يفشل اختبار،
+    لأن الاختبارات فحصت ما كُتب لا ما يُعرض.
+    """
+    from docx import Document
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.oxml.ns import qn
+
+    from document.rtl_utils import (
+        finalize_bidi_alignment,
+        set_paragraph_ltr,
+        set_paragraph_rtl,
+    )
+
+    document = Document()
+    arabic = document.add_paragraph("نص عربي")
+    set_paragraph_rtl(arabic, WD_ALIGN_PARAGRAPH.RIGHT)
+    centered = document.add_paragraph("وسط")
+    set_paragraph_rtl(centered, WD_ALIGN_PARAGRAPH.CENTER)
+    latin = document.add_paragraph("1920x1080")
+    set_paragraph_ltr(latin, WD_ALIGN_PARAGRAPH.RIGHT)
+
+    finalize_bidi_alignment(document)
+
+    jc = lambda p: p._p.pPr.find(qn("w:jc")).get(qn("w:val"))  # noqa: E731
+    assert jc(arabic) == "left"
+    assert jc(centered) == "center"
+    assert jc(latin) == "right"          # فقرة LTR: المحاذاة مرئية كما هي

@@ -330,6 +330,12 @@ class TranscriptionConfig(BaseModel):
 
 
 class DocumentConfig(BaseModel):
+    #: يطبع نصّ الشاشة المقروء (OCR) كاملًا تحت كل صورة. معطَّل افتراضيًّا:
+    #: بعد تحسين OCR صار يُخرج عشرات الأسطر لكل لقطة — قوائم وأزرار
+    #: وأسماء معلّمات وحالات أدائهن — كتلةً تحت الصورة لا تفيد قارئًا
+    #: والصورة فوقها، وتنشر أسماء أشخاص. النصّ يبقى مستعملًا حيث ينفع:
+    #: سياق الصياغة، والتعليق، والمصطلحات.
+    show_screen_text: bool = False
     font_family: str = "Arial"
     body_size_pt: float = 12.0
     heading_size_pt: float = 17.0

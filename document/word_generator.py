@@ -143,6 +143,9 @@ class DocumentGenerator:
         # لا نكتب الملف النهائي مباشرة. نكتب نسخة مؤقتة في نفس المجلد،
         # ثم نتحقق من أنها ZIP صالح لـ OOXML ونستبدل الهدف ذريًا.
         # هذا يمنع بقاء DOCX ناقص بعد انقطاع الكهرباء/العملية.
+        from document.rtl_utils import finalize_bidi_alignment
+        finalize_bidi_alignment(document)
+
         fd, tmp_name = tempfile.mkstemp(
             dir=str(output_path.parent), suffix=".docx.tmp")
         os.close(fd)
@@ -315,7 +318,7 @@ class DocumentGenerator:
         # التسمية أعلاه عمدًا: مصدرها مختلف تمامًا — هذا حرفيًا ما هو
         # مكتوب على الشاشة، لا ما يُحسب من الكلام المصاحب للحظة اللقطة.
         ocr_text = (block.ocr_text or "").strip()
-        if ocr_text:
+        if ocr_text and getattr(self.config, "show_screen_text", False):
             max_chars = 400
             if len(ocr_text) > max_chars:
                 ocr_text = ocr_text[:max_chars].rstrip() + " …"
