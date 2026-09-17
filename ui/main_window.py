@@ -1,9 +1,6 @@
 """النافذة الرئيسية — واجهة عربية RTL بلا أي معالجة داخل خيط الواجهة."""
 from __future__ import annotations
 
-import os
-import subprocess
-import sys
 from pathlib import Path
 from typing import Optional
 
@@ -36,6 +33,8 @@ from config.profiles import PROFILES, profile_choices
 from config.settings import GREEDY_SPEEDUP, AppConfig
 from core.pipeline import VideoToDocPipeline
 from ui import theme
+from ui.jobs_panel import JobsPanelMixin
+from ui.rewrite_panel import RewritePanelMixin
 from ui.worker import (
     PipelineWorker,
     ProviderTestWorker,
@@ -80,7 +79,7 @@ AUDIO_FILTER = (
     "*.au *.ra);;كل الملفات (*)")
 
 
-class MainWindow(QMainWindow):
+class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
     def __init__(self, config: Optional[AppConfig] = None,
                  config_path: Optional[Path] = None) -> None:
         super().__init__()
@@ -608,130 +607,6 @@ class MainWindow(QMainWindow):
             if self.export_checks[key].isChecked()]
         self._save_config()
 
-    def _build_study_row(self):
-        """تفعيل الحزمة التعليمية واختيار مزوّدها.
-
-        المزوّد الافتراضي محلّي (‏Ollama) عمدًا: ميزةٌ يُفترض أن
-        يجرّبها كل معلّم لا يصحّ أن تكون تجربتها مشروطة بمفتاح مدفوع.
-        """
-        from ai.providers import PROVIDER_CHOICES
-
-        row = QHBoxLayout()
-        self.study_check = QCheckBox("الحزمة التعليمية (أهداف · مسرد · أسئلة · بطاقات)")
-        self.study_check.setToolTip(
-            "يقرأ التفريغ ويكتب أهداف تعلّم وأسئلة تقييم ومسردًا وبطاقات\n"
-            "مراجعة. كل عنصر يحمل مرجعه إلى المقطع الذي بُني منه، وما لا\n"
-            "يُثبت مصدره يُسقَط.\n\n"
-            "المزوّد المحلي (Ollama) مجاني ولا يغادر النصّ جهازك.\n"
-            "وبلا أي مزوّد تخرج قائمة مصطلحات وحدها — مفيدة للمراجعة\n"
-            "ولخانة «مصطلحات المادة».")
-        self.study_check.setChecked(self.config.study.enabled)
-        self.study_check.stateChanged.connect(self._on_study_toggled)
-        row.addWidget(self.study_check)
-
-        row.addWidget(QLabel("المزوّد:"))
-        self.study_provider = QComboBox()
-        for key, label in PROVIDER_CHOICES:
-            self.study_provider.addItem(label, key)
-        index = self.study_provider.findData(self.config.study.provider)
-        self.study_provider.setCurrentIndex(max(0, index))
-        self.study_provider.currentIndexChanged.connect(self._on_study_toggled)
-        row.addWidget(self.study_provider)
-
-        cloud_locked = self._policy_reason("allow_cloud_ai")
-        if cloud_locked:
-            # لا يكفي إسقاط الاختيار في الإعداد: مربّعٌ يعرض «Claude API»
-            # ويُنتج تشغيلًا محليًّا كذبٌ في الواجهة. تُحذف الخيارات
-            # السحابية من القائمة أصلًا ويُعلَن السبب.
-            for position in range(self.study_provider.count() - 1, -1, -1):
-                if self.study_provider.itemData(position) != "ollama":
-                    self.study_provider.removeItem(position)
-            note = QLabel("🔒")
-            note.setToolTip(cloud_locked)
-            row.addWidget(note)
-
-        row.addStretch(1)
-        self._refresh_study_row()
-        return row
-
-    def _on_study_toggled(self) -> None:
-        self.config.study.enabled = self.study_check.isChecked()
-        self.config.study.provider = (
-            self.study_provider.currentData() or "ollama")
-        self._refresh_study_row()
-        self._save_config()
-
-    def _refresh_study_row(self) -> None:
-        self.study_provider.setEnabled(self.study_check.isChecked())
-
-    def _on_rewrite_toggled(self) -> None:
-        enabled = self.rewrite_check.isChecked()
-        self.config.rewrite.enabled = enabled
-        self.config.rewrite.provider = self.provider_combo.currentData()
-        self.provider_combo.setEnabled(enabled)
-        self._update_rewrite_note()
-
-    def _on_key_typed(self, text: str) -> None:
-        self.config.rewrite.api_key = text.strip()
-
-    def _needs_key(self) -> bool:
-        return self.provider_combo.currentData() != "ollama"
-
-    def test_and_save_key(self) -> None:
-        """يختبر المفتاح باستدعاء حقيقي قصير ثم يحفظه.
-
-        فحص وجود المفتاح وحده لا يكفي: مفتاح خاطئ يبدو «جاهزًا» حتى أول
-        استدعاء بعد ساعة من التفريغ. الاختبار هنا يكشفه في ثانيتين.
-        """
-        from ai.providers import build_provider
-
-        self.config.rewrite.api_key = self.api_key_input.text().strip()
-        self.config.rewrite.provider = self.provider_combo.currentData()
-        self.config.rewrite.workspace_id = self.workspace_input.text().strip()
-        provider = build_provider(
-            self.config.rewrite.provider, self.config.rewrite.model,
-            self.config.rewrite.base_url, self.config.rewrite.api_key_env,
-            self.config.rewrite.api_key, self.config.rewrite.workspace_id)
-
-        if not provider.is_available():
-            QMessageBox.warning(self, "مفتاح مفقود",
-                                "ألصق المفتاح في الحقل أولًا.")
-            return
-
-        # الاختبار على خيط خلفي: نداء الشبكة بمهلة 30 ثانية داخل معالج
-        # الزر كان يجمّد الواجهة فعليًا (ADR-001 والمواصفة §15).
-        self.test_button.setEnabled(False)
-        self.test_button.setText("جارٍ الاختبار…")
-        self.append_log("جارٍ اختبار الاتصال بالمزوّد…")
-
-        self._test_thread = QThread(self)
-        self._test_worker = ProviderTestWorker(provider)
-        self._test_worker.moveToThread(self._test_thread)
-        self._test_thread.started.connect(self._test_worker.run)
-        self._test_worker.succeeded.connect(self._on_key_test_ok)
-        self._test_worker.failed.connect(self._on_key_test_failed)
-        self._test_worker.finished.connect(self._test_thread.quit)
-        self._test_worker.finished.connect(self._test_worker.deleteLater)
-        self._test_thread.finished.connect(self._test_thread.deleteLater)
-        self._test_thread.finished.connect(self._reset_test_button)
-        self._test_thread.start()
-
-    def _on_key_test_ok(self, reply: str) -> None:
-        self._save_config()
-        QMessageBox.information(
-            self, "نجح الاتصال",
-            f"المزوّد يعمل ورد بـ: {reply}\n\n"
-            f"حُفظ المفتاح في:\n{self.config_path}")
-        self.append_log("تم التحقق من المفتاح وحفظه.")
-
-    def _on_key_test_failed(self, error: str) -> None:
-        QMessageBox.critical(self, "فشل الاتصال", error)
-        self.append_log(f"فشل اختبار المفتاح: {error}")
-
-    def _reset_test_button(self) -> None:
-        self.test_button.setEnabled(True)
-        self.test_button.setText("اختبار وحفظ")
-        self._update_rewrite_note()
 
     def _save_config(self) -> None:
         try:
@@ -739,48 +614,6 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self.append_log(f"تعذّر حفظ الإعداد: {exc}")
 
-    def _update_rewrite_note(self) -> None:
-        """يوضّح أثر الخيار على الخصوصية قبل تفعيله، لا بعده."""
-        if not self.rewrite_check.isChecked():
-            self.rewrite_note.setText(
-                "معطّل — يُكتب نص التفريغ كما هو. لا اتصال بالإنترنت.")
-            # الإخفاء لا التعطيل: العنصر المعطّل يشغل ارتفاعه كاملًا،
-            # وثلاثة صفوف معطّلة تدفع بقية الواجهة خارج الشاشة.
-            self.provider_row.setVisible(False)
-            self.key_row.setVisible(False)
-            self.workspace_row.setVisible(False)
-            return
-        needs_key = self._needs_key()
-        self.provider_row.setVisible(True)
-        self.key_row.setVisible(needs_key)
-        self.workspace_row.setVisible(
-            needs_key and self.provider_combo.currentData() == "anthropic")
-        self.api_key_input.setEnabled(needs_key)
-        self.test_button.setEnabled(True)
-        name = self.provider_combo.currentData()
-        try:
-            from ai.providers import build_provider
-            provider = build_provider(
-                name, self.config.rewrite.model, self.config.rewrite.base_url,
-                self.config.rewrite.api_key_env, self.config.rewrite.api_key,
-                self.config.rewrite.workspace_id)
-            available = provider.is_available()
-            status = "جاهز ✓" if available else "غير مهيّأ ✗"
-            note = provider.info.privacy_note
-            hint = ""
-            if not available:
-                if name == "ollama":
-                    hint = "\nثبّت Ollama ثم:  ollama pull qwen2.5:7b-instruct"
-                else:
-                    hint = ("\nألصق المفتاح في الحقل أعلاه ثم اضغط "
-                            "«اختبار وحفظ».")
-            model = getattr(provider, "model", "")
-            model_line = f"  النموذج: {model}" if model else ""
-        except Exception as exc:
-            status, note, hint, model_line = f"خطأ: {exc}", "", "", ""
-        self.rewrite_note.setText(
-            f"{status} · {note}{model_line}{hint}\n"
-            "النص الخام يُحفظ دائمًا، ويمكن توليد المستند منه لاحقًا.")
 
     def _on_model_changed(self) -> None:
         self.config.whisper.model_size = self.model_combo.currentData()
@@ -1333,150 +1166,6 @@ class MainWindow(QMainWindow):
                         "المراحل المكتملة تُحفظ وتُستأنف لاحقًا.")
         self.thread.start()
 
-    # ------------------------------------------------------------------
-    def choose_folder(self) -> None:
-        """يعالج كل ملفات الوسائط في مجلد، واحدًا تلو الآخر."""
-        from core.batch import iter_media
-
-        folder = QFileDialog.getExistingDirectory(
-            self, "اختر مجلد الوسائط", str(Path.home()))
-        if not folder:
-            return
-        sources = iter_media(Path(folder))
-        if not sources:
-            QMessageBox.information(
-                self, "لا توجد ملفات",
-                "لم يُعثر على ملفات فيديو أو صوت في هذا المجلد.")
-            return
-
-        answer = QMessageBox.question(
-            self, "معالجة دفعية",
-            f"سيُعالَج {len(sources)} ملفًا واحدًا تلو الآخر:\n\n"
-            + "\n".join(f"  • {p.name}" for p in sources[:8])
-            + (f"\n  … و{len(sources) - 8} غيرها" if len(sources) > 8 else "")
-            + "\n\nفشل ملف لا يوقف البقية. هل نبدأ؟",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.Yes)
-        if answer != QMessageBox.StandardButton.Yes:
-            return
-        self._start_batch(sources)
-
-    def _start_batch(self, sources) -> None:
-        from ui.worker import BatchWorker
-
-        try:
-            clip = self._current_clip()
-        except ValueError as exc:
-            QMessageBox.warning(self, "نطاق غير صالح", str(exc))
-            return
-
-        self.cancel_token = CancellationToken()
-        self.thread = QThread(self)
-        self.worker = BatchWorker(
-            sources, self.config.application.output_dir, self.config,
-            self.cancel_token,
-            allow_model_download=False,
-            transcript_only=self.transcript_only_check.isChecked(),
-            clip=clip)
-        self.worker.moveToThread(self.thread)
-
-        self.thread.started.connect(self.worker.run)
-        self.worker.progress.connect(self.on_progress)
-        self.worker.file_done.connect(self.on_batch_file_done)
-        self.worker.completed.connect(self.on_batch_completed)
-        self.worker.failed.connect(self.on_failed)
-        self.worker.finished.connect(self.thread.quit)
-        self.worker.finished.connect(self.worker.deleteLater)
-        self.thread.finished.connect(self.thread.deleteLater)
-        self.thread.finished.connect(self._reset_buttons)
-
-        self._set_running(True)
-        self.append_log(f"بدأت معالجة {len(sources)} ملفًا…")
-        self.thread.start()
-
-    def on_batch_file_done(self, name: str, ok: bool, detail: str) -> None:
-        self.append_log(f"{'✓' if ok else '✗'} {name} — {detail}")
-
-    def on_batch_completed(self, succeeded: int, total: int) -> None:
-        self.progress.setValue(100)
-        self.status_label.setText(f"اكتملت الدفعة: {succeeded} من {total}.")
-        QMessageBox.information(
-            self, "اكتملت الدفعة",
-            f"نجح {succeeded} من {total}.\n"
-            f"المخرجات في:\n{self.config.application.output_dir}")
-
-    # ------------------------------------------------------------------
-    def show_jobs(self) -> None:
-        from ui.jobs_dialog import JobsDialog
-
-        dialog = JobsDialog(self.config.application.output_dir, self,
-                            on_resume=self._resume_job,
-                            on_rebuild=self._rebuild_job)
-        dialog.exec()
-
-    def _rebuild_job(self, job) -> None:
-        pipeline = VideoToDocPipeline(
-            self.config.application.output_dir, self.config)
-        try:
-            result = pipeline.rebuild_document(job.job_dir)
-        except Exception as exc:
-            QMessageBox.warning(self, "تعذّرت إعادة البناء", str(exc))
-            return
-        self.append_log(f"أُعيد بناء المستند: {result}")
-        QMessageBox.information(self, "تم", f"أُعيد بناء المستند:\n{result}")
-
-    def _resume_job(self, job) -> None:
-        """يعيد اختيار مصدر المهمة ويبدأ — الاستئناف يتكفّل بالباقي."""
-        if job.source is None or not job.source.exists():
-            QMessageBox.warning(self, "المصدر مفقود",
-                                "لم يعد ملف المصدر في مكانه.")
-            return
-        from core.batch import is_audio
-
-        self.video_path = job.source
-        self.audio_only = is_audio(job.source)
-        self.file_label.setText(
-            f"{job.source.name}   ({'صوت' if self.audio_only else 'فيديو'})")
-        self.start_button.setEnabled(True)
-        self.append_log(f"استئناف: {job.name} (من {job.stage or 'البداية'})")
-        self.start()
-
-    def merge_jobs(self) -> None:
-        """يدمج مهامّ منتهية في مستند واحد."""
-        from core.job_registry import list_jobs
-
-        jobs = [j for j in list_jobs(self.config.application.output_dir)
-                if j.can_rebuild]
-        if len(jobs) < 2:
-            QMessageBox.information(
-                self, "لا يكفي",
-                "الدمج يحتاج مهمّتين منتهيتين على الأقل في مجلد الحفظ.")
-            return
-
-        from PyQt6.QtWidgets import QInputDialog
-
-        names = [j.name for j in jobs]
-        chosen, ok = QInputDialog.getItem(
-            self, "دمج مهام",
-            "الدمج يشمل كل المهام المنتهية بترتيب آخر تحديث.\n"
-            "اختر اسم المستند الناتج:",
-            [f"مستند مدموج — {len(jobs)} أجزاء"] + names, 0, True)
-        if not ok or not chosen:
-            return
-
-        target = (self.config.application.output_dir
-                  / f"{chosen.replace('/', '-')}.docx")
-        pipeline = VideoToDocPipeline(
-            self.config.application.output_dir, self.config)
-        try:
-            result = pipeline.merge_documents([j.job_dir for j in jobs], target)
-        except Exception as exc:
-            QMessageBox.warning(self, "تعذّر الدمج", str(exc))
-            return
-        self.result_path = result
-        self.open_button.setEnabled(True)
-        self.append_log(f"مستند مدموج: {result}")
-        QMessageBox.information(self, "تم", f"أُنشئ المستند المدموج:\n{result}")
 
     def _set_running(self, running: bool) -> None:
         self.start_button.setEnabled(not running)
@@ -1533,54 +1222,6 @@ class MainWindow(QMainWindow):
         self.status_label.setText("أُلغيت المعالجة. يمكن استئنافها لاحقًا.")
         self.append_log("أُلغيت المعالجة — المراحل المكتملة محفوظة.")
 
-    def rebuild_document(self) -> None:
-        """يعيد توليد المستند من الخطة المحفوظة بالإعدادات الحالية."""
-        if self.video_path is None:
-            return
-        pipeline = VideoToDocPipeline(
-            self.config.application.output_dir, self.config)
-        try:
-            job_dir = pipeline.job_dir_for(self.video_path,
-                                           self._current_clip())
-        except ValueError:
-            job_dir = pipeline.job_dir_for(self.video_path)
-        self.rebuild_button.setEnabled(False)
-        try:
-            result = pipeline.rebuild_document(job_dir)
-        except Exception as exc:
-            QMessageBox.warning(self, "تعذّرت إعادة البناء", str(exc))
-            self.append_log(f"تعذّرت إعادة البناء: {exc}")
-            return
-        finally:
-            self.rebuild_button.setEnabled(True)
-        self.result_path = result
-        self.open_button.setEnabled(True)
-        self.append_log(f"أُعيد بناء المستند: {result}")
-        QMessageBox.information(self, "تم", f"أُعيد بناء المستند:\n{result}")
-
-    def _refresh_rebuild_button(self) -> None:
-        """يُفعَّل الزر فقط إن وُجدت خطة محفوظة لهذا الفيديو."""
-        enabled = False
-        if self.video_path is not None:
-            pipeline = VideoToDocPipeline(
-                self.config.application.output_dir, self.config)
-            try:
-                job_dir = pipeline.job_dir_for(self.video_path,
-                                               self._current_clip())
-            except ValueError:
-                job_dir = pipeline.job_dir_for(self.video_path)
-            enabled = (job_dir / "plan.json").exists()
-        self.rebuild_button.setEnabled(enabled)
-
-    def open_result(self) -> None:
-        if self.result_path is None or not self.result_path.exists():
-            return
-        if sys.platform == "win32":
-            os.startfile(str(self.result_path))
-        elif sys.platform == "darwin":
-            subprocess.run(["open", str(self.result_path)])
-        else:
-            subprocess.run(["xdg-open", str(self.result_path)])
 
     def _warn_if_config_failed_to_load(self) -> None:
         """إعدادٌ تالف يُعاد إلى الافتراضيات — والمستخدم يستحقّ أن يعرف.
