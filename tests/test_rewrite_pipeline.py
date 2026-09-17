@@ -353,3 +353,40 @@ def test_empty_paragraphs_get_one_retry(monkeypatch):
     assert len(prompts) == 2 and "لا تُعِد paragraphs فارغة" in prompts[1]
     assert out["failed"] is False
     assert out["paragraphs"] == ["يدخل المستخدم إلى لوحة الإدارة."]
+
+
+# ── دمج الفقرات القصيرة ────────────────────────────────────────────────
+def _p(text, ids=()):
+    from config.schemas import DocumentBlock
+    return DocumentBlock(kind="paragraph", text=text, segment_ids=list(ids))
+
+
+def _f(image_id):
+    from config.schemas import DocumentBlock
+    return DocumentBlock(kind="figure", image_id=image_id,
+                         image_filename=f"{image_id}.jpg")
+
+
+def test_short_neighbour_paragraphs_are_merged():
+    from ai.rewriter import merge_short_paragraphs
+
+    out = merge_short_paragraphs([_p("جملة أولى.", [1]), _p("جملة ثانية.", [2])])
+    assert [b.text for b in out] == ["جملة أولى. جملة ثانية."]
+    assert out[0].segment_ids == [1, 2]
+
+
+def test_short_paragraph_split_by_a_figure_joins_the_next_one():
+    from ai.rewriter import merge_short_paragraphs
+
+    out = merge_short_paragraphs([_p("قصيرة."), _f(1), _p("تكملة.")])
+    assert [b.kind for b in out] == ["paragraph", "figure"]
+    assert out[0].text == "قصيرة. تكملة."
+
+
+def test_long_paragraphs_and_the_cap_are_respected():
+    from ai.rewriter import MERGED_PARAGRAPH_MAX_CHARS, merge_short_paragraphs
+
+    long_a, long_b = "أ" * 400, "ب" * 400
+    assert len(merge_short_paragraphs([_p(long_a), _p(long_b)])) == 2
+    near_cap = "ج" * (MERGED_PARAGRAPH_MAX_CHARS - 5)
+    assert len(merge_short_paragraphs([_p(near_cap), _p("قصيرة جدًا")])) == 2

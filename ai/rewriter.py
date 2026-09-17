@@ -144,6 +144,56 @@ def _extract_json(raw: str) -> Optional[dict]:
     return None
 
 
+#: سقف الفقرة المدموجة. يطابق ``DocumentConfig.paragraph_max_chars``.
+MERGED_PARAGRAPH_MAX_CHARS = 700
+
+
+def merge_short_paragraphs(blocks: List[DocumentBlock]) -> List[DocumentBlock]:
+    """يدمج الفقرات القصيرة المتجاورة داخل القسم.
+
+    رُصد على تسجيلٍ حقيقي: 8 فقرات من 10 أقصر من 180 حرفًا — جملةٌ لكل
+    فقرة، وصورةٌ بين كل اثنتين. التفريغ الشحيح يجعل النموذج يكتب جملة
+    واحدة لكل فكرة، والصور تقطع ما تبقّى.
+
+    القاعدتان: فقرتان متتاليتان تُدمجان إن كانت إحداهما قصيرة ولم يتجاوز
+    المجموع السقف. وفقرةٌ قصيرة تليها صورةٌ ثم فقرة تُدمج مع التالية
+    وتنتقل الصورة بعدهما — ترتيبٌ زمنيّ يتأخّر ثوانيَ مقابل فقرةٍ تُقرأ.
+    """
+    from document.planner import MIN_PARAGRAPH_CHARS
+
+    def is_text(block):
+        return block.image_id is None and block.kind == "paragraph" and block.text.strip()
+
+    def can_merge(a, b):
+        short = min(len(a.text), len(b.text)) < MIN_PARAGRAPH_CHARS
+        return short and len(a.text) + len(b.text) + 1 <= MERGED_PARAGRAPH_MAX_CHARS
+
+    def merged(a, b):
+        return a.model_copy(update={
+            "text": f"{a.text.rstrip()} {b.text.lstrip()}",
+            "segment_ids": list(dict.fromkeys(a.segment_ids + b.segment_ids))})
+
+    out: List[DocumentBlock] = []
+    i = 0
+    while i < len(blocks):
+        block = blocks[i]
+        if out and is_text(block) and is_text(out[-1]) and can_merge(out[-1], block):
+            out[-1] = merged(out[-1], block)
+            i += 1
+            continue
+        # فقرة قصيرة ← صورة ← فقرة: تُدمج الفقرتان وتلحقهما الصورة
+        if (out and not is_text(block) and block.image_id is not None
+                and is_text(out[-1]) and i + 1 < len(blocks)
+                and is_text(blocks[i + 1]) and can_merge(out[-1], blocks[i + 1])):
+            out[-1] = merged(out[-1], blocks[i + 1])
+            out.append(block)
+            i += 2
+            continue
+        out.append(block)
+        i += 1
+    return out
+
+
 class TranscriptRewriter:
     # إعادة المحاولة على الأخطاء العابرة فقط (تحديد معدّل، عطل خدمة،
     # انقطاع شبكة). التراجع الأسّي يمنع إغراق خدمة تشتكي أصلًا.
@@ -572,7 +622,8 @@ class TranscriptRewriter:
                     segment_ids=entry["segment_ids"] if position == 0 else [])))
 
             events.sort(key=lambda e: (e[0], e[1]))
-            section.blocks = [block for _, _, block in events]
+            section.blocks = merge_short_paragraphs(
+                [block for _, _, block in events])
             sections.append(section)
         return sections
 
