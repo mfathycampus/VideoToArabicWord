@@ -267,6 +267,9 @@ class TranscriptionConfig(BaseModel):
     # أي أن Silero VAD نفسه هو ما يبتلع الكلام — لا الهلوسة ولا beam —
     # ونصّ الفجوة 3:13–4:42 بلا VAD كلامٌ حقيقي. وتعطيله للجميع يضاعف
     # الزمن ×2.5 ويفتح الصمت الطويل للهلوسة، فيُعاد ما فاته وحده.
+    #: أقصى عدد لمصطلحات الشاشة المُحقنة hotwords. ‏0 = كلها. يُضبط
+    #: بعد قياس ``tools/sweep_transcription.py --screen-glossary``.
+    max_screen_terms: int = 0
     gap_refill: bool = True
     gap_refill_min_seconds: float = 12.0
     #: فجوةٌ أهدأ من هذا صمتٌ حقيقي — لا تُعاد، فلا يُختلق فوقها نصّ.

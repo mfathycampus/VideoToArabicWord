@@ -408,6 +408,9 @@ class VideoToDocPipeline:
                  "مسح مصطلحات الشاشة قبل التفريغ…")
             terms = scan_video(video_path, self.ffmpeg,
                                metadata.duration_seconds)
+            cap = int(getattr(settings, "max_screen_terms", 0) or 0)
+            if cap > 0:
+                terms = terms[:cap]
             glossary = as_glossary(terms)
             if glossary:
                 settings.glossary = glossary
