@@ -362,3 +362,13 @@ def test_generated_timestamps_are_not_flagged_as_invented():
     plan = _plan([DocumentSection(title="المقطع الزمني 00:00:00", blocks=[
         _para("نص عند 01:15 من التسجيل.", [1])])])
     assert unsupported_tokens(plan, [_Seg(0, 5, "نص")]) == {"latin": [], "numbers": []}
+
+
+def test_repeated_section_titles_count_as_defects():
+    """ثلاثة أقسام بعنوان التسجيل نفسه مرّت بـ100٪."""
+    plan = _plan([DocumentSection(title="متابعة تحضير المعلمين عبر النظام",
+                                  blocks=[_para(SENTENCE * 3, [i])])
+                  for i in (1, 2, 3)]
+                 + [DocumentSection(title="إنهاء المتابعة",
+                                    blocks=[_para(SENTENCE * 3, [4])])])
+    assert evaluate(plan).get("section_titling") == 25.0

@@ -243,11 +243,21 @@ def test_a_fatal_provider_error_stops_the_remaining_batches():
 
 
 def test_an_invalid_json_reply_is_recorded_not_raised():
-    provider = FakeProvider(["ليس JSON إطلاقًا"])
+    provider = FakeProvider(["ليس JSON إطلاقًا", "وليس هذا أيضًا"])
     pack = StudyBuilder(provider, StudyConfig(batch_chars=10_000)).build(
         _plan(), _transcript())
     assert pack.is_empty() or not pack.questions
     assert any("ردّ غير صالح" in reason for reason in pack.dropped)
+    assert provider.calls == 2
+
+
+def test_an_invalid_json_reply_gets_one_retry():
+    """رُصد: الدفعة الوحيدة لتسجيل حقيقي ردٌّ غير صالح ⇒ حزمة بلا سؤال."""
+    provider = FakeProvider(['{"objectives": [{"text": "مقطو', _good_reply()])
+    pack = StudyBuilder(provider, StudyConfig(batch_chars=10_000)).build(
+        _plan(), _transcript())
+    assert provider.calls == 2
+    assert not any("ردّ غير صالح" in reason for reason in pack.dropped)
 
 
 def test_builder_stops_calling_once_the_question_cap_is_reached():

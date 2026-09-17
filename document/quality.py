@@ -215,7 +215,13 @@ def _section_titling(plan: DocumentPlan) -> Metric:
     و``title_defects`` تسمّي السبب في تفصيل المقياس.
     """
     titles = [s.title for s in plan.sections]
-    defective = [(t, title_defects(t)) for t in titles]
+    # عنوانٌ يتكرّر لقسمين أو أكثر لا يميّز قسمًا في الفهرس. رُصد بعد
+    # تمرير عنوان التسجيل إلى الصياغة: ثلاثة أقسام من أربعة بعنوان
+    # «متابعة تحضير المعلمين عبر النظام» — ومرّت بـ100٪.
+    seen = Counter(" ".join(t.split()) for t in titles)
+    defective = [(t, title_defects(t)
+                  + (["مكرّر"] if seen[" ".join(t.split())] > 1 else []))
+                 for t in titles]
     meaningful = sum(1 for t, d in defective if t.strip() and not d)
 
     reasons = Counter(d for _, ds in defective for d in ds)

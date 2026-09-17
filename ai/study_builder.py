@@ -175,6 +175,20 @@ class StudyBuilder:
 
             parsed = _extract_json(raw)
             if not isinstance(parsed, dict):
+                # رُصد: الدفعة الوحيدة لتسجيلٍ حقيقي ردٌّ غير صالح ⇒ حزمة بلا
+                # سؤال واحد. الأرجح ردٌّ مقطوع عند سقف الرموز أو نصٌّ حول
+                # الـJSON. محاولةٌ واحدة بسقفٍ أعلى وتعليمةٍ صريحة.
+                try:
+                    raw = complete_with_retry(
+                        self.provider, SYSTEM_PROMPT,
+                        self._user_prompt(batch)
+                        + "\n\nأعِد JSON صالحًا فقط، بلا أي نص قبله أو بعده، "
+                          "وباختصار يضمن اكتماله.",
+                        max_tokens=4096, timeout=config.timeout_seconds)
+                    parsed = _extract_json(raw)
+                except Exception as exc:              # noqa: BLE001
+                    logger.warning(f"فشلت إعادة محاولة الدفعة {index}: {exc}")
+            if not isinstance(parsed, dict):
                 failures += 1
                 pack.dropped.append(f"ردّ غير صالح في الدفعة {index}")
                 continue
