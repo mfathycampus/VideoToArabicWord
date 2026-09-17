@@ -24,6 +24,7 @@ from document.exporters import ExportContext, register
 from utils.logger import logger
 from utils.timestamps import seconds_to_display
 
+
 def _install_hint() -> str:
     """الأمر بالمفسّر الذي يشغّل البرنامج فعلًا — لا ‏«pip» أيًّا كان.
 
