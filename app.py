@@ -140,6 +140,9 @@ def main() -> int:
     # أول سطر في كل سجلّ: بلا هذا تبدأ كل محادثة دعم بسؤال «أي إصدار؟»
     logger.info("%s %s — %s", APP_TITLE, APP_VERSION,
                 "حزمة مجمّدة" if is_frozen() else "تشغيل من المصدر")
+    # أيّ مفسّر يشغّل البرنامج؟ رُصد: «python-pptx غير مثبَّتة» والمستخدم
+    # ثبّتها — في Python 3.11، بينما الواجهة تعمل على 3.12.
+    logger.info("المفسّر: %s (Python %s)", sys.executable, sys.version.split()[0])
 
     app = QApplication(sys.argv)
     # الثيم على التطبيق لا على النافذة: الحوارات نوافذ مستقلّة،

@@ -42,8 +42,8 @@ from utils.logger import logger
 #: عطلًا حقيقيًّا لا بطئًا.
 TIMEOUT_SECONDS = 300
 
-INSTALL_HINT = ("‏LibreOffice غير مثبَّت — تحويل PDF يحتاجه. "
-                "نزّله مجانًا من https://www.libreoffice.org/download "
+INSTALL_HINT = ("‏لا Microsoft Word ولا LibreOffice — تحويل PDF يحتاج أحدهما. "
+                "‏LibreOffice مجاني: https://www.libreoffice.org/download "
                 "أو اطبع صفحة HTML إلى PDF من متصفّحك.")
 
 _WINDOWS_CANDIDATES = (
@@ -78,11 +78,74 @@ def find_soffice() -> Optional[Path]:
     return None
 
 
+#: ‏Word عبر COM من PowerShell — بلا أي حزمة Python إضافية (لا pywin32).
+#: ‏wdExportFormatPDF = 17. المسارات تُمرَّر متغيّراتِ بيئة لا نصًّا داخل
+#: السكربت: أسماء الملفّات العربية وعلامات الاقتباس فيها تكسر السكربت.
+_WORD_SCRIPT = r"""
+$ErrorActionPreference = 'Stop'
+$word = New-Object -ComObject Word.Application
+$word.Visible = $false
+$word.DisplayAlerts = 0
+try {
+    $doc = $word.Documents.Open($env:VTAD_DOCX, $false, $true)
+    try { $doc.ExportAsFixedFormat($env:VTAD_PDF, 17) }
+    finally { $doc.Close(0) }
+} finally {
+    $word.Quit()
+    [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($word)
+}
+"""
+
+
+def convert_with_word(docx_path: Path, target: Path) -> Optional[Path]:
+    """‏PDF عبر Microsoft Word المثبَّت — ويندوز وحده.
+
+    البديل الطبيعي على جهاز معلّم: Word موجود غالبًا، وهو **نفسه** من
+    يعرض المستند، فالـPDF يطابق ما يراه المستخدم حرفيًّا (بما فيه اتجاه
+    الفقرات العربية الذي يقرؤه LibreOffice بطريقة مختلفة).
+    """
+    if not sys.platform.startswith("win"):
+        return None
+    shell = shutil.which("powershell") or shutil.which("pwsh")
+    if shell is None:
+        return None
+    env = dict(os.environ, VTAD_DOCX=str(Path(docx_path).resolve()),
+               VTAD_PDF=str(Path(target).resolve()))
+    try:
+        result = subprocess.run(
+            [shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy",
+             "Bypass", "-Command", _WORD_SCRIPT],
+            capture_output=True, text=True, env=env, timeout=TIMEOUT_SECONDS,
+            creationflags=subprocess.CREATE_NO_WINDOW)
+    except subprocess.TimeoutExpired:
+        logger.warning(f"تجاوز تحويل PDF عبر Word {TIMEOUT_SECONDS} ثانية.")
+        return None
+    except Exception as exc:                            # noqa: BLE001
+        logger.debug(f"تعذّر تشغيل Word للتحويل: {exc}")
+        return None
+    if Path(target).is_file() and Path(target).stat().st_size > 0:
+        return Path(target)
+    detail = (result.stderr or "").strip().splitlines()
+    logger.debug("لم يُنتج Word ملف PDF"
+                 + (f" — {detail[0][:200]}" if detail else "."))
+    return None
+
+
 def convert(docx_path: Path, output_dir: Path,
             soffice: Optional[Path] = None) -> Optional[Path]:
-    """يحوّل ملفًّا واحدًا ويعيد مسار الـ PDF، أو ``None`` عند التعذّر."""
+    """يحوّل ملفًّا واحدًا ويعيد مسار الـ PDF، أو ``None`` عند التعذّر.
+
+    الترتيب: LibreOffice إن وُجد، وإلا Microsoft Word (ويندوز).
+    """
     soffice = soffice or find_soffice()
     if soffice is None:
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        produced = convert_with_word(
+            Path(docx_path), output_dir / f"{Path(docx_path).stem}.pdf")
+        if produced is not None:
+            logger.info("‏PDF عبر Microsoft Word.")
+            return produced
         logger.info(INSTALL_HINT)
         return None
 

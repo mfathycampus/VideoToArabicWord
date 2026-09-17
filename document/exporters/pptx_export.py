@@ -24,8 +24,18 @@ from document.exporters import ExportContext, register
 from utils.logger import logger
 from utils.timestamps import seconds_to_display
 
-INSTALL_HINT = ("‏python-pptx غير مثبَّتة — صيغة الشرائح تحتاجها. "
-                "ثبّتها عبر: pip install python-pptx")
+def _install_hint() -> str:
+    """الأمر بالمفسّر الذي يشغّل البرنامج فعلًا — لا ‏«pip» أيًّا كان.
+
+    ‏«pip install» يثبّت في أول Python على PATH، وقد لا يكون الذي يشغّل
+    الواجهة؛ فيقول المستخدم «مثبَّتة» ويبقى التحذير.
+    """
+    import sys
+    return ("‏python-pptx غير مثبَّتة في مفسّر البرنامج — صيغة الشرائح "
+            f'تحتاجها. ثبّتها عبر: "{sys.executable}" -m pip install python-pptx')
+
+
+INSTALL_HINT = _install_hint()
 
 #: شريحة تتجاوز هذا العدد من النقاط تصير صفحةً تُقرأ لا شريحةً تُعرض.
 MAX_BULLETS = 6

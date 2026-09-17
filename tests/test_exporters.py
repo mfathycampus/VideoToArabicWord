@@ -323,3 +323,47 @@ def test_pptx_is_skipped_when_the_library_is_absent(ctx, monkeypatch):
     from document.exporters.pptx_export import export
 
     assert export(ctx) is None
+
+
+def test_pdf_falls_back_to_word_when_libreoffice_is_missing(monkeypatch, tmp_path):
+    """‏python-pptx وLibreOffice غائبان عند المستخدم؛ Word موجود."""
+    from document.exporters import pdf_export
+
+    source = tmp_path / "درس.docx"
+    source.write_bytes(b"docx")
+    calls = {}
+
+    def fake_word(docx, target):
+        calls["args"] = (docx, target)
+        Path(target).write_bytes(b"%PDF")
+        return Path(target)
+
+    monkeypatch.setattr(pdf_export, "find_soffice", lambda: None)
+    monkeypatch.setattr(pdf_export, "convert_with_word", fake_word)
+    produced = pdf_export.convert(source, tmp_path / "out")
+    assert produced == tmp_path / "out" / "درس.pdf"
+    assert calls["args"][0] == source
+
+
+def test_word_conversion_passes_paths_through_the_environment(monkeypatch, tmp_path):
+    """أسماء عربية وعلامات اقتباس لا تُحقن في نصّ السكربت."""
+    import subprocess
+    import sys
+
+    from document.exporters import pdf_export
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(pdf_export.shutil, "which", lambda name: "powershell")
+    monkeypatch.setattr(subprocess, "CREATE_NO_WINDOW", 0, raising=False)
+    target = tmp_path / "درس 'أ'.pdf"
+    seen = {}
+
+    def fake_run(cmd, **kwargs):
+        seen["cmd"], seen["env"] = cmd, kwargs["env"]
+        target.write_bytes(b"%PDF")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(pdf_export.subprocess, "run", fake_run)
+    assert pdf_export.convert_with_word(tmp_path / "درس 'أ'.docx", target) == target
+    assert "درس" not in " ".join(seen["cmd"])
+    assert seen["env"]["VTAD_PDF"].endswith("درس 'أ'.pdf")
