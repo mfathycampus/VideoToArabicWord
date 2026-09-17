@@ -336,6 +336,10 @@ class DocumentConfig(BaseModel):
     #: والصورة فوقها، وتنشر أسماء أشخاص. النصّ يبقى مستعملًا حيث ينفع:
     #: سياق الصياغة، والتعليق، والمصطلحات.
     show_screen_text: bool = False
+    #: يموّه أسماء الأشخاص في اللقطات، ويحذفها من نصّ الشاشة، ويطلب من
+    #: الصياغة والحزمة التعليمية وصف الدور بدل الاسم. انظر video/redact.py
+    #: لحدود الكشف (الأسماء اللاتينية والبريد؛ لا العربية على الشاشة).
+    anonymize_names: bool = True
     font_family: str = "Arial"
     body_size_pt: float = 12.0
     heading_size_pt: float = 17.0

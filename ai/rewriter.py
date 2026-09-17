@@ -79,6 +79,14 @@ SYSTEM_PROMPT = """أنت محرّر عربي محترف. مهمتك تحويل 
  "paragraphs": ["الفقرة الأولى", "الفقرة الثانية"],
  "figures": [{"t": "00:00:17", "caption": "تعليق وصفي قصير للقطة"}]}"""
 
+#: يُلحق بالسياق حين يُطلب إخفاء الأسماء. الأسماء المنطوقة لا يكشفها
+#: ‏video/redact.py — لا نصّ على الشاشة يطابقها («محمد يوسف»، «الحنوف
+#: السبيعي» في تسجيلٍ حقيقي) — فالنموذج وحده يستطيع استبدالها.
+ANONYMIZE_NOTE = (
+    "خصوصية: لا تكتب اسم أي شخص (معلّم، طالب، مشرف، زميل) في أي حقل. "
+    "صِف الدور بدل الاسم: «إحدى المعلمات»، «المشرف». أسماء المدارس "
+    "والأنظمة والمواد مسموحة.\n\n")
+
 OUTLINE_PROMPT = """أنت محرّر عربي محترف. أمامك عناوين أقسام وثيقة.
 
 أعِد **JSON فقط**:
@@ -122,6 +130,8 @@ class RewriteConfig:
     #: المحاضرة، لكنه قد يحمل أسماء أشخاص ظاهرة على الشاشة — فيُعطَّل
     #: حيث تمنع السياسة إرسالها إلى مزوّد سحابي.
     include_screen_text: bool = True
+    #: لا أسماء أشخاص في المستند: يُوصف الدور بدل الاسم.
+    anonymize_names: bool = False
 
 
 def _extract_json(raw: str) -> Optional[dict]:
@@ -299,6 +309,8 @@ class TranscriptRewriter:
                     f"{stamps}\nاكتب تعليقًا وصفيًا لكل زمن في حقل figures، "
                     "بنفس صيغة الزمن المعطاة.")
         context = self._context_block(figures)
+        if self.config.anonymize_names:
+            context += ANONYMIZE_NOTE
         failed = False
         try:
             raw = self._complete_with_retry(

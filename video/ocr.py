@@ -182,20 +182,27 @@ def install_hint() -> str:
     return "sudo apt install tesseract-ocr tesseract-ocr-ara"
 
 
-def extract_text(image_path: Path, timeout_seconds: float = 20.0) -> str:
-    """يستخرج النص من صورة لقطة. سلسلة فارغة عند أي فشل أو غياب —
-    OCR إثراء اختياري لمحتوى المستند، وليس مرحلة حرجة في الـpipeline،
-    فلا يجوز أن يُسقط استخراج لقطة واحدة معالجة الفيديو كلها.
+def _ocr_tsv(image_path: Path, timeout_seconds: float) -> Optional[tuple[str, float]]:
+    """يشغّل Tesseract ويعيد (نص TSV، معامل التكبير) أو ``None``.
+
+    المعامل يُرجع إحداثيات الكلمات إلى أبعاد الصورة الأصلية — يحتاجه
+    تمويه الأسماء (``video/redact.py``).
     """
     exe = tesseract_executable()
-    if exe is None:
-        return ""
-    if not Path(image_path).exists():
-        return ""
+    if exe is None or not Path(image_path).exists():
+        return None
 
     with tempfile.TemporaryDirectory(prefix="ocr_") as tmp:
         out_base = Path(tmp) / "out"
         source = _prepare_for_ocr(Path(image_path), Path(tmp))
+        scale = 1.0
+        if source != Path(image_path):
+            try:
+                from PIL import Image
+                with Image.open(image_path) as original, Image.open(source) as big:
+                    scale = big.width / float(original.width)
+            except Exception:                   # noqa: BLE001
+                scale = 1.0
         # ``tsv`` بدل النصّ الخام: يعطي إحداثيات كل كلمة **وثقتها**،
         # وهي ما يفصل السطر المقروء عن الضوضاء. الأمر نفسه والزمن نفسه.
         try:
@@ -206,25 +213,64 @@ def extract_text(image_path: Path, timeout_seconds: float = 20.0) -> str:
                 errors="replace", timeout=timeout_seconds)
         except subprocess.TimeoutExpired:
             logger.warning(f"تجاوز OCR المهلة على {Path(image_path).name}")
-            return ""
+            return None
         except OSError as exc:
             logger.warning(f"تعذّر تشغيل tesseract: {exc}")
-            return ""
+            return None
 
         if result.returncode != 0:
             logger.warning(
                 f"فشل OCR على {Path(image_path).name}: "
                 f"{result.stderr.strip()[:300]}")
-            return ""
+            return None
 
         out_file = out_base.with_suffix(".tsv")
         if not out_file.exists():
-            return ""
+            return None
         try:
-            raw = out_file.read_text(encoding="utf-8", errors="replace")
+            return out_file.read_text(encoding="utf-8", errors="replace"), scale
         except OSError:
-            return ""
-        return _clean(_confident_lines(raw))
+            return None
+
+
+def extract_text(image_path: Path, timeout_seconds: float = 20.0) -> str:
+    """يستخرج النص من صورة لقطة. سلسلة فارغة عند أي فشل أو غياب —
+    OCR إثراء اختياري لمحتوى المستند، وليس مرحلة حرجة في الـpipeline،
+    فلا يجوز أن يُسقط استخراج لقطة واحدة معالجة الفيديو كلها.
+    """
+    text, _words = extract_text_and_words(image_path, timeout_seconds)
+    return text
+
+
+def extract_text_and_words(image_path: Path, timeout_seconds: float = 20.0
+                           ) -> tuple[str, list[dict]]:
+    """النصّ الموثوق + كل كلمة بإحداثياتها في الصورة الأصلية — بتشغيلٍ واحد."""
+    ran = _ocr_tsv(Path(image_path), timeout_seconds)
+    if ran is None:
+        return "", []
+    raw, scale = ran
+    return _clean(_confident_lines(raw)), _words(raw, scale)
+
+
+def _words(tsv_text: str, scale: float) -> list[dict]:
+    reader = csv.DictReader(tsv_text.splitlines(), delimiter="\t",
+                            quoting=csv.QUOTE_NONE)
+    words: list[dict] = []
+    for row in reader:
+        text = (row.get("text") or "").strip()
+        try:
+            conf = float(row.get("conf") or -1)
+            box = [int(row[k]) / scale for k in ("left", "top", "width", "height")]
+        except (TypeError, ValueError, KeyError):
+            continue
+        if not text or conf < 0:
+            continue
+        words.append({"text": text, "conf": conf,
+                      "line": (row.get("block_num"), row.get("par_num"),
+                               row.get("line_num")),
+                      "left": box[0], "top": box[1],
+                      "width": box[2], "height": box[3]})
+    return words
 
 
 #: عرض الصورة المستهدف قبل OCR. نصّ واجهات الويب ~11px في لقطة عرضها

@@ -390,3 +390,13 @@ def test_long_paragraphs_and_the_cap_are_respected():
     assert len(merge_short_paragraphs([_p(long_a), _p(long_b)])) == 2
     near_cap = "ج" * (MERGED_PARAGRAPH_MAX_CHARS - 5)
     assert len(merge_short_paragraphs([_p(near_cap), _p("قصيرة جدًا")])) == 2
+
+
+def test_anonymize_asks_the_model_for_roles_not_names(monkeypatch):
+    rw, prompts = _recording_rewriter(monkeypatch, anonymize_names=True)
+    rw.build_plan(make_transcript(3), [], "درس")
+    assert "لا تكتب اسم أي شخص" in prompts[0][1]
+
+    rw, prompts = _recording_rewriter(monkeypatch)
+    rw.build_plan(make_transcript(3), [], "درس")
+    assert "لا تكتب اسم أي شخص" not in prompts[0][1]

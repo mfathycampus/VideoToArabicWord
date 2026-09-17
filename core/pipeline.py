@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 from pathlib import Path
@@ -828,6 +829,8 @@ class VideoToDocPipeline:
         config = StudyConfig(**{
             key: getattr(settings, key) for key in StudyConfig.__dataclass_fields__
             if hasattr(settings, key)})
+        config.anonymize_names = getattr(self.config.document,
+                                         "anonymize_names", False)
 
         provider = None
         try:
@@ -999,7 +1002,9 @@ class VideoToDocPipeline:
                                   batch_chars=settings.batch_chars,
                                   make_outline=settings.make_outline,
                                   timeout_seconds=settings.timeout_seconds,
-                                  glossary=self.config.whisper.glossary or ""))
+                                  glossary=self.config.whisper.glossary or "",
+                                  anonymize_names=getattr(
+                                      self.config.document, "anonymize_names", False)))
                 plan = rewriter.build_plan(
                     transcript, keyframes, title, subtitle,
                     lambda f, m: emit(Stage.MATCHING, 0.1 + f * 0.8, m))
@@ -1359,8 +1364,27 @@ class VideoToDocPipeline:
             return
 
         total = len(keyframes)
+        hidden = 0
         for index, kf in enumerate(keyframes):
             cancel_token.raise_if_cancelled()
             emit(Stage.KEYFRAMES, 0.85 + 0.15 * (index / total),
                 f"استخراج نص الشاشة… ({index + 1}/{total})")
-            kf.ocr_text = extract_text(images_dir / kf.filename)
+            path = images_dir / kf.filename
+            if getattr(self.config.document, "anonymize_names", False):
+                from video.ocr import extract_text_and_words
+                from video.redact import redact_keyframe
+
+                text, words = extract_text_and_words(path)
+                kf.ocr_text, names = redact_keyframe(path, words, text)
+                if names:
+                    hidden += len(names)
+                    try:
+                        kf.checksum = hashlib.sha256(
+                            path.read_bytes()).hexdigest()[:16]
+                    except OSError:
+                        pass
+            else:
+                kf.ocr_text = extract_text(path)
+        if hidden:
+            logger.info(f"إخفاء الأسماء: مُوِّه {hidden} اسمًا/بريدًا في اللقطات "
+                        "وحُذف من نصّ الشاشة.")

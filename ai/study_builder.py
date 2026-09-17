@@ -85,6 +85,7 @@ class StudyConfig:
     max_flashcards: int = 30
     #: استكمال المسرد إحصائيًّا بما لم يذكره النموذج. مجّاني ولا يحتاجه.
     augment_glossary: bool = True
+    anonymize_names: bool = False
 
 
 ProgressFn = Callable[[int, int], None]
@@ -210,7 +211,12 @@ class StudyBuilder:
     # ------------------------------------------------------------------
     def _user_prompt(self, batch: Sequence[AudioSegment]) -> str:
         config = self.config
-        return (
+        if config.anonymize_names:
+            from ai.rewriter import ANONYMIZE_NOTE
+            prefix = ANONYMIZE_NOTE
+        else:
+            prefix = ""
+        return prefix + (
             f"اكتب من المقاطع التالية: هدفًا تعليميًّا أو هدفين، وحتى ثلاثة "
             f"مصطلحات بتعريفاتها، و{config.questions_per_batch} أسئلة متنوّعة "
             f"(اختيار من متعدد، صح/خطأ، سؤال قصير)، وحتى ثلاث بطاقات مراجعة.\n"
