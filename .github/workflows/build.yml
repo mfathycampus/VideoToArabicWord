@@ -68,9 +68,14 @@ jobs:
           & $python tools/build_smoke.py dist/VideoToArabicWord
 
       - uses: actions/upload-artifact@v4
+        # ‏1.12.0: «Artifact storage quota has been hit» أسقط الوظيفة هنا
+        # فلم يُبنَ المثبِّت ولم يُنشر الإصدار. الحزمة المفكوكة نسخةُ فحصٍ
+        # لا مُخرَج: فشل رفعها لا يوقف النشر، وتُحذف بعد 3 أيام.
+        continue-on-error: true
         with:
           name: VideoToArabicWord-windows
           path: dist/VideoToArabicWord
+          retention-days: 3
 
       # ── المثبِّت: على الوسوم فقط ───────────────────────────────────
       # بناؤه في كل دفعة يضيف دقائق بلا فائدة؛ ما يُسلَّم للمعلّمين هو
@@ -101,9 +106,12 @@ jobs:
       - name: رفع المثبِّت
         if: startsWith(github.ref, 'refs/tags/v')
         uses: actions/upload-artifact@v4
+        # المثبِّت يُرفق بالإصدار نفسه في الخطوة التالية؛ هذه نسخة إضافية
+        continue-on-error: true
         with:
           name: VideoToArabicWord-installer
           path: dist/*-setup.exe
+          retention-days: 7
 
       # ── النشر: المثبِّت إلى صفحة الإصدارات ─────────────────────────
       # مخرَج Actions ليس تسليمًا. تنزيله يحتاج حساب GitHub وتسجيل

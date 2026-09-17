@@ -74,6 +74,7 @@ jobs:
           name: acceptance-report
           path: acceptance_report.json
           if-no-files-found: ignore
+          retention-days: 7
 
   lint:
     name: فحص الأسلوب
