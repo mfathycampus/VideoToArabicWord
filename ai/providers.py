@@ -467,3 +467,15 @@ class AnthropicProvider(LLMProvider):
     def _extract_text(data: dict) -> str:
         return "".join(block.get("text", "") for block in data.get("content", [])
                        if block.get("type") == "text")
+
+
+def provider_from_settings(settings) -> "LLMProvider":
+    """المزوّد من قسم إعداد (rewrite أو study) — نقطة واحدة بدل ثلاث نسخ.
+
+    كانت ``core/pipeline`` تبني المزوّد من الحقول الستّة نفسها في ثلاثة
+    مواضع؛ حقلٌ يُضاف لأحدها (``workspace_id`` مثلًا) يُنسى في الآخرَين.
+    """
+    return build_provider(
+        settings.provider, model=settings.model,
+        base_url=settings.base_url, api_key_env=settings.api_key_env,
+        api_key=settings.api_key, workspace_id=settings.workspace_id)

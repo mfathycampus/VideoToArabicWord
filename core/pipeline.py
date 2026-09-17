@@ -5,7 +5,6 @@
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import shutil
 from pathlib import Path
@@ -16,7 +15,6 @@ from audio.model_manager import ModelManager
 from config.profiles import apply_profile
 from config.schemas import (
     DocumentPlan,
-    KeyframeMetadata,
     TranscriptionCheckpoint,
     TranscriptionResult,
     VideoMetadata,
@@ -25,12 +23,12 @@ from config.settings import AppConfig, ClipRange
 from core.exceptions import (
     ArtifactMissingError,
     DocumentGenerationError,
-    InsufficientDiskSpaceError,
-    MediaValidationError,
     ModelUnavailableError,
     PipelineCancelledError,
 )
 from core.job_state import JobManager, Stage, atomic_write_text
+from core.pipeline_media import MediaStagesMixin
+from core.pipeline_outputs import OutputsMixin
 from document.planner import TimelinePlanner
 from document.word_generator import DocumentGenerator
 from utils.cancellation import CancellationToken
@@ -46,12 +44,12 @@ from utils.media_probe import extract_video_facts, probe_raw
 from utils.power import keep_awake
 from utils.timestamps import humanize_title, seconds_to_display
 from video.keyframe_selector import KeyframeSelector
-from video.scene_detector import Scene, SceneDetector
+from video.scene_detector import SceneDetector
 
 ProgressFn = Callable[[float, str], None]
 
-# أقل مساحة حرة مطلوبة قبل بدء المهمة
-_MIN_FREE_BYTES = 2 * 1024 ** 3
+# أقل مساحة حرة مطلوبة قبل بدء المهمة — تعيش مع ``_validate_input``
+from core.pipeline_media import _MIN_FREE_BYTES  # noqa: E402,F401
 
 
 def _shift_transcript(transcript: TranscriptionResult,
@@ -103,7 +101,7 @@ def _legacy_job_dir_matches(legacy_dir: Path, video_path: Path) -> bool:
     return stored.get("video_path") == str(video_path)
 
 
-class VideoToDocPipeline:
+class VideoToDocPipeline(MediaStagesMixin, OutputsMixin):
     """يقبل محرّكاته بالحقن (ADR-008) ليكون قابلًا للاختبار والاستبدال."""
 
     def __init__(
@@ -383,96 +381,6 @@ class VideoToDocPipeline:
             logger.exception("فشل الـ pipeline")
             raise
 
-    def _autofill_screen_glossary(self, video_path: Path, metadata,
-                                  emit) -> None:
-        """يملأ «مصطلحات المادة» من نصّ الشاشة قبل التفريغ — إن كانت فارغة.
-
-        الترتيب هو كل الفكرة: نصّ الشاشة كان يُستخرج في مرحلة اللقطات،
-        أي **بعد** التفريغ بمرحلتين — فيُعرَض في المستند ولا ينفع الدقّة
-        التي كان يستطيع رفعها. والمسح هنا أربعةَ عشر إطارًا فقط، ثوانٍ
-        أمام ساعات التفريغ.
-
-        ولا يُلمس ما كتبه المستخدم بيده: اختياره يفوز دائمًا.
-        """
-        settings = self.config.whisper
-        if not getattr(settings, "auto_screen_glossary", True):
-            return
-        if (settings.glossary or "").strip():
-            return
-        if not metadata.has_video or metadata.duration_seconds <= 0:
-            return
-        try:
-            from video.screen_terms import as_glossary, scan_video
-
-            emit(Stage.TRANSCRIPTION, 0.01,
-                 "مسح مصطلحات الشاشة قبل التفريغ…")
-            terms = scan_video(video_path, self.ffmpeg,
-                               metadata.duration_seconds)
-            cap = int(getattr(settings, "max_screen_terms", 0) or 0)
-            if cap > 0:
-                terms = terms[:cap]
-            glossary = as_glossary(terms)
-            if glossary:
-                settings.glossary = glossary
-                logger.info(
-                    f"مصطلحات من الشاشة ({len(terms)}): {glossary[:160]}")
-        except Exception as exc:
-            # اقتراحٌ مساعد لا شرط تشغيل — فشلُه لا يمسّ التفريغ.
-            logger.warning(f"تعذّر مسح مصطلحات الشاشة: {exc}")
-
-    def _prepare_screen_crop(self, video_path: Path, metadata) -> None:
-        """يستنتج صندوق قصّ زينة الشاشة ويحقنه في منتقي اللقطات.
-
-        يقع قبل كشف المشاهد فيسري على كل إطار يُقرأ بعده — بما فيه
-        إطارات المقارنة. وفشلُه لا يُفشل شيئًا: لقطةٌ بشريطٍ زائد أهون
-        من مهمّة ساقطة.
-        """
-        frames_config = self.config.frames
-        if not getattr(frames_config, "crop_screen_chrome", True):
-            return
-        try:
-            from video.screen_crop import detect_from_video, manual_box
-
-            top = float(getattr(frames_config, "crop_top_ratio", 0.0) or 0.0)
-            bottom = float(getattr(frames_config, "crop_bottom_ratio", 0.0) or 0.0)
-            if top > 0 or bottom > 0:
-                # اليدويّ يُلغي الاستنتاج: من ضبط النسب يعرف شاشته.
-                box = manual_box(metadata.height or 0, top, bottom)
-                logger.info(f"قصّ يدويّ لزينة الشاشة: {box.describe()}")
-            else:
-                box = detect_from_video(video_path,
-                                        metadata.duration_seconds, self.ffmpeg)
-            self.keyframe_selector.crop_box = box
-        except Exception as exc:
-            logger.warning(f"تعذّر كشف زينة الشاشة: {exc}")
-
-    def _report_audio_level(self, media_path: Path, normalized: bool) -> None:
-        """يقيس مستوى الصوت ويقول للمستخدم إن كان هادئًا — تشخيص لا قرار.
-
-        القرار (التطبيع) يقع دائمًا. وهذا السطر يجيب على السؤال الذي
-        كان بلا جواب: «لماذا خرج تفريغي ناقصًا؟» — سطرٌ في السجلّ يقول
-        إن المصدر أهدأ من اللازم أنفع من تخمين المستخدم.
-        """
-        try:
-            levels = self.ffmpeg.audio_levels(media_path)
-        except Exception as exc:
-            logger.debug(f"تعذّر قياس مستوى الصوت: {exc}")
-            return
-        if not levels or "peak_db" not in levels:
-            logger.debug("قياس مستوى الصوت لم يُرجع قيمًا.")
-            return
-        peak = levels["peak_db"]
-        mean = levels.get("mean_db")
-        detail = f"ذروة {peak:.1f} dBFS" + (
-            f" · متوسّط {mean:.1f} dBFS" if mean is not None else "")
-        if peak < self.ffmpeg.QUIET_PEAK_DBFS:
-            logger.warning(
-                f"المصدر هادئ ({detail}). "
-                + ("أُطبّق توحيد المستوى قبل التفريغ."
-                   if normalized else
-                   "توحيد المستوى معطَّل — متوقَّعٌ ضياع مقاطع من التفريغ."))
-        else:
-            logger.info(f"مستوى الصوت: {detail}")
 
     @staticmethod
     def _fill_audit(audit, job) -> None:
@@ -712,348 +620,6 @@ class VideoToDocPipeline:
         job.complete_stage(Stage.DOCUMENT)
         return output_docx
 
-    # ------------------------------------------------------------------
-    @staticmethod
-    def _write_transcript_files(transcript, base_path: Path,
-                                title: str) -> List[Path]:
-        """يكتب النص وMarkdown والترجمات — بلا مستند Word."""
-        from document.transcript_export import write_transcript
-
-        return write_transcript(transcript, base_path, title)
-
-    def _write_subtitles(self, transcript, output_docx: Path, job) -> None:
-        """يكتب SRT/VTT بجوار المستند من توقيت الكلمات المحفوظ."""
-        if not self.config.document.export_subtitles or not transcript.segments:
-            return
-        try:
-            from document.subtitles import write_subtitles
-
-            written = write_subtitles(
-                transcript, output_docx,
-                self.config.document.subtitle_formats)
-            for path in written:
-                job.register_artifact(f"subtitles_{path.suffix.lstrip('.')}",
-                                      path)
-            if written:
-                logger.info("ملفات الترجمة: "
-                            + "، ".join(p.name for p in written))
-        except Exception as exc:
-            logger.warning(f"تعذّرت كتابة ملفات الترجمة: {exc}")
-
-    def _build_study_pack(self, plan, transcript, keyframes, job, emit):
-        """يبني حزمة المذاكرة ويحفظها في ``study.json`` — أو يعيد ``None``.
-
-        **لا يُفشل المهمة أبدًا.** الحزمة مخرج إضافي كالترجمات تمامًا:
-        غياب المزوّد أو سقوطه يترك المستند كما يخرج اليوم بالضبط.
-
-        **ولا يُستدعى النموذج مرّتين لنفس الخطة.** التوليد هو الخطوة
-        الوحيدة في البرنامج التي قد تكلّف مالًا أو دقائق انتظار، فحزمةٌ
-        محفوظة بالتوقيع نفسه تُعاد كما هي.
-        """
-        settings = self.config.study
-        if not settings.enabled or not transcript.segments:
-            return None
-
-        from config.schemas import StudyPack
-
-        signature = self._study_signature()
-        study_path = job.job_dir / "study.json"
-        if study_path.is_file():
-            try:
-                stored = StudyPack(**json.loads(
-                    study_path.read_text(encoding="utf-8")))
-                if stored.generated_by == signature and not stored.is_empty():
-                    logger.info("حزمة تعليمية محفوظة بالتوقيع نفسه — أُعيد استعمالها.")
-                    return stored
-            except Exception as exc:
-                logger.warning(f"تعذّرت قراءة study.json المحفوظ: {exc}")
-
-        emit(Stage.DOCUMENT, 0.05, "توليد الحزمة التعليمية…")
-        try:
-            pack = self._generate_study_pack(plan, transcript, keyframes, emit)
-        except Exception as exc:
-            logger.warning(f"تعذّرت الحزمة التعليمية: {exc}")
-            return None
-
-        if pack is None or pack.is_empty():
-            return None
-        try:
-            atomic_write_text(study_path, pack.model_dump_json(indent=2))
-            job.register_artifact("study", study_path)
-        except Exception as exc:
-            logger.warning(f"تعذّر حفظ study.json: {exc}")
-        return pack
-
-    def _study_signature(self) -> str:
-        settings = self.config.study
-        if not settings.enabled:
-            return "none"
-        return (f"ai:{settings.provider}"
-                + (f"/{settings.model}" if settings.model else ""))
-
-    def _rewrite_provider_for_study(self, study_settings):
-        """مزوّد إعادة الصياغة بديلًا للحزمة التعليمية — إن كان متاحًا.
-
-        لا يُستعمل إلا إن فُعّلت الصياغة في هذه المهمة: المستخدم رضي
-        بإرسال النص إلى هذا المزوّد أصلًا، فلا يُفتح بابُ خروجٍ جديد.
-        """
-        rewrite = self.config.rewrite
-        if not (getattr(study_settings, "use_rewrite_provider_as_fallback", True)
-                and rewrite.enabled and rewrite.provider
-                and rewrite.provider != study_settings.provider):
-            return None
-        try:
-            from ai.providers import build_provider
-
-            provider = build_provider(
-                rewrite.provider, model=rewrite.model,
-                base_url=rewrite.base_url, api_key_env=rewrite.api_key_env,
-                api_key=rewrite.api_key, workspace_id=rewrite.workspace_id)
-            if not provider.is_available():
-                return None
-        except Exception as exc:
-            logger.debug(f"مزوّد الصياغة غير صالح بديلًا للحزمة: {exc}")
-            return None
-        logger.info(
-            f"مزوّد الحزمة التعليمية «{study_settings.provider}» غير متاح — "
-            f"تُبنى الحزمة بمزوّد الصياغة «{rewrite.provider}».")
-        return provider
-
-    def _generate_study_pack(self, plan, transcript, keyframes, emit):
-        """يختار المسار: نموذج لغوي، أو المسار الإحصائي عند تعذّره."""
-        from ai.providers import build_provider
-        from ai.study_builder import (
-            StudyBuilder,
-            StudyConfig,
-            build_without_model,
-        )
-
-        settings = self.config.study
-        config = StudyConfig(**{
-            key: getattr(settings, key) for key in StudyConfig.__dataclass_fields__
-            if hasattr(settings, key)})
-        config.anonymize_names = getattr(self.config.document,
-                                         "anonymize_names", False)
-
-        provider = None
-        try:
-            provider = build_provider(
-                settings.provider, model=settings.model,
-                base_url=settings.base_url, api_key_env=settings.api_key_env,
-                api_key=settings.api_key, workspace_id=settings.workspace_id)
-            available = provider.is_available()
-        except Exception as exc:
-            logger.warning(f"تعذّر تجهيز مزوّد الحزمة التعليمية: {exc}")
-            available = False
-
-        if not available:
-            substitute = self._rewrite_provider_for_study(settings)
-            if substitute is not None:
-                provider = substitute
-                available = True
-                config.provider = self.config.rewrite.provider
-                config.model = self.config.rewrite.model
-
-        if not available:
-            if not settings.fallback_without_model:
-                logger.warning(
-                    f"مزوّد الحزمة التعليمية «{settings.provider}» غير متاح — "
-                    "أُلغيت الحزمة.")
-                return None
-            # صادقٌ ومفيد: قائمة مصطلحات بلا ادّعاء تعريفات، وهي نفسها
-            # ما يُلصق في خانة «مصطلحات المادة» فيرفع دقّة المحاضرة التالية.
-            logger.info(
-                f"مزوّد الحزمة التعليمية «{settings.provider}» غير متاح — "
-                "أُخرجت قائمة المصطلحات وحدها.")
-            return build_without_model(plan, transcript, keyframes,
-                                       limit=settings.max_glossary)
-
-        def report(done: int, total: int) -> None:
-            emit(Stage.DOCUMENT, 0.05 + 0.35 * (done / max(1, total)),
-                 f"توليد الحزمة التعليمية… ({done}/{total})")
-
-        return StudyBuilder(provider, config).build(
-            plan, transcript, keyframes, progress=report)
-
-    def _write_translations(self, transcript, output_docx: Path, job) -> None:
-        """يترجم ملفّات الترجمة إلى اللغات المطلوبة — مخرج إضافي لا شرط.
-
-        يستعمل مزوّد الحزمة التعليمية نفسه: مزوّدٌ ثانٍ بمفتاح ثانٍ
-        وإعدادٍ ثانٍ لنفس النوع من العمل تعقيدٌ بلا مقابل.
-        """
-        targets = [str(t).strip().lower()
-                   for t in (getattr(self.config.document, "translate_to", [])
-                             or []) if str(t).strip()]
-        if not targets or not transcript.segments:
-            return
-        try:
-            from ai.providers import build_provider
-            from ai.translator import TranslationConfig, translate_subtitles
-
-            settings = self.config.study
-            provider = build_provider(
-                settings.provider, model=settings.model,
-                base_url=settings.base_url, api_key_env=settings.api_key_env,
-                api_key=settings.api_key, workspace_id=settings.workspace_id)
-            if not provider.is_available():
-                logger.info(
-                    f"مزوّد الترجمة «{settings.provider}» غير متاح — "
-                    "تُخطّى الترجمة.")
-                return
-            for target in targets:
-                for path in translate_subtitles(
-                        transcript, output_docx, provider,
-                        TranslationConfig(
-                            target=target,
-                            timeout_seconds=settings.timeout_seconds),
-                        self.config.document.subtitle_formats):
-                    job.register_artifact(f"translation_{target}", path)
-        except Exception as exc:
-            logger.warning(f"تعذّرت الترجمة: {exc}")
-
-    def _write_exports(self, plan, metadata, images_dir: Path,
-                       base_path: Path, job,
-                       docx_path: Optional[Path] = None,
-                       transcript=None,
-                       source_media: Optional[Path] = None,
-                       study_pack=None) -> List[Path]:
-        """يصيّر الصيغ الإضافية من الخطة نفسها — بعقد الترجمات ذاته.
-
-        مخرجات إضافية لا شروط نجاح: ``write_exports`` يعزل كل مُصيِّر،
-        وهذا الغلاف يعزل الوحدة كلّها. مستند Word وحده هو ما يُفشل
-        فشلُه المهمة.
-        """
-        formats = list(getattr(self.config.document, "export_formats", []) or [])
-        if not formats:
-            return []
-        try:
-            from document.exporters import ExportContext, write_exports
-
-            written = write_exports(
-                ExportContext(
-                    plan=plan,
-                    metadata=metadata,
-                    images_dir=images_dir,
-                    base_path=base_path,
-                    docx_path=docx_path,
-                    transcript=transcript,
-                    source_media=source_media,
-                    document_config=self.config.document,
-                    options={"study_pack": study_pack} if study_pack else {},
-                ),
-                formats)
-        except Exception as exc:
-            logger.warning(f"تعذّرت الصيغ الإضافية: {exc}")
-            return []
-
-        if job is not None:
-            for path in written:
-                job.register_artifact(
-                    f"export_{path.name.split('.', 1)[-1].replace('.', '_')}",
-                    path)
-        return written
-
-    def _expected_plan_source(self) -> str:
-        """توقيع مصدر الخطة حسب الإعداد الحالي."""
-        settings = self.config.rewrite
-        if not settings.enabled:
-            return "timeline"
-        return f"ai:{settings.provider}"
-
-    @staticmethod
-    def _plan_matches(stored: str, expected: str) -> bool:
-        """هل الخطة المحفوظة نتجت عن نفس الإعداد الحالي؟
-
-        ``generated_by`` المحفوظ يحمل النموذج أيضًا (``ai:anthropic/…``)،
-        فتُقارَن البادئة لا النص كاملًا.
-        """
-        if expected == "timeline":
-            return stored == "timeline"
-        return stored.startswith(expected)
-
-    def _build_plan(self, transcript, keyframes, video_path, metadata, emit
-                    ) -> DocumentPlan:
-        """يبني بنية الوثيقة — بإعادة صياغة إن طُلبت، وإلا زمنيًا.
-
-        فشل إعادة الصياغة **لا يُفشل المهمة**: نسقط إلى المخطِّط الزمني
-        وننبّه. المستند الخام أفضل من لا مستند.
-        """
-        title = humanize_title(video_path.stem)
-        # لا نكرّر اسم الملف هنا: هو في جدول الغلاف أصلًا، وتكراره
-        # يُطيل العنوان الفرعي بلا فائدة.
-        subtitle = ("مستند مُولَّد من تسجيل مرئي" if metadata.has_video
-                    else "مستند مُولَّد من تسجيل صوتي")
-        settings = self.config.rewrite
-
-        if settings.enabled:
-            emit(Stage.MATCHING, 0.1, "إعادة صياغة النص…")
-            try:
-                from ai.providers import build_provider
-                from ai.rewriter import RewriteConfig, TranscriptRewriter
-
-                provider = build_provider(settings.provider, settings.model,
-                                          settings.base_url, settings.api_key_env,
-                                          settings.api_key,
-                                          settings.workspace_id)
-                if not provider.is_available():
-                    raise RuntimeError(
-                        f"المزوّد «{provider.info.label_ar}» غير متاح.")
-                rewriter = TranscriptRewriter(
-                    provider,
-                    RewriteConfig(enabled=True, provider=settings.provider,
-                                  model=settings.model,
-                                  batch_chars=settings.batch_chars,
-                                  make_outline=settings.make_outline,
-                                  timeout_seconds=settings.timeout_seconds,
-                                  glossary=self.config.whisper.glossary or "",
-                                  anonymize_names=getattr(
-                                      self.config.document, "anonymize_names", False)))
-                plan = rewriter.build_plan(
-                    transcript, keyframes, title, subtitle,
-                    lambda f, m: emit(Stage.MATCHING, 0.1 + f * 0.8, m))
-                logger.info(f"أُعيدت الصياغة عبر {plan.generated_by}")
-                return plan
-            except Exception as exc:
-                # السبب يُعرض في الواجهة لا في السجلّ وحده: المستخدم
-                # الذي يرى «تعذّرت» بلا سبب لا يستطيع فعل شيء، والمستخدم
-                # الذي يرى «مفتاح غير صالح» يُصلحها في دقيقة.
-                reason = str(exc).strip() or type(exc).__name__
-                logger.warning(
-                    f"تعذّرت إعادة الصياغة — المتابعة بالنص الخام. السبب: {reason}")
-                emit(Stage.MATCHING, 0.85,
-                     f"تعذّرت إعادة الصياغة ({reason[:120]}) — "
-                     "المتابعة بالنص الخام")
-
-        emit(Stage.MATCHING, 0.9, "بناء بنية المستند…")
-        return self.planner.build(transcript, keyframes, title, subtitle)
-
-    # ------------------------------------------------------------------
-    def _validate_input(self, video_path: Path,
-                        allow_audio_only: bool = False) -> None:
-        if not video_path.exists():
-            raise MediaValidationError(f"الملف غير موجود: {video_path}")
-        if video_path.stat().st_size == 0:
-            raise MediaValidationError("الملف فارغ (0 بايت).")
-
-        # فحص فك الترميز فعليًا قبل بدء العمل (المواصفة §22: "Invalid video
-        # → Fail before pipeline"). ``validate_readable`` كانت مكتوبة ولا
-        # تُستدعى، فملف يقرأ ffprobe رأسه ويعجز عن فك إطاراته كان يمرّ
-        # حتى مرحلة الصور ثم يفشل بعد دقائق من التفريغ.
-        try:
-            self.ffmpeg.validate_readable(video_path,
-                                          expect_video=not allow_audio_only)
-        except MediaValidationError:
-            raise
-        except Exception as exc:
-            logger.warning(f"تعذّر التحقق المسبق من فك الترميز: {exc}")
-
-        free = shutil.disk_usage(self.output_base_dir.parent
-                                 if self.output_base_dir.exists()
-                                 else Path.home()).free
-        if free < _MIN_FREE_BYTES:
-            raise InsufficientDiskSpaceError(
-                f"المساحة الحرة غير كافية: {free / 1024**3:.1f}GB "
-                f"(المطلوب {_MIN_FREE_BYTES / 1024**3:.0f}GB على الأقل).")
 
     def _stage_transcription(self, job, video_path, metadata, temp_dir,
                              cancel_token, emit, allow_model_download,
@@ -1285,109 +851,4 @@ class VideoToDocPipeline:
             # بدأ من الصفر يكتب تقدّمًا لا يطابق ما على القرص.
             return fallback.transcribe(audio_path, cancel_token, progress)
 
-    def _stage_scenes(self, job, video_path, metadata, cancel_token, emit,
-                      rotation_plan, clip: Optional[ClipRange] = None
-                      ) -> List[Scene]:
-        scenes_fp = self._stage_fp(Stage.SCENE_DETECTION, video_path, clip)
-        if (job.is_stage_complete(Stage.SCENE_DETECTION)
-                and job.has_artifact("scenes", scenes_fp)):
-            raw = job.load_artifact("scenes")
-            return [Scene(**s) for s in raw["scenes"]]
 
-        job.begin_stage(Stage.SCENE_DETECTION)
-        emit(Stage.SCENE_DETECTION, 0.05, "تحليل المشاهد…")
-        clip = clip or ClipRange()
-        scenes = self.scene_detector.detect(
-            video_path, cancel_token,
-            lambda pct, msg: emit(Stage.SCENE_DETECTION, pct / 100.0, msg),
-            fps_hint=metadata.fps,
-            duration_hint=metadata.duration_seconds,
-            rotation_plan=rotation_plan,
-            start_seconds=clip.start_seconds,
-            end_seconds=clip.end_seconds)
-        job.save_artifact("scenes", "scenes.json", json.dumps(
-            {"schema_version": "1.3",
-             "scenes": [s.__dict__ for s in scenes]},
-            ensure_ascii=False, indent=2),
-            processing_fingerprint=scenes_fp)
-        job.complete_stage(Stage.SCENE_DETECTION)
-        cancel_token.raise_if_cancelled()
-        logger.info(f"اكتُشف {len(scenes)} مشهد.")
-        return scenes
-
-    def _stage_keyframes(self, job, video_path, metadata, scenes, images_dir,
-                         cancel_token, emit, rotation_plan, clip: Optional[ClipRange] = None
-                         ) -> List[KeyframeMetadata]:
-        scenes_ref = job.state.artifacts.get("scenes")
-        scenes_artifact_fp = scenes_ref.processing_fingerprint if scenes_ref else None
-        keyframes_fp = self._stage_fp(Stage.KEYFRAMES, video_path, clip, scenes_artifact_fp)
-        if (job.is_stage_complete(Stage.KEYFRAMES)
-                and job.has_artifact("keyframes", keyframes_fp)):
-            raw = job.load_artifact("keyframes")
-            keyframes = [KeyframeMetadata(**k) for k in raw["keyframes"]]
-            if all((images_dir / k.filename).exists() for k in keyframes):
-                return keyframes
-            logger.warning("صور مفقودة — إعادة الاستخراج.")
-
-        job.begin_stage(Stage.KEYFRAMES)
-        emit(Stage.KEYFRAMES, 0.2, "استخراج الصور الرئيسية…")
-        keyframes = self.keyframe_selector.extract(
-            video_path, scenes, images_dir, cancel_token,
-            fps_hint=metadata.fps, rotation_plan=rotation_plan,
-            ffmpeg=self.ffmpeg, temp_dir=job.job_dir / "temp",
-            progress_callback=lambda f, m: emit(Stage.KEYFRAMES, f * 0.85, m))
-
-        if self.config.frames.enable_ocr:
-            self._run_ocr(keyframes, images_dir, cancel_token, emit)
-
-        job.save_artifact("keyframes", "keyframes.json", json.dumps(
-            {"schema_version": "1.3",
-             "keyframes": [k.model_dump() for k in keyframes]},
-            ensure_ascii=False, indent=2),
-            processing_fingerprint=keyframes_fp)
-        job.complete_stage(Stage.KEYFRAMES)
-        cancel_token.raise_if_cancelled()
-        return keyframes
-
-    def _run_ocr(self, keyframes: List[KeyframeMetadata], images_dir: Path,
-                cancel_token: CancellationToken, emit) -> None:
-        """يستخرج نص الشاشة لكل لقطة (ADR جديد: OCR اختياري بـ Tesseract،
-        انظر video/ocr.py). إثراء لمحتوى المستند لا مرحلة حرجة — غياب
-        Tesseract أو فشل صورة بعينها لا يوقف المعالجة، فقط يترك
-        ``ocr_text`` فارغًا.
-        """
-        from video.ocr import extract_text, is_available
-
-        if not keyframes:
-            return
-        if not is_available():
-            logger.info(
-                "OCR مفعَّل في الإعداد لكن Tesseract غير مثبَّت — "
-                "المتابعة بلا نص شاشة. شغّل tools/doctor.py للتثبيت.")
-            return
-
-        total = len(keyframes)
-        hidden = 0
-        for index, kf in enumerate(keyframes):
-            cancel_token.raise_if_cancelled()
-            emit(Stage.KEYFRAMES, 0.85 + 0.15 * (index / total),
-                f"استخراج نص الشاشة… ({index + 1}/{total})")
-            path = images_dir / kf.filename
-            if getattr(self.config.document, "anonymize_names", False):
-                from video.ocr import extract_text_and_words
-                from video.redact import redact_keyframe
-
-                text, words = extract_text_and_words(path)
-                kf.ocr_text, names = redact_keyframe(path, words, text)
-                if names:
-                    hidden += len(names)
-                    try:
-                        kf.checksum = hashlib.sha256(
-                            path.read_bytes()).hexdigest()[:16]
-                    except OSError:
-                        pass
-            else:
-                kf.ocr_text = extract_text(path)
-        if hidden:
-            logger.info(f"إخفاء الأسماء: مُوِّه {hidden} اسمًا/بريدًا في اللقطات "
-                        "وحُذف من نصّ الشاشة.")
