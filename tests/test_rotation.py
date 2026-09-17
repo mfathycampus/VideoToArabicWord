@@ -24,7 +24,9 @@ ROTATED = ["rotated_90.mp4", "rotated_180.mp4", "h264_mp4.mp4", "portrait.mp4"]
 
 
 def ffmpeg_reference(video: Path, timestamp: float, out: Path) -> np.ndarray:
-    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{timestamp}",
+    # ‏bin/ffmpeg.exe لا PATH: على جهاز المستخدم ffmpeg غير مضاف إلى PATH
+    from utils.media_probe import resolve_ffmpeg
+    subprocess.run([resolve_ffmpeg(), "-y", "-loglevel", "error", "-ss", f"{timestamp}",
                     "-i", str(video), "-frames:v", "1", str(out)], check=True)
     return cv2.imread(str(out))
 

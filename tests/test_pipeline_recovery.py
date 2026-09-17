@@ -76,6 +76,8 @@ def test_corrupted_early_artifact_invalidates_downstream(tmp_path):
 
 def test_cancellation_stops_and_leaves_resumable_state(tmp_path):
     """الإلغاء يجب أن يوقف بسرعة ويترك حالة قابلة للاستئناف."""
+    if not (CORPUS / "uhd_4k.mp4").exists():
+        pytest.skip("uhd_4k.mp4 غير مولَّد — python tools/make_test_corpus.py")
     token = CancellationToken()
     pipeline = make(tmp_path / "out")
 

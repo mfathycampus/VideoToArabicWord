@@ -35,6 +35,10 @@ def _make_text_image(tmp_path, text: str):
 def test_is_available_reflects_shutil_which(monkeypatch):
     monkeypatch.setattr(ocr, "_cached_exe", "")
     monkeypatch.setattr(shutil, "which", lambda name: None)
+    # جهازٌ عليه Tesseract في Program Files (جهاز المستخدم نفسه) يجده
+    # الاكتشاف خارج PATH — والاختبار يسأل عن غيابه في كل المصادر.
+    monkeypatch.setattr(ocr, "_windows_install_dirs", lambda: [])
+    monkeypatch.setattr(ocr, "_from_windows_registry", lambda: None)
     assert ocr.is_available() is False
 
 

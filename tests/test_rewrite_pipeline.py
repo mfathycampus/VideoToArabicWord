@@ -328,7 +328,7 @@ def test_screen_context_is_capped(monkeypatch):
 
     rw.build_plan(make_transcript(3), frames, "درس")
 
-    screen_line = [l for l in prompts[0][1].splitlines() if "نصوص ظاهرة" in l][0]
+    screen_line = [line for line in prompts[0][1].splitlines() if "نصوص ظاهرة" in line][0]
     assert len(screen_line) < TR.SCREEN_CONTEXT_CHARS + 100
 
 

@@ -11,9 +11,11 @@ CORPUS = Path(__file__).resolve().parents[1] / "testdata" / "corpus"
 VIDEO = CORPUS / "h264_mp4.mp4"
 
 
-def make(out: Path, enable_ocr: bool = False) -> VideoToDocPipeline:
+def make(out: Path, enable_ocr: bool = False,
+         show_screen_text: bool = False) -> VideoToDocPipeline:
     config = AppConfig()
     config.frames.enable_ocr = enable_ocr
+    config.document.show_screen_text = show_screen_text
     return VideoToDocPipeline(out, config,
                               transcriber=StubTranscriber(),
                               model_manager=StubModelManager())
@@ -38,6 +40,10 @@ def test_ocr_enabled_calls_extract_text_and_persists_result(tmp_path, monkeypatc
     import video.ocr as ocr_module
     monkeypatch.setattr(ocr_module, "is_available", lambda: True)
     monkeypatch.setattr(ocr_module, "extract_text", fake_extract_text)
+    # مع إخفاء الأسماء (الافتراضي) يُقرأ النصّ والكلمات بتشغيلٍ واحد
+    monkeypatch.setattr(ocr_module, "extract_text_and_words",
+                        lambda image_path, timeout_seconds=20.0:
+                        (fake_extract_text(image_path), []))
 
     pipeline = make(tmp_path / "out", enable_ocr=True)
     result = pipeline.run(VIDEO)
@@ -69,8 +75,12 @@ def test_ocr_result_reaches_the_generated_document(tmp_path, monkeypatch):
     monkeypatch.setattr(ocr_module, "is_available", lambda: True)
     monkeypatch.setattr(ocr_module, "extract_text",
                         lambda image_path, timeout_seconds=20.0: "نص من الشاشة الحقيقية")
+    monkeypatch.setattr(ocr_module, "extract_text_and_words",
+                        lambda image_path, timeout_seconds=20.0:
+                        ("نص من الشاشة الحقيقية", []))
 
-    pipeline = make(tmp_path / "out", enable_ocr=True)
+    # نصّ الشاشة لا يُطبع افتراضيًّا منذ 1.12.0 (document.show_screen_text)
+    pipeline = make(tmp_path / "out", enable_ocr=True, show_screen_text=True)
     result = pipeline.run(VIDEO)
 
     from docx import Document

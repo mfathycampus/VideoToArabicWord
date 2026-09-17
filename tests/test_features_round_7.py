@@ -140,7 +140,9 @@ def test_audio_extraction_without_options_is_unchanged(tmp_path):
     service.extract_audio(tmp_path / "v.mp4", tmp_path / "a.wav")
     assert "-ss" not in captured["args"]
     assert "-to" not in captured["args"]
-    assert "-af" not in captured["args"]
+    # منذ 1.11.0 توحيد المستوى مُفعَّل افتراضيًّا — وهو وحده في السلسلة
+    args = captured["args"]
+    assert args[args.index("-af") + 1] == FFmpegService.LOUDNORM_FILTER
 
 
 # ---------------------------------------------------------------------

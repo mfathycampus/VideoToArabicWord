@@ -323,6 +323,12 @@ def test_engine_diagnose_names_the_missing_packages(monkeypatch):
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", fake_import)
+    # الفحص بـ find_spec لا بالاستيراد — وجهازٌ عليه torch فعلًا يمرّ
+    import importlib.util
+    real_find_spec = importlib.util.find_spec
+    monkeypatch.setattr(importlib.util, "find_spec",
+                        lambda name, *a, **k: None if name == "torch"
+                        else real_find_spec(name, *a, **k))
     ready, reason = build_engine("cohere-arabic").diagnose()
 
     assert ready is False
