@@ -178,6 +178,15 @@ class CohereArabicEngine(ASREngine):
         # يُمرَّر صراحةً: الاعتماد على اكتشاف huggingface_hub وحده يختلف
         # بين إصداراتها، والإعداد يسبق متغيّر البيئة.
         token = self.hf_token or None
+        if token and not token.isascii():
+            # رُصد: نُسخ نصّ الشرح («hf_الرمز_الكامل_من_HuggingFace») بدل
+            # الرمز نفسه، فخرج ``'ascii' codec can't encode characters``
+            # من عمق المكتبة — رسالةٌ لا تدلّ على شيء.
+            raise ModelUnavailableError(
+                "رمز HuggingFace فيه حروف غير لاتينية — يبدو أنه نصّ شرح "
+                "لا الرمز نفسه.\n"
+                "الرمز يبدأ بـ hf_ ويليه حروف وأرقام لاتينية فقط، "
+                "تنسخه من https://huggingface.co/settings/tokens")
         auth = {"token": token} if token else {}
 
         try:
