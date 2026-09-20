@@ -73,6 +73,8 @@ def main() -> int:
     parser.add_argument("--compare-models", action="store_true",
                         help="قارن large-v3-turbo بـ large-v3 ومحرّك Cohere")
     parser.add_argument("--out", type=Path, default=None)
+    parser.add_argument("--allow-download", action="store_true",
+                        help="اسمح بتنزيل نموذج غير موجود محليًّا (large-v3 ≈1.5GB)")
     args = parser.parse_args()
 
     from audio.transcriber import TranscriptionEngine
@@ -82,11 +84,14 @@ def main() -> int:
     config = _load_config(args.config)
     ffmpeg = FFmpegService()
     names = list(args.only or VARIANTS)
+    mode = "vad"
     if not args.only:
         if args.screen_glossary:
             names = list(GLOSSARY_VARIANTS)
+            mode = "glossary"
         if args.compare_models:
             names = ["current", *MODEL_VARIANTS]
+            mode = "models"
 
     workdir = Path(tempfile.mkdtemp(prefix="sweep_"))
     audio = workdir / "audio_16k.wav"
@@ -114,6 +119,7 @@ def main() -> int:
 
     engine = TranscriptionEngine(config.whisper.model_copy())
     engine.keep_model_loaded = True
+    engine.allow_download = args.allow_download
     # من المحرّك لا من الإعداد: المحرّك يملأ ``download_root`` عند إنشائه،
     # وبدونه يُبحث عن النموذج في غير موضعه.
     baseline = engine.config.model_copy()
@@ -128,6 +134,7 @@ def main() -> int:
             # نموذجٌ آخر = محرّكٌ جديد؛ المحمَّل لا يُعاد استعماله.
             engine = TranscriptionEngine(config.whisper.model_copy())
             engine.keep_model_loaded = True
+            engine.allow_download = args.allow_download
         engine.config = baseline.model_copy(update=overrides)
         cfg = engine.config
         print(f"\n▶ {name}  model={engine_name or cfg.model_size} "
@@ -140,6 +147,8 @@ def main() -> int:
                 from audio.engines.registry import build_engine
 
                 other = build_engine(engine_name, config=cfg)
+                if hasattr(other, "allow_download"):
+                    other.allow_download = args.allow_download
                 if not other.is_available():
                     raise RuntimeError(f"غير مثبّت: {other.info.install_hint}")
                 result = other.transcribe(audio)
@@ -161,7 +170,9 @@ def main() -> int:
               f"أطول فجوة {info.get('longest_gap_seconds')} ث · "
               f"{elapsed:.0f} ث", flush=True)
 
-    out = args.out or Path(f"sweep_{args.media.stem}.json")
+    # اسم يحمل نوع القياس: تشغيلان متتاليان باسمٍ واحد يمحو أولهما الآخر
+    # — وقع فعلًا، فضاعت نتائج --screen-glossary تحت نتائج --compare-models.
+    out = args.out or Path(f"sweep_{args.media.stem}_{mode}.json")
     out.write_text(json.dumps(results, ensure_ascii=False, indent=2),
                    encoding="utf-8")
 
