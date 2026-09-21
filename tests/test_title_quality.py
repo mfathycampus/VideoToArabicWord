@@ -115,6 +115,26 @@ def test_browser_title_bar_never_becomes_a_section_title():
         .startswith("القسم الأول —")
 
 
+def test_video_call_name_tags_never_become_a_title_or_caption():
+    """«Hanaa... Z» عنوان صورة — حدث فعلًا على تسجيل اجتماع حقيقي.
+
+    تسجيل بشاشة مشتركة وبطاقات فيديو للمشاركين على الحافة: الـOCR يقرأ
+    اسمًا مقصوصًا بثلاث نقاط ثم حرف الكنية («٢ ٦ Hanaa... Z»)، ومرّ من
+    كل الفحوص السابقة — ليس ترتيبيًا ولا شريط متصفّح ولا مسار إنترنت،
+    وطوله بعد قصّ الشظيّة الأخيرة لا يزال فوق الحدّ الأدنى فتراجع
+    القصّ. النتيجة: اسم مشاركٍ في اجتماع يظهر تعليقًا لصورة في مستند
+    عن محتوى الشاشة لا عن الحضور.
+    """
+    examples = [
+        "٢ ٦ Hanaa... Z", "2 6 Hanaa... Z", "Hanaa... Z",
+        "Shoub... Z Ali Ma... Z", "Nasser... Z Hanaa... Z",
+        "9 Deyaal... Z",
+    ]
+    for text in examples:
+        assert "بطاقة اسم مشارك" in title_defects(text), text
+        assert not is_acceptable_title(text), text
+
+
 def test_greeting_alone_yields_nothing():
     assert clean_title_candidate("السلام عليكم ورحمة الله وبركاته") == ""
 
