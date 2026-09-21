@@ -182,6 +182,23 @@ def install_hint() -> str:
     return "sudo apt install tesseract-ocr tesseract-ocr-ara"
 
 
+def install_hint_html() -> str:
+    """نفس نصّ ``install_hint()``، وأي رابط فيه يصير ``<a>`` قابلاً للضغط.
+
+    تحويلٌ آليّ عن ``install_hint()`` لا نصّ مكرَّر بجانبه: لو كُتب
+    الرابط هنا ثانيةً لاحتاج أي تعديل عليه تذكّر موضعين — وأخطر من ذلك:
+    لو اختلفت الدالتان لَعطبَ اختبارٌ يستبدل ``install_hint`` (محاكاةً
+    لمنصّة أخرى) دون أن يلمس هذه، فتخرج النافذة برابط حقيقي فوق رسالة
+    اختبارية. هنا لا فرصة للاختلاف: لا رابط في النصّ (ماك ولينكس، أمر
+    تثبيتٍ يُنسَخ لا رابطٌ يُفتَح) يعني ألّا تغيير سوى تفادي أحرف HTML.
+    """
+    import html
+    import re
+
+    text = html.escape(install_hint())
+    return re.sub(r"(https?://\S+)", r'<a href="\1">\1</a>', text)
+
+
 def _ocr_tsv(image_path: Path, timeout_seconds: float) -> Optional[tuple[str, float]]:
     """يشغّل Tesseract ويعيد (نص TSV، معامل التكبير) أو ``None``.
 

@@ -1,6 +1,8 @@
 """النافذة الرئيسية — واجهة عربية RTL بلا أي معالجة داخل خيط الواجهة."""
 from __future__ import annotations
 
+import html
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -229,6 +231,9 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
         self.profile_notice = QLabel("")
         self.profile_notice.setWordWrap(True)
         self.profile_notice.setStyleSheet(f"color: {theme.WARNING};")
+        # نصٌّ غنيّ ورابطٌ يُفتَح مباشرةً: انظر ``_refresh_profile_notice``.
+        self.profile_notice.setTextFormat(Qt.TextFormat.RichText)
+        self.profile_notice.setOpenExternalLinks(True)
         self.profile_notice.setVisible(False)
         model_layout.addWidget(self.profile_notice)
 
@@ -642,7 +647,7 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
         وليس منعًا: المستند يخرج صحيحًا بلا OCR، وينقصه وصف الصور فقط.
         """
         from config.profiles import PROFILES
-        from video.ocr import has_arabic, install_hint, refresh
+        from video.ocr import has_arabic, install_hint_html, refresh
 
         key = self.profile_combo.currentData() or ""
         profile = PROFILES.get(key)
@@ -655,10 +660,11 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
         # ``refresh`` لا ``is_available``: من ثبّت Tesseract والبرنامج
         # مفتوح يستحقّ أن يراه فور تبديل نوع التسجيل، بلا إعادة تشغيل.
         if refresh() is None:
+            label = html.escape(profile.label)
             self.profile_notice.setText(
-                f"⚠ «{profile.label}» يقرأ نصّ الشاشة، و‏Tesseract غير "
-                "مثبَّت. المعالجة تعمل، لكن الصور ستخرج بلا تعليق يصفها.\n"
-                f"للتثبيت: {install_hint()}")
+                f"⚠ «{label}» يقرأ نصّ الشاشة، و‏Tesseract غير "
+                "مثبَّت. المعالجة تعمل، لكن الصور ستخرج بلا تعليق يصفها.<br>"
+                f"للتثبيت: {install_hint_html()}")
             self.profile_notice.setVisible(True)
             return
 
@@ -667,7 +673,7 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
             # من الشرائح العربية حروفًا مبعثرة — عطبٌ أخفى من الغياب.
             self.profile_notice.setText(
                 "⚠ ‏Tesseract مثبَّت لكن بلا حزمة اللغة العربية. نصّ "
-                "الشرائح العربية سيخرج مبعثرًا.\n"
+                "الشرائح العربية سيخرج مبعثرًا.<br>"
                 "أعد تشغيل المثبِّت واختر Arabic ضمن Additional language "
                 "data.")
             self.profile_notice.setVisible(True)
@@ -704,11 +710,12 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
                 "المصطلحات تُقرأ من صورة الفيديو، ولا صورة في ملف صوتي.")
             return
 
-        from video.ocr import install_hint, refresh
+        from video.ocr import install_hint_html, refresh
         if refresh() is None:
+            # ‏QMessageBox يفتح رابط <a href> تلقائيًّا حين يكون نصّها غنيًّا.
             QMessageBox.information(
                 self, "‏Tesseract غير مثبَّت",
-                "قراءة نصّ الشاشة تحتاج Tesseract.\n\n" + install_hint())
+                "قراءة نصّ الشاشة تحتاج Tesseract.<br><br>" + install_hint_html())
             return
 
         try:
@@ -801,6 +808,15 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
         row.addLayout(titles)
         row.addStretch(1)
 
+        # شريط الترخيص: يبقى فارغًا حتى يضبطه ``license_verdict`` (بعد
+        # الإنشاء من ``app.py``، وبعد كل فحصٍ في ``_license_allows_processing``)
+        # — انظر ``_refresh_license_badge``.
+        self.license_badge = QLabel("")
+        self.license_badge.setStyleSheet(
+            f"color: {theme.ON_INK_MUTED}; font-size: 11px;")
+        self.license_badge.setVisible(False)
+        row.addWidget(self.license_badge)
+
         version = QLabel(APP_VERSION)
         version.setStyleSheet(f"color: {theme.ON_INK_FAINT}; font-size: 11px;")
         row.addWidget(version)
@@ -824,6 +840,65 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
         self.update_button.clicked.connect(self.check_for_updates)
         row.addWidget(self.update_button)
         return bar
+
+    # ------------------------------------------------------------------
+    @property
+    def license_verdict(self):
+        return getattr(self, "_license_verdict", None)
+
+    @license_verdict.setter
+    def license_verdict(self, verdict) -> None:
+        # خاصيّة لا حقل عادي: كل من يضبط الحكم — ``app.py`` عند الإقلاع،
+        # و``_license_allows_processing`` عند كل بدء معالجة — يحدّث
+        # الشريط تلقائيًّا بلا استدعاء إضافي يُنسى.
+        self._license_verdict = verdict
+        self._refresh_license_badge()
+
+    def _refresh_license_badge(self) -> None:
+        """يعرض تاريخ انتهاء الترخيص أعلى النافذة، لا داخل حوار التفعيل وحده.
+
+        قبل هذا كانت المدّة المتبقية تُرى مرّةً واحدة عند التفعيل، وحوار
+        التفعيل لا يُفتح ثانيةً ما دام البرنامج يعمل ويسمح بالمعالجة.
+        معلّمٌ فعّل كودًا لأسبوع وترك البرنامج مفتوحًا لا وسيلة له يعرف
+        متى تنتهي مدّته إلا بإغلاقه وإعادة فتحه. هذا الشريط يبقى ظاهرًا
+        طوال الجلسة، ويُعاد رسمه تلقائيًّا كلما تغيّر ``license_verdict``.
+        """
+        badge = getattr(self, "license_badge", None)
+        if badge is None:
+            return
+
+        verdict = self.license_verdict
+        if verdict is None or verdict.lease is None:
+            # لا عقد بعد، أو نسخة تطوير بلا ترخيص أصلًا — لا داعي للشريط.
+            badge.setVisible(False)
+            return
+
+        from licensing.gate import Status
+
+        lease = verdict.lease
+        expiry = ""
+        if lease.expires_at:
+            expiry = (datetime.fromtimestamp(lease.expires_at, tz=timezone.utc)
+                      .astimezone().strftime("%Y-%m-%d"))
+
+        if verdict.status in (Status.ACTIVE, Status.NEEDS_RECHECK):
+            urgent = bool(expiry) and 0 < verdict.days_left <= 3
+            if expiry:
+                text = f"الترخيص: حتى {expiry} — {verdict.days_left} يومًا"
+            else:
+                text = "الترخيص: فعّال"
+            if urgent:
+                text = f"⚠ {text} (على وشك الانتهاء)"
+            color = theme.ACCENT_LIGHT if urgent else theme.ON_INK_MUTED
+        else:
+            # ‏EXPIRED / BLOCKED / CLOCK_TAMPERED / DEVICE_MISMATCH…
+            text = f"⚠ الترخيص: {verdict.message}"
+            color = theme.ON_INK
+
+        badge.setText(text)
+        badge.setStyleSheet(f"color: {color}; font-size: 11px;")
+        badge.setToolTip(verdict.message)
+        badge.setVisible(True)
 
     # ------------------------------------------------------------------
     def check_for_updates(self) -> None:

@@ -80,8 +80,20 @@ class LicenseDialog(QDialog):
 
     # ------------------------------------------------------------------
     def _copy_device(self) -> None:
-        QApplication.clipboard().setText(app_gate.device_id())
-        self.status.setText("نُسخت بصمة الجهاز. أرسلها إلى المزوّد.")
+        # يُنسخ الكود مع البصمة معًا حين يكون مكتوبًا: لصقةٌ واحدة يرسلها
+        # المعلّم بدل قيمتين يُخطئ أحدهما بالنسخ أو النسيان.
+        code = self.code_input.text().strip()
+        device = app_gate.device_id()
+        text = f"{code}  {device}" if code else device
+        QApplication.clipboard().setText(text)
+        if code:
+            self.status.setText(
+                "نُسخ الكود وبصمة الجهاز معًا. أرسلهما إلى المزوّد، "
+                "والصق ما يردّه في الصندوق أسفله.")
+        else:
+            self.status.setText(
+                "نُسخت بصمة الجهاز. اكتب كود التفعيل أيضًا وأرسلهما "
+                "معًا إلى المزوّد.")
 
     def _finish(self, verdict: Verdict) -> None:
         self.verdict = verdict
@@ -110,7 +122,16 @@ class LicenseDialog(QDialog):
     def _activate_offline(self) -> None:
         text = self.offline_input.toPlainText().strip()
         if not text:
-            self.status.setText("الصق العقد الذي أرسله لك المزوّد.")
+            # جهازٌ بلا إنترنت لا يُرسِل شيئًا تلقائيًّا عند الضغط — الرسالة
+            # توضّح ذلك بدل أن تبدو كأن الزرّ لا يفعل شيئًا.
+            code = self.code_input.text().strip()
+            missing = "لم يصلك ردّ المزوّد بعد"
+            if code:
+                missing += f" على كود {code}"
+            self.status.setText(
+                f"{missing}. هذا الجهاز بلا إنترنت فلا يُرسَل شيء تلقائيًّا: "
+                "اضغط «نسخ» بجانب بصمة الجهاز، أرسلها (مع الكود) إلى "
+                "المزوّد، والصق ما يردّه هنا ثم اضغط «تفعيل بلا إنترنت».")
             return
         try:
             self._finish(app_gate.activate_offline(text, self.app_version))
