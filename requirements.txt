@@ -36,3 +36,4 @@ PyYAML>=6.0
 
 # OS credential store; secret_store falls back safely when unavailable.
 keyring>=25.0,<26
+cryptography>=42.0

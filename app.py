@@ -151,7 +151,17 @@ def main() -> int:
     app.setStyleSheet(stylesheet())
     app.setApplicationName(APP_TITLE)
     app.setApplicationVersion(APP_VERSION)
+    # الترخيص قبل النافذة: شاشةٌ واحدة تكفي المعلّم، ونسخة التطوير
+    # (بلا مفتاح عامّ مضمَّن) تمرّ كما هي — انظر licensing/app_gate.
+    from ui.license_dialog import ensure_licensed
+
+    verdict = ensure_licensed(APP_VERSION)
+    if not verdict.can_process:
+        logger.info(f"الإقلاع أُوقف: {verdict.status.value} — {verdict.message}")
+        return 0
+
     window = MainWindow(config, config_path)
+    window.license_verdict = verdict
     window.show()
     return app.exec()
 

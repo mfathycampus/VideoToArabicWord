@@ -69,6 +69,7 @@ datas += collect_data_files("faster_whisper")
 
 # tokenizers الخاص بـ faster-whisper يحمّل موارد بالاسم وقت التشغيل
 hiddenimports = collect_submodules("faster_whisper") + [
+    "cryptography.hazmat.bindings._rust",   # التحقّق من الترخيص
     "ctranslate2",
     "tokenizers",
     "av",

@@ -1,0 +1,12 @@
+name = "vtaw-license"
+main = "worker.js"
+compatibility_date = "2026-01-01"
+
+# أنشئه بـ: wrangler kv namespace create LICENSES  ثم ضع المعرّف هنا
+[[kv_namespaces]]
+binding = "LICENSES"
+id = "fe773c38217040b4819df0397bca38a1"
+
+# الأسرار تُضبط بالأمر لا في هذا الملف:
+#   wrangler secret put LICENSE_PRIVATE_KEY
+#   wrangler secret put ADMIN_TOKEN

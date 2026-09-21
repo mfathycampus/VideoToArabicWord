@@ -49,6 +49,8 @@ class JobsPanelMixin:
         self._start_batch(sources)
 
     def _start_batch(self, sources) -> None:
+        if not self._license_allows_processing():
+            return
         from ui.worker import BatchWorker
 
         try:

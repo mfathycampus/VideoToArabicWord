@@ -970,6 +970,28 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
                 "حتى ذلك الحين ستتم المعالجة بـ faster-whisper.")
         self._refresh_estimate()
 
+    def _license_allows_processing(self) -> bool:
+        """حارسٌ ثانٍ عند بدء المعالجة لا عند الإقلاع وحده.
+
+        برنامجٌ فُتح قبل انتهاء المدّة وبقي مفتوحًا أسبوعًا يجب أن يتوقّف
+        عند أوّل مهمّة جديدة بعد الانتهاء — لا أن يعمل إلى أن يُغلق.
+        """
+        from licensing import app_gate
+
+        verdict = app_gate.check(APP_VERSION)
+        self.license_verdict = verdict
+        if verdict.can_process:
+            return True
+
+        from ui.license_dialog import LicenseDialog
+
+        dialog = LicenseDialog(verdict, APP_VERSION, self)
+        dialog.exec()
+        self.license_verdict = dialog.verdict
+        if not dialog.verdict.can_process:
+            self.append_log(f"الترخيص: {dialog.verdict.message}")
+        return dialog.verdict.can_process
+
     def choose_output_dir(self) -> None:
         path = QFileDialog.getExistingDirectory(
             self, "اختر مجلد الحفظ",
@@ -1079,6 +1101,8 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
     # ------------------------------------------------------------------
     def start(self) -> None:
         if self.video_path is None:
+            return
+        if not self._license_allows_processing():
             return
         model_name = self.model_combo.currentData()
         allow_download = False
