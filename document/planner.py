@@ -126,9 +126,20 @@ def _title_from_screen(section: DocumentSection) -> str:
             break
         for line in block.ocr_text.splitlines():
             candidate = clean_title_candidate(line)
-            if candidate:
+            if candidate and not _is_person_text(candidate):
                 return candidate
     return ""
+
+
+def _is_person_text(text: str) -> bool:
+    """اسم شخص ليس عنوانًا ولا تعليقًا — ويكشف ما لم يُموَّه.
+
+    رُصد على تسجيل Teams حقيقي: تعليق صورة «Mohame... Hesha — 00:47:26»
+    و«My Staff Hanaa» — أسماء مشاركين من نصّ الشاشة صارت تعليقات.
+    """
+    from video.redact import looks_like_person_name
+
+    return looks_like_person_name(text)
 
 
 def _section_title(index: int, section: DocumentSection,
@@ -175,7 +186,7 @@ def _figure_caption(payload) -> str:
     stamp = seconds_to_display(payload.timestamp)
     for line in (payload.ocr_text or "").splitlines():
         candidate = clean_title_candidate(line)
-        if candidate:
+        if candidate and not _is_person_text(candidate):
             return f"{candidate} — {stamp}"
     return f"لقطة عند {stamp}"
 
@@ -400,7 +411,8 @@ def assert_lossless(plan: DocumentPlan) -> None:
         raise AssertionError(
             f"ضياع/تكرار نص: دخل {plan.total_segments_in} مقطعًا "
             f"وخرج {plan.total_segments_out}")
-    if plan.total_figures_in != plan.total_figures_out:
+    omitted = len(set(getattr(plan, "figures_omitted", []) or []))
+    if plan.total_figures_in != plan.total_figures_out + omitted:
         raise AssertionError(
             f"ضياع/تكرار صور: دخل {plan.total_figures_in} "
             f"وخرج {plan.total_figures_out}")
@@ -416,3 +428,7 @@ def assert_lossless(plan: DocumentPlan) -> None:
         raise AssertionError("تكرار segment_id داخل الخطة.")
     if len(seen_figures) != len(set(seen_figures)):
         raise AssertionError("تكرار image_id داخل الخطة.")
+    overlap = set(seen_figures) & set(getattr(plan, "figures_omitted", []) or [])
+    if overlap:
+        raise AssertionError(
+            f"صورة معلَّمة مستبعدة وهي في المستند: {sorted(overlap)}")

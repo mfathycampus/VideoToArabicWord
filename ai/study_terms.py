@@ -79,6 +79,47 @@ def _arabic_phrases(text: str) -> Counter:
     return counts
 
 
+#: كلمات واجهة عامّة لا تصلح مصطلحًا منفردة. رُصدت في مسرد تشغيل
+#: حقيقي: «Start»، «Folder»، «Form»، «Tasks»، «SUPPORT» — أزرارٌ لا مفاهيم.
+_GENERIC_UI = {
+    "start", "folder", "folders", "form", "forms", "task", "tasks", "staff",
+    "schedule", "process", "assign", "employee", "view", "save", "submit",
+    "cancel", "next", "back", "add", "edit", "delete", "filter", "filters",
+    "collapse", "reset", "open", "close", "support", "home", "search", "menu",
+    "settings", "help", "yes", "no", "ok", "done", "status", "type", "date",
+    "name", "select", "all", "new", "update", "download", "upload", "print",
+    "share", "file", "files", "page", "details", "more", "show", "hide",
+}
+#: مصطلح الشاشة الأطول من هذا سطرُ رأس جدول لا مصطلح
+#: («Task Sched Comp Responsible Resp Type»).
+MAX_TERM_WORDS = 4
+
+
+def _is_noise_term(term: str, origin: str) -> bool:
+    """مصطلحٌ مرشّح لا يصلح للمسرد: اسم شخص، شظيّة OCR، زرّ، رأس جدول."""
+    from video.redact import looks_like_person_name
+
+    words = term.split()
+    if not words:
+        return True
+    if looks_like_person_name(term):
+        return True
+    if len(words) == 1:
+        word = words[0]
+        if word.lower() in _GENERIC_UI:
+            return True
+        # شظيّة مقصوصة من كلمة: «pervisor» من «Supervisor». مصطلح
+        # الشاشة يبدأ بحرف كبير أو هو اختصار.
+        if origin == "screen" and re.fullmatch(r"[a-z][a-z\-]*", word):
+            return True
+    if origin == "screen" and len(words) > MAX_TERM_WORDS:
+        return True
+    # زرٌّ من كلمات واجهة كلّها («Reset Filters»، «Collapse Filters»).
+    if all(w.lower() in _GENERIC_UI for w in words):
+        return True
+    return False
+
+
 def build_glossary(transcript: TranscriptionResult,
                    keyframes: Sequence[KeyframeMetadata] = (),
                    limit: int = MAX_TERMS) -> List[GlossaryTerm]:
@@ -90,6 +131,13 @@ def build_glossary(transcript: TranscriptionResult,
     def add(term: str, count: int, origin: str) -> None:
         key = _fold(term).lower()
         if not key or key in seen or len(terms) >= limit:
+            return
+        if _is_noise_term(term, origin):
+            return
+        # جزءٌ من مصطلح أطول قُبل قبله لا يضيف شيئًا: «Form Schedule» بعد
+        # «Form Schedule Assign».
+        padded = f" {key} "
+        if any(padded in f" {other} " for other in seen):
             return
         seen.add(key)
         terms.append(GlossaryTerm(term=term, definition="", origin=origin,

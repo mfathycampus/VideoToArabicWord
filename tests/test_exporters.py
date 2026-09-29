@@ -367,3 +367,14 @@ def test_word_conversion_passes_paths_through_the_environment(monkeypatch, tmp_p
     assert pdf_export.convert_with_word(tmp_path / "درس 'أ'.docx", target) == target
     assert "درس" not in " ".join(seen["cmd"])
     assert seen["env"]["VTAD_PDF"].endswith("درس 'أ'.pdf")
+
+
+def test_html_embeds_compact_images_just_above_the_cap(ctx, monkeypatch):
+    """128 لقطة (16.3MB) خرجت صفحةً مربوطة بمجلد لا تعمل إن أُرسلت وحدها."""
+    import document.exporters.html_export as html_export
+
+    size = (ctx.images_dir / "f1.jpg").stat().st_size
+    monkeypatch.setattr(html_export, "MAX_EMBEDDED_IMAGE_BYTES", size - 1)
+    text = html_export.render_html(ctx)
+    assert "data:image/jpeg;base64," in text
+    assert 'src="keyframes/' not in text

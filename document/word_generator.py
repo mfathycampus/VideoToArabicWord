@@ -20,7 +20,7 @@ try:
     from docx.enum.text import WD_ALIGN_PARAGRAPH
     from docx.oxml import OxmlElement
     from docx.oxml.ns import qn
-    from docx.shared import Inches
+    from docx.shared import Inches, Pt
 except ImportError as _exc:  # pragma: no cover - مسار بيئة معطوبة
     raise ImportError(
         "تعذر تحميل python-docx.\n"
@@ -60,6 +60,8 @@ from document.template import (
     add_table_of_contents,
     build_styles,
     configure_page,
+    insert_ppr_border,
+    insert_ppr_shading,
 )
 from utils.logger import logger
 from utils.timestamps import humanize_duration, seconds_to_display
@@ -67,8 +69,13 @@ from utils.timestamps import humanize_duration, seconds_to_display
 #: دون هذا العدد من الأقسام لا يُكتب جدول محتويات: ثلاثة أقسام تُرى
 #: كلّها في صفحة ونصف، والفهرس لها صفحةٌ ضائعة.
 MIN_TOC_SECTIONS = 3
-#: وكذلك فهرس الأشكال — ستّة أشكال فأكثر.
-MIN_INDEX_FIGURES = 6
+#: وكذلك فهرس الأشكال. كان ستّة: دليلٌ من سبع لقطات خرج بصفحة كاملة
+#: لفهرس أشكال لا يُحدَّث إلا بـF9، والتعليق تحت كل صورة يؤدّي عمله.
+#: الفهرس البصري يفيد المحاضرة الطويلة وحدها.
+MIN_INDEX_FIGURES = 20
+#: وفوق هذا العدد يصير الفهرس عبئًا: على تسجيلٍ حقيقي من 128 لقطة شغل
+#: أربع صفحات قبل أول سطر من المحتوى. جدول المحتويات يكفي للتنقّل.
+MAX_INDEX_FIGURES = 40
 
 
 def _set_alt_text(picture, alt: str) -> None:
@@ -114,11 +121,19 @@ class DocumentGenerator:
         configure_page(document, self.theme)
         build_styles(document, self.theme)
 
+        cover_kwargs = {}
+        if plan.subtitle and plan.generated_by.startswith("ai:"):
+            # نوع المستند («دليل إجرائي مصوّر») في شريط الغلاف بدل عبارة
+            # عامّة، ولا يتكرّر سطرًا تحت العنوان.
+            cover_kwargs["kicker"] = plan.subtitle
         add_cover_page(
             document, self.theme,
             title=plan.title,
-            subtitle=plan.subtitle,
-            facts=self._cover_facts(plan, metadata))
+            subtitle="" if cover_kwargs else plan.subtitle,
+            facts=self._cover_facts(plan, metadata), **cover_kwargs)
+        # الغلاف بلا رأس ولا تذييل: شعارٌ صغير ورقم «صفحة 1 من 8» فوق
+        # الشعار الكبير والعنوان يجعلان الغلاف صفحةً عادية.
+        document.sections[0].different_first_page_header_footer = True
 
         add_header(document, self.theme, plan.title)
         add_page_number_footer(document, self.theme, self.config.footer_text)
@@ -128,10 +143,16 @@ class DocumentGenerator:
         # لأن الفهرس يبدأ صفحة جديدة بطبعه. الفهرس دليلٌ على بنية، وما
         # دون العتبة لا بنية فيه أصلًا.
         if self.config.enable_toc and len(plan.sections) >= MIN_TOC_SECTIONS:
-            add_table_of_contents(document, self.theme)
+            add_table_of_contents(
+                document, self.theme,
+                entries=[s.title for s in plan.sections if s.level == 1])
+        # عدد الأشكال **في المستند** لا الداخلة: المؤلّف المرئي يستبعد
+        # نصفها أحيانًا، فكان فهرسٌ يُبنى لعشرين لقطة والمستند فيه إحدى عشرة.
         if (getattr(self.config, "enable_figure_index", False)
-                and plan.total_figures_in >= MIN_INDEX_FIGURES):
-            add_figure_index(document, self.theme)
+                and MIN_INDEX_FIGURES <= plan.total_figures_out <= MAX_INDEX_FIGURES):
+            add_figure_index(document, self.theme, entries=[
+                (b.caption or "").strip() or f"لقطة عند {seconds_to_display(b.timestamp or 0)}"
+                for s in plan.sections for b in s.blocks if b.image_id is not None])
 
         self._add_abstract(document, plan)
         missing = self._add_body(document, plan, images_dir)
@@ -167,25 +188,21 @@ class DocumentGenerator:
 
     # ------------------------------------------------------------------
     def _cover_facts(self, plan, metadata) -> list[tuple[str, str]]:
-        """حقائق المصدر. الحقول التي لا معنى لها للصوت لا تُعرض فارغة.
+        """ما يحتاجه قارئ الدليل عن مصدره — لا ما يحتاجه مطوّر البرنامج.
 
-        ‏«الدقة 0×0» و«عدد اللقطات 0» في مستند صوتي ليست معلومة ناقصة —
-        هي معلومة **خاطئة** توحي بأن شيئًا فشل.
+        كان الغلاف جدولًا فيه الدقّة وعدد الأقسام وعدد اللقطات واسم
+        النموذج (‏«ai:anthropic/claude-…»). هذه بيانات تشخيص مكانها
+        ``plan.json`` و``quality.json``، لا غلافٌ يوزَّع على المعلّمين.
         """
-        has_video = getattr(metadata, "has_video", True)
-        facts = [
-            ("الملف المصدر", metadata.filename),
-            ("مدة التسجيل", humanize_duration(metadata.duration_seconds)),
-        ]
-        if has_video:
-            facts.append(("الدقة", f"{metadata.width}×{metadata.height}"))
-        else:
-            facts.append(("نوع المصدر", "تسجيل صوتي"))
-        facts.append(("عدد الأقسام", str(len(plan.sections))))
-        if has_video:
-            facts.append(("عدد اللقطات", str(plan.total_figures_out)))
-        if plan.generated_by != "timeline":
-            facts.append(("صياغة النص", plan.generated_by))
+        # اسم ملف عربي بامتداده يُعرض «mp4.متابعة…» في سطر RTL؛ الامتداد
+        # لا يعني القارئ، فيُكتفى بالاسم.
+        name = metadata.filename
+        stem = Path(name).stem
+        if dominant_direction(stem) == "rtl":
+            name = stem
+        facts = [("المصدر", name)]
+        if metadata.duration_seconds:
+            facts.append(("المدة", humanize_duration(metadata.duration_seconds)))
         return facts
 
     def _add_abstract(self, document, plan: DocumentPlan) -> None:
@@ -238,7 +255,15 @@ class DocumentGenerator:
                                  self.theme.font, self.theme.body_pt + 1,
                                  color=self.theme.muted)
 
+            step_number = 0
             for block in section.blocks:
+                if block.kind == "step":
+                    step_number += 1
+                    self._add_step(document, block.text, step_number)
+                    continue
+                if block.kind == "note":
+                    self._add_note(document, block.text)
+                    continue
                 if block.kind == "figure":
                     path = images_dir / (block.image_filename or "")
                     if not path.exists():
@@ -266,6 +291,49 @@ class DocumentGenerator:
                     style_arabic_run(paragraph.add_run(block.text),
                                      self.theme.font, self.theme.body_pt)
         return missing
+
+    def _add_step(self, document, text: str, number: int) -> None:
+        """خطوة إجرائية: رقمٌ بلون الهوية ثم الفعل، بمسافة معلّقة.
+
+        الخطوات المرقّمة هي ما يجعل الدليل دليلًا: القارئ ينفّذ ويعود إلى
+        موضعه. والنصّ يُكتب مختلط الاتجاه («اضغط «Admin» ثم…») فيبقى
+        اسم الزرّ اللاتيني سليم الترتيب داخل الجملة العربية.
+        """
+        paragraph = document.add_paragraph(style=BODY)
+        set_paragraph_rtl(paragraph)
+        fmt = paragraph.paragraph_format
+        fmt.space_before = Pt(3)
+        fmt.space_after = Pt(5)
+        fmt.keep_with_next = True
+        style_arabic_run(paragraph.add_run(f"{number}.  "), self.theme.font,
+                         self.theme.body_pt, bold=True,
+                         color=self.theme.accent_soft)
+        add_mixed_text(paragraph, text, self.theme.font, self.theme.body_pt)
+
+    def _add_note(self, document, text: str) -> None:
+        """ملاحظة أو تنبيه في إطارٍ مظلَّل — تُرى ولا تختلط بالخطوات."""
+        paragraph = document.add_paragraph(style=BODY)
+        set_paragraph_rtl(paragraph)
+        paragraph.paragraph_format.space_before = Pt(4)
+        paragraph.paragraph_format.space_after = Pt(8)
+        p_pr = paragraph._p.get_or_add_pPr()
+        shading = OxmlElement("w:shd")
+        shading.set(qn("w:val"), "clear")
+        shading.set(qn("w:color"), "auto")
+        shading.set(qn("w:fill"), "EEF6F4")
+        borders = OxmlElement("w:pBdr")
+        edge = OxmlElement("w:right")          # بداية السطر في فقرة RTL
+        edge.set(qn("w:val"), "single")
+        edge.set(qn("w:sz"), "18")
+        edge.set(qn("w:space"), "8")
+        edge.set(qn("w:color"), "0F766E")
+        borders.append(edge)
+        insert_ppr_border(p_pr, borders)
+        insert_ppr_shading(p_pr, shading)
+        style_arabic_run(paragraph.add_run("ملاحظة: "), self.theme.font,
+                         self.theme.body_pt, bold=True,
+                         color=self.theme.accent_soft)
+        add_mixed_text(paragraph, text, self.theme.font, self.theme.body_pt)
 
     def _add_figure(self, document, path: Path, block, number: int) -> None:
         """الصورة + تسمية واحدة تحمل الرقم والتوقيت.
@@ -295,6 +363,9 @@ class DocumentGenerator:
         # حقل SEQ لا رقم نصّي: يعيد الترقيم تلقائيًا ويغذّي فهرس الأشكال
         add_sequence_number(caption, "Figure", self.theme, 9.5,
                             fallback=number, color=self.theme.muted)
+        # رقم الشكل لا ينفصل عن وصفه: رُصد وصف شكلٍ يتيم أعلى الصفحة
+        # التالية، تحت الترويسة مباشرةً، بعيدًا عن صورته.
+        caption.paragraph_format.keep_with_next = bool((block.caption or "").strip())
         if self.config.show_timecodes and block.timestamp is not None:
             style_ltr_run(caption.add_run("  ·  "), self.theme.font, 9.5,
                           color=self.theme.muted)
@@ -342,7 +413,9 @@ class DocumentGenerator:
             return max_width, max_width * 0.5625
 
         ratio = height_px / width_px
-        width = max_width
+        # لا تكبير فوق ~110 نقطة/بوصة: لقطةٌ مقصوصة (قائمة منسدلة بعرض
+        # 450 بكسل) تُمدّ إلى عرض الصفحة كاملًا فتتشوّش حروفها.
+        width = min(max_width, max(2.5, width_px / 110.0))
         height = width * ratio
         if height > max_height:
             height = max_height

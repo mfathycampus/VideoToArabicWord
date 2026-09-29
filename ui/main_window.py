@@ -341,6 +341,24 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
         workspace_row.addWidget(self.workspace_input, 1)
         rewrite_layout.addWidget(self.workspace_row)
 
+        # الوضع المرئي: اللقطات صورًا مع الكلام — دليلٌ بخطوات مرقّمة.
+        self.vision_check = QCheckBox(
+            "كتابة المستند من لقطات الشاشة والكلام معًا (دليل مصوّر بخطوات) — "
+            "تُرسل اللقطات المختارة مع النص")
+        self.vision_check.setChecked(bool(getattr(self.config.rewrite, "send_images", True)))
+        self.vision_check.setToolTip(
+            "يرى النموذج الشاشة نفسها فيسمّي القوائم والأزرار كما تظهر، ويعمل "
+            "على تسجيلات بلا صوت. تُموَّه أسماء الأشخاص في اللقطات قبل "
+            "إرسالها حين يكون «إخفاء الأسماء» مفعّلًا.")
+        def _vision_toggled(state) -> None:
+            self.config.rewrite.send_images = self.vision_check.isChecked()
+        self.vision_check.stateChanged.connect(_vision_toggled)
+        reason = self._policy_reason("allow_cloud_images")
+        if reason:
+            self.vision_check.setEnabled(False)
+            self.vision_check.setToolTip(reason)
+        rewrite_layout.addWidget(self.vision_check)
+
         self.rewrite_note = QLabel("")
         self.rewrite_note.setWordWrap(True)
         self.rewrite_note.setStyleSheet(f"color: {theme.MUTED}; font-size: 11px;")

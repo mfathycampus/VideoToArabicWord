@@ -48,6 +48,12 @@ from video.scene_detector import SceneDetector
 
 ProgressFn = Callable[[float, str], None]
 
+#: تُرفع عند تغيير ما تُنتجه المرحلة بالإعداد نفسه، فلا يُعاد استعمال
+#: مخرجٍ قديم عند الاستئناف. 1.14.1: قصّ منصّة الاجتماع وتمويه الأسماء
+#: المقصوصة (اللقطات)، والتعافي من ردود النموذج المقطوعة (الخطة).
+KEYFRAMES_ALGORITHM = "1.14.1"
+MATCHING_ALGORITHM = "1.14.1"
+
 # أقل مساحة حرة مطلوبة قبل بدء المهمة — تعيش مع ``_validate_input``
 from core.pipeline_media import _MIN_FREE_BYTES  # noqa: E402,F401
 
@@ -122,6 +128,7 @@ class VideoToDocPipeline(MediaStagesMixin, OutputsMixin):
         # السلوك الصحيح، لأن الملفّ يغيّرها فعلًا.
         base = config or AppConfig()
         self.config = apply_profile(base, base.application.content_profile)
+        self._widen_candidates_for_vision()
         self.output_base_dir = output_base_dir
         self.ffmpeg = ffmpeg or FFmpegService()
         self.transcriber = transcriber or self._build_transcriber()
@@ -136,6 +143,24 @@ class VideoToDocPipeline(MediaStagesMixin, OutputsMixin):
         self.model_manager = model_manager or ModelManager(self.config.whisper.download_root)
 
     # ------------------------------------------------------------------
+    def _widen_candidates_for_vision(self) -> None:
+        """مرشّحو لقطات أوسع حين يختار نموذجٌ مرئيّ ما يدخل المستند.
+
+        قيود الاختيار الصارمة (تشابه 0.93) صُمّمت لمستندٍ يطبع كل لقطة
+        مختارة. حين يكتب المستندَ المؤلّفُ المرئي، هو من يستبعد المكرّر
+        ويعلن ذلك؛ وتضييق المرشّحين قبله يُسقط الخطوات نفسها.
+        """
+        rewrite = self.config.rewrite
+        if not (rewrite.enabled and getattr(rewrite, "send_images", False)):
+            return
+        frames = self.config.frames
+        self.config.frames = frames.model_copy(update={
+            "dedup_similarity": max(frames.dedup_similarity,
+                                    frames.vision_dedup_similarity),
+            "relative_score_floor": min(frames.relative_score_floor,
+                                        frames.vision_relative_score_floor),
+        })
+
     def _source_fp(self, video_path: Path) -> str:
         """Source identity shared by all stage reuse decisions."""
         return source_fingerprint(video_path)
@@ -156,10 +181,17 @@ class VideoToDocPipeline(MediaStagesMixin, OutputsMixin):
             Stage.AUDIO_EXTRACTION: {"denoise_audio": self.config.application.denoise_audio},
             Stage.TRANSCRIPTION: self.config.whisper.model_dump(mode="json", exclude={"hf_token"}),
             Stage.SCENE_DETECTION: self.config.scene_detection.model_dump(mode="json"),
-            Stage.KEYFRAMES: self.config.frames.model_dump(mode="json"),
+            Stage.KEYFRAMES: {
+                "frames": self.config.frames.model_dump(mode="json"),
+                # الإخفاء يغيّر الصور نفسها: تبديله يُبطل اللقطات المخزّنة.
+                "redact": self._images_may_leave(),
+                # مراجعة خوارزمية القصّ والتمويه: لقطاتٌ خُزّنت قبل قصّ لوحة
+                # المشاركين وتمويه الأسماء المقصوصة لا يُعاد استعمالها.
+                "algorithm": KEYFRAMES_ALGORITHM},
             Stage.MATCHING: {
                 "document": self.config.document.model_dump(mode="json"),
                 "rewrite": self.config.rewrite.model_dump(mode="json", exclude={"api_key"}),
+                "algorithm": MATCHING_ALGORITHM,
             },
             Stage.DOCUMENT: self.config.document.model_dump(mode="json"),
         }
@@ -557,7 +589,7 @@ class VideoToDocPipeline(MediaStagesMixin, OutputsMixin):
         if not reusable:
             job.begin_stage(Stage.MATCHING)
             plan = self._build_plan(transcript, keyframes, video_path,
-                                    metadata, emit)
+                                    metadata, emit, images_dir=images_dir)
             from document.quality import assert_quality_gate, evaluate
             clip_start = clip.start_seconds or 0.0
             clip_end = clip.end_seconds or metadata.duration_seconds
@@ -570,15 +602,22 @@ class VideoToDocPipeline(MediaStagesMixin, OutputsMixin):
             # بحكم تصميمه، ففرض عتبة اليوم يُسقط كل مهمة عقابًا على عيب
             # لم يُصلَح. انظر ``document/quality.assert_quality_gate``.
             assert_quality_gate(quality)
+            notes = list(getattr(self, "_plan_notes", []) or [])
             plan.quality_score = quality.overall
-            plan.quality_warnings = list(quality.warnings)
+            plan.quality_warnings = list(quality.warnings) + notes
             job.save_artifact("plan", "plan.json", plan.model_dump_json(indent=2),
                               processing_fingerprint=plan_fp)
+            quality_dict = quality.as_dict()
+            if notes:
+                quality_dict["warnings"] = list(quality_dict.get("warnings", [])) + notes
             job.save_artifact("quality", "quality.json",
-                              json.dumps(quality.as_dict(), ensure_ascii=False, indent=2),
+                              json.dumps(quality_dict, ensure_ascii=False, indent=2),
                               processing_fingerprint=plan_fp)
-            if quality.warnings:
-                logger.warning("بوابة الجودة: " + " | ".join(quality.warnings))
+            if quality.warnings or notes:
+                logger.warning("بوابة الجودة: "
+                               + " | ".join(list(quality.warnings) + notes))
+                for note in notes:
+                    emit(Stage.MATCHING, 0.99, "⚠ " + note.split(": ", 1)[-1][:160])
             if quality.overall is not None:
                 readable = ", ".join(
                     f"{m.name}={m.value:.0f}%"

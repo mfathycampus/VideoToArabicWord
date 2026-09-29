@@ -80,6 +80,8 @@ class RewritePanelMixin:
         self.config.rewrite.enabled = enabled
         self.config.rewrite.provider = self.provider_combo.currentData()
         self.provider_combo.setEnabled(enabled)
+        if hasattr(self, "vision_check"):
+            self.vision_check.setVisible(enabled)
         self._update_rewrite_note()
 
     def _on_key_typed(self, text: str) -> None:

@@ -12,11 +12,13 @@ import json
 import sys
 import urllib.error
 import urllib.request
+from pathlib import Path
 
-sys.path.insert(0, ".")
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from licensing.fingerprint import device_fingerprint
-from licensing.keys import SERVER_URL
+from licensing.fingerprint import device_fingerprint  # noqa: E402
+from licensing.keys import SERVER_URL  # noqa: E402
+from utils.console import enable_utf8_console  # noqa: E402
 
 
 def call(path: str, payload: dict | None = None) -> None:
@@ -43,6 +45,7 @@ def call(path: str, payload: dict | None = None) -> None:
 
 
 def main() -> None:
+    enable_utf8_console()
     device = device_fingerprint()
     print("server:", SERVER_URL)
     print("device:", device)

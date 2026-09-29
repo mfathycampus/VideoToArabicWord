@@ -54,11 +54,13 @@ def test_unknown_model_still_returns_an_estimate():
 
 
 @pytest.mark.parametrize("seconds,expected", [
-    (45, "ثانية"), (600, "دقيقة"), (3600, "ساعة"), (16290, "ساعة"),
+    (45, "45 ثانية"), (600, "10 دقائق"), (300, "5 دقائق"), (3600, "ساعة"),
+    (7200, "ساعتان"), (16290, "4 ساعات و31 دقيقة"), (900, "15 دقيقة"),
+    (120, "دقيقتان"),
 ])
 def test_humanize_duration_is_arabic(seconds, expected):
     text = humanize_duration(seconds)
-    assert expected in text
+    assert text == expected
     assert not text.startswith("-")
 
 

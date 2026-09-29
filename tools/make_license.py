@@ -31,6 +31,7 @@ sys.path.insert(0, str(ROOT))
 
 from licensing.lease import Lease  # noqa: E402
 from licensing.signing import generate_keypair, sign  # noqa: E402
+from utils.console import enable_utf8_console  # noqa: E402
 
 PRIVATE_KEY_FILE = ROOT / "license_private.key"
 CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"   # بلا O/0 و I/1
@@ -118,6 +119,7 @@ def cmd_revoke(args) -> int:
 
 
 def main() -> int:
+    enable_utf8_console()
     parser = argparse.ArgumentParser(description="إصدار أكواد التفعيل")
     subparsers = parser.add_subparsers(dest="command", required=True)
 

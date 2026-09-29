@@ -591,7 +591,7 @@ def test_cover_facts_omit_resolution_for_audio(tmp_path):
               DocumentGenerator()._cover_facts(plan, audio)]
     assert "الدقة" not in labels
     assert "عدد اللقطات" not in labels
-    assert "نوع المصدر" in labels
+    assert labels == ["المصدر", "المدة"]
 
     video = VideoMetadata(
         filename="clip.mp4", path=tmp_path / "clip.mp4",
@@ -599,7 +599,8 @@ def test_cover_facts_omit_resolution_for_audio(tmp_path):
         codec="h264", has_audio=True)
     labels = [label for label, _ in
               DocumentGenerator()._cover_facts(plan, video)]
-    assert "الدقة" in labels and "عدد اللقطات" in labels
+    # الغلاف للقارئ لا للمطوّر: لا دقّة ولا عدد لقطات حتى للفيديو.
+    assert labels == ["المصدر", "المدة"]
 
 
 def test_audio_pipeline_produces_a_document(tmp_path):

@@ -120,14 +120,14 @@ def test_numeric_value_uses_ltr_paragraph(built):
     found = False
     for paragraph in root.iter(f"{W}p"):
         text = "".join(t.text or "" for t in paragraph.iter(f"{W}t"))
-        if "1280×720" not in text:
+        if text.strip() != "lecture.mp4":
             continue
         found = True
         pPr = paragraph.find(f"{W}pPr")
         bidi = pPr.find(f"{W}bidi") if pPr is not None else None
         assert bidi is not None and bidi.get(f"{W}val") == "0", \
             "قيمة رقمية في فقرة عربية — سينعكس ترتيبها"
-    assert found, "قيمة الأبعاد غير موجودة"
+    assert found, "اسم الملف المصدر غير موجود على الغلاف"
 
 
 def test_page_number_field_present(built):
@@ -146,12 +146,15 @@ def test_section_is_rtl(built):
 
 
 def test_table_uses_bidivisual(built):
+    """أيّ جدول في المستند يحمل bidiVisual. والغلاف نفسه بلا جدول بيانات
+    تقنية منذ أصبح سطورًا هادئة (المصدر والمدة)."""
     with zipfile.ZipFile(built["docx"]) as archive:
         root = etree.fromstring(archive.read("word/document.xml"))
-    tblPr = next(root.iter(f"{W}tblPr"), None)
-    assert tblPr is not None
-    tags = [c.tag.replace(W, "") for c in tblPr]
-    assert "bidiVisual" in tags and "bidi" not in tags
+    for tblPr in root.iter(f"{W}tblPr"):
+        tags = [c.tag.replace(W, "") for c in tblPr]
+        assert "bidiVisual" in tags and "bidi" not in tags
+    text = "".join(t.text or "" for t in root.iter(f"{W}t"))
+    assert "عدد اللقطات" not in text and "الدقة" not in text
 
 
 def test_no_dash_line_separators(built):
@@ -200,10 +203,11 @@ def test_pdf_has_expected_page_content(built):
         pytest.skip("pdftotext غير متوفر")
     text = subprocess.run(["pdftotext", str(pdf), "-"],
                           capture_output=True, text=True, timeout=60).stdout
-    assert "1280" in text and "720" in text
-    # الترتيب الصحيح للأبعاد بعد العزل الاتجاهي
-    assert "1280×720" in text.replace("⁦", "").replace("⁩", ""), \
-        "الأبعاد معروضة معكوسة في الـ PDF"
+    clean = "".join(ch for ch in text if ch not in "\u202a\u202b\u202c\u2066\u2069")
+    # اسم الملف اللاتيني سليم الترتيب بعد التحويل
+    assert "lecture.mp4" in clean, "اسم الملف معروض معكوسًا في الـ PDF"
+    # والفهرس المخزّن يحمل عناوين الأقسام لا «اضغط F9»
+    assert "F9" not in clean
 
 
 def test_direction_detection_covers_mixed_names():

@@ -70,6 +70,8 @@ class AuditRecord:
     permitted_providers: List[str] = field(default_factory=list)
     #: حاول الإرسال وفشل قبل أن يغادر شيء. ليس خرقًا، لكنه ليس صمتًا.
     attempted_no_egress: bool = False
+    #: لقطات شاشة غادرت الجهاز (الوضع المرئي). صفرٌ = النصّ وحده إن غادر.
+    images_left_device: int = 0
     status: str = "started"          # started | completed | failed | cancelled
     error: str = ""
     elapsed_seconds: float = 0.0
@@ -92,6 +94,7 @@ class AuditRecord:
             "cloud_providers": self.cloud_providers,
             "permitted_providers": self.permitted_providers,
             "attempted_no_egress": self.attempted_no_egress,
+            "images_left_device": self.images_left_device,
             "status": self.status,
             "error": self.error[:300],
             "elapsed_seconds": round(self.elapsed_seconds, 1),
@@ -200,6 +203,7 @@ def record_job(config, source: Path, job_dir: Optional[Path] = None,
             record.cloud_providers = list(egress["providers"])
             record.attempted_no_egress = bool(
                 egress["attempts"]) and not egress["sent"]
+            record.images_left_device = int(egress.get("images", 0))
         except Exception as exc:
             logger.warning(f"تعذّرت قراءة سجلّ الخروج: {exc}")
         if enabled:

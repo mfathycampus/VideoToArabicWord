@@ -29,7 +29,6 @@ from document.rtl_utils import (
     set_paragraph_ltr,
     set_paragraph_rtl,
     set_section_rtl,
-    set_table_rtl,
     style_arabic_run,
     style_ltr_run,
 )
@@ -248,8 +247,10 @@ def add_header(document: Document, theme: Theme, title: str) -> None:
 
     logo = theme.resolved_logo()
     if logo:
+        # شعار الترويسة علامةٌ لا عنوان: ‏0.95 بوصة كانت تأكل سطرين من
+        # كل صفحة فوق المحتوى.
         _set_logo_alt(
-            paragraph.add_run().add_picture(str(logo), width=Inches(0.95)))
+            paragraph.add_run().add_picture(str(logo), width=Inches(0.55)))
         style_arabic_run(paragraph.add_run("   "), theme.font, 9)
 
     if dominant_direction(title) == "rtl":
@@ -261,6 +262,29 @@ def add_header(document: Document, theme: Theme, title: str) -> None:
 
 
 # ---------------------------------------------------------------------
+#: ترتيب عناصر ``w:pPr`` في مخطّط OOXML بعد ``w:pBdr``. الإلحاق في
+#: آخر العنصر (بعد ``w:bidi`` و``w:jc``) يخالف المخطّط؛ ‏LibreOffice
+#: يتسامح، وWord قد يعرض «محتوى غير قابل للقراءة» ويعرض الإصلاح.
+_PPR_AFTER_SHD = (
+    "w:tabs", "w:suppressAutoHyphens", "w:kinsoku", "w:wordWrap",
+    "w:overflowPunct", "w:topLinePunct", "w:autoSpaceDE", "w:autoSpaceDN",
+    "w:bidi", "w:adjustRightInd", "w:snapToGrid", "w:spacing", "w:ind",
+    "w:contextualSpacing", "w:mirrorIndents", "w:suppressOverlap", "w:jc",
+    "w:textDirection", "w:textAlignment", "w:textboxTightWrap",
+    "w:outlineLvl", "w:divId", "w:cnfStyle", "w:rPr", "w:sectPr",
+    "w:pPrChange")
+
+
+def insert_ppr_border(pPr, element) -> None:
+    """يُدرج ``w:pBdr`` في موضعه الصحيح من ``w:pPr``."""
+    pPr.insert_element_before(element, "w:shd", *_PPR_AFTER_SHD)
+
+
+def insert_ppr_shading(pPr, element) -> None:
+    """يُدرج ``w:shd`` في موضعه الصحيح من ``w:pPr``."""
+    pPr.insert_element_before(element, *_PPR_AFTER_SHD)
+
+
 def _shaded_band(paragraph, hex_color: str) -> None:
     """تظليل خلفية الفقرة — يُستخدم كشريط لوني في الغلاف."""
     pPr = paragraph._p.get_or_add_pPr()
@@ -268,7 +292,7 @@ def _shaded_band(paragraph, hex_color: str) -> None:
     shading.set(qn("w:val"), "clear")
     shading.set(qn("w:color"), "auto")
     shading.set(qn("w:fill"), hex_color)
-    pPr.append(shading)
+    insert_ppr_shading(pPr, shading)
 
 
 def _horizontal_rule(paragraph, color: str, size: int = 8) -> None:
@@ -280,7 +304,7 @@ def _horizontal_rule(paragraph, color: str, size: int = 8) -> None:
     bottom.set(qn("w:space"), "1")
     bottom.set(qn("w:color"), color)
     borders.append(bottom)
-    pPr.append(borders)
+    insert_ppr_border(pPr, borders)
 
 
 def _repeat_header_row(row) -> None:
@@ -356,25 +380,23 @@ def add_cover_page(document: Document, theme: Theme, *, title: str,
     set_paragraph_rtl(rule, WD_ALIGN_PARAGRAPH.CENTER)
     _horizontal_rule(rule, theme.rule, 12)
 
-    # صف عنوان حقيقي: أنماط Word الملوّنة تعامل الصف الأول كترويسة،
-    # فبدونه يظهر أول سطر بيانات ملوّنًا كأنه عنوان.
-    table = document.add_table(rows=len(facts) + 1, cols=2)
-    table.style = "Light List Accent 1"
-    set_table_rtl(table)
-
-    header_cells = (("البيان", theme), ("القيمة", theme))
-    for column, (text, _) in enumerate(header_cells):
-        paragraph = table.cell(0, column).paragraphs[0]
-        set_paragraph_rtl(paragraph)
-        style_arabic_run(paragraph.add_run(text), theme.font, 10.5, bold=True)
-    _repeat_header_row(table.rows[0])
-
-    for index, (label, value) in enumerate(facts, start=1):
-        label_paragraph = table.cell(index, 0).paragraphs[0]
-        set_paragraph_rtl(label_paragraph)
-        style_arabic_run(label_paragraph.add_run(label), theme.font, 10.5,
-                         bold=True, color=theme.accent)
-        _write_value(table.cell(index, 1).paragraphs[0], value, theme, 10.5)
+    # بيانات المصدر سطرٌ هادئ لا جدول «البيان/القيمة»: الجدول بعدد
+    # الأقسام واللقطات ودقّة الفيديو واسم النموذج كان يجعل الغلاف تقريرًا
+    # تقنيًّا عن البرنامج، لا غلافَ دليلٍ يوزَّع على المعلّمين.
+    #
+    # التسمية سطرٌ صغير والقيمة سطرٌ تحته في فقرتها الخاصة: قيمةٌ لاتينية
+    # (اسم ملف) تُكتب في فقرة LTR فيصحّ ترتيبها، ولا تجاور نقطتَي تسمية
+    # عربية تنقلبان حولها في سطرٍ واحد.
+    for label, value in facts:
+        caption = document.add_paragraph()
+        set_paragraph_rtl(caption, WD_ALIGN_PARAGRAPH.CENTER)
+        caption.paragraph_format.space_after = Pt(0)
+        style_arabic_run(caption.add_run(label), theme.font, 9,
+                         bold=True, color=theme.muted)
+        line = document.add_paragraph()
+        line.paragraph_format.space_after = Pt(8)
+        _write_value(line, value, theme, 11, color=theme.accent,
+                     align=WD_ALIGN_PARAGRAPH.CENTER)
 
     document.add_paragraph()
     generated = document.add_paragraph()
@@ -387,28 +409,86 @@ def add_cover_page(document: Document, theme: Theme, *, title: str,
 
 
 def add_table_of_contents(document: Document, theme: Theme,
-                          heading: str = "المحتويات") -> None:
-    """فهرس تلقائي يتحدّث داخل Word بـ F9 أو عند الطباعة."""
+                          heading: str = "المحتويات",
+                          entries: Optional[list] = None) -> None:
+    """فهرس تلقائي يتحدّث داخل Word بـ F9 أو عند الطباعة.
+
+    **ونتيجته المخزّنة تُملأ بعناوين الأقسام فعلًا.** الحقل الفارغ كان
+    يُظهر «اضغط داخل هذا الإطار ثم F9» — على صفحة كاملة، في كل مستند،
+    ولكل من يفتحه في LibreOffice أو يحوّله PDF أو يعرضه في المتصفّح أو
+    على هاتف: أي كل مكان لا يُحدِّث الحقول. رُصد على كل مخرجات خطّ
+    الأساس. الآن يرى القارئ الأقسام نفسها، وWord يُحدّثها بأرقام
+    الصفحات عند F9 كما كان.
+    """
     title = document.add_paragraph()
     set_paragraph_rtl(title, WD_ALIGN_PARAGRAPH.RIGHT)
     style_arabic_run(title.add_run(heading), theme.heading_font, 17,
                      bold=True, color=theme.accent)
 
-    holder = document.add_paragraph()
-    set_paragraph_rtl(holder)
-    _field(holder, ' TOC \\o "1-3" \\h \\z \\u ',
-           "اضغط داخل هذا الإطار ثم F9 لتحديث الفهرس",
-           theme, theme.body_pt, theme.muted)
+    entries = [str(e).strip() for e in (entries or []) if str(e).strip()]
+    if not entries:
+        holder = document.add_paragraph()
+        set_paragraph_rtl(holder)
+        _field(holder, ' TOC \\o "1-3" \\h \\z \\u ',
+               "اضغط داخل هذا الإطار ثم F9 لتحديث الفهرس",
+               theme, theme.body_pt, theme.muted)
+        document.add_paragraph().add_run().add_break(WD_BREAK.PAGE)
+        return
 
-    document.add_paragraph().add_run().add_break(WD_BREAK.PAGE)
+    _multi_paragraph_field(document, ' TOC \\o "1-3" \\h \\z \\u ',
+                           entries, theme)
+    # فهرسٌ مملوء لا يحتاج صفحة لنفسه: الملخّص يليه في الصفحة نفسها.
+    # كانت صفحة الفهرس بخمسة أسطر ثم صفحة ملخّص نصفها أبيض.
+    spacer = document.add_paragraph()
+    spacer.paragraph_format.space_after = Pt(18)
+    _horizontal_rule(spacer, theme.rule, 6)
+
+
+def _fld_char(kind: str, dirty: bool = False):
+    element = OxmlElement("w:fldChar")
+    element.set(qn("w:fldCharType"), kind)
+    if dirty:
+        element.set(qn("w:dirty"), "true")
+    return element
+
+
+def _multi_paragraph_field(document: Document, instruction: str,
+                           lines: list, theme: Theme) -> None:
+    """حقل تمتدّ نتيجته المخزّنة على عدّة فقرات — شكل فهرس Word نفسه.
+
+    بداية الحقل وتعليمته في أوّل فقرة، ونهايته في آخرها، وما بينهما
+    سطر لكل مدخل. ‏Word يستبدل ما بين الحدّين كلّه عند التحديث.
+    """
+    count = len(lines)
+    for index, line in enumerate(lines):
+        paragraph = document.add_paragraph()
+        set_paragraph_rtl(paragraph)
+        paragraph.paragraph_format.space_after = Pt(4)
+        if index == 0:
+            run = paragraph.add_run()
+            run._r.append(_fld_char("begin", dirty=True))
+            instr = OxmlElement("w:instrText")
+            instr.set(qn("xml:space"), "preserve")
+            instr.text = instruction
+            run._r.append(instr)
+            run._r.append(_fld_char("separate"))
+        number = paragraph.add_run(f"{index + 1}.  ")
+        style_arabic_run(number, theme.font, theme.body_pt, bold=True,
+                         color=theme.accent_soft)
+        add_mixed_text(paragraph, line, theme.font, theme.body_pt,
+                       color=theme.accent)
+        if index == count - 1:
+            paragraph.add_run()._r.append(_fld_char("end"))
 
 
 def add_figure_index(document: Document, theme: Theme,
-                     heading: str = "فهرس الأشكال") -> None:
-    """قائمة بكل الأشكال وتوقيتاتها، تُبنى من حقول SEQ في التسميات.
+                     heading: str = "فهرس الأشكال",
+                     entries: Optional[list] = None) -> None:
+    """قائمة بكل الأشكال، تُبنى من حقول SEQ في التسميات.
 
     لمراجعة محاضرة، هذه القائمة هي أسرع طريق إلى اللقطة المطلوبة: تُقرأ
-    كفهرس بصري للفيديو كله. تتحدّث داخل Word بـ F9 مثل جدول المحتويات.
+    كفهرس بصري للفيديو كله. تتحدّث داخل Word بـ F9 مثل جدول المحتويات،
+    ونتيجتها المخزّنة تُملأ بتعليقات الأشكال فلا يرى القارئ «اضغط F9».
 
     المعرّف ``Figure`` لاتيني عمدًا رغم أن التسمية المعروضة عربية:
     معرّفات SEQ العربية تعمل في Word لكنها تنكسر عند فتح الملف في
@@ -419,11 +499,16 @@ def add_figure_index(document: Document, theme: Theme,
     style_arabic_run(title.add_run(heading), theme.heading_font, 14,
                      bold=True, color=theme.accent)
 
-    holder = document.add_paragraph()
-    set_paragraph_rtl(holder)
-    _field(holder, ' TOC \\h \\z \\c "Figure" ',
-           "اضغط داخل هذا الإطار ثم F9 لتحديث فهرس الأشكال",
-           theme, theme.body_pt, theme.muted)
+    entries = [str(e).strip() for e in (entries or []) if str(e).strip()]
+    if entries:
+        _multi_paragraph_field(document, ' TOC \\h \\z \\c "Figure" ',
+                               entries, theme)
+    else:
+        holder = document.add_paragraph()
+        set_paragraph_rtl(holder)
+        _field(holder, ' TOC \\h \\z \\c "Figure" ',
+               "اضغط داخل هذا الإطار ثم F9 لتحديث فهرس الأشكال",
+               theme, theme.body_pt, theme.muted)
 
     document.add_paragraph().add_run().add_break(WD_BREAK.PAGE)
 

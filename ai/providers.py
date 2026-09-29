@@ -35,6 +35,62 @@ class RewriteUnavailableError(AppBaseException):
         self.retryable = retryable
 
 
+class ResponseTruncatedError(RewriteUnavailableError):
+    """الردّ قُطع عند سقف الرموز (``max_tokens``) قبل أن يكتمل.
+
+    رُصد على تشغيل حقيقي (1.14.0، «تدريب بيرفورم»، 81 دقيقة): ردّ
+    المؤلّف المرئي «ليس JSON»، و14 من 16 دفعة نصّية «بلا فقرات» —
+    والدفعات الساقطة هي بالضبط ذات اللقطات الكثيرة. ‏JSON مقطوع في
+    منتصفه لا يُحلَّل، وكان يُعامَل كردٍّ فارغ فيخرج النص الخام بصمت.
+
+    الآن يُرفع صراحةً ومعه النصّ الجزئي، فيعيد المستدعي المحاولة بسقف
+    أعلى أو بجزء أصغر بدل أن يستسلم.
+    """
+
+    def __init__(self, message: str, partial: str = "") -> None:
+        super().__init__(message, retryable=False)
+        self.partial = partial
+
+
+# ---------------------------------------------------------------------
+# حفظ الردود التي تعذّر استعمالها — للتشخيص بعد التشغيل
+# ---------------------------------------------------------------------
+# «ليس JSON بالشكل المطلوب» بلا الردّ نفسه لا يُشخَّص: هل قُطع؟ هل
+# أحاطه النموذج بشرح؟ هل رفض؟ الـ pipeline يضبط مجلّد المهمة عند البدء،
+# وكل ردّ لم يُستعمل يُحفظ فيه (على الجهاز فقط — لا يغادر شيء).
+
+_DUMP: dict = {"dir": None, "count": 0}
+MAX_DUMPS = 40
+
+
+def set_response_dump_dir(path) -> None:
+    """يُضبط من الـ pipeline لكل مهمّة؛ ``None`` يعطّل الحفظ."""
+    from pathlib import Path as _Path
+
+    _DUMP["dir"] = _Path(path) if path else None
+    _DUMP["count"] = 0
+
+
+def dump_failed_response(label: str, raw: str, reason: str = "") -> None:
+    """يحفظ ردًّا لم يُستعمل في ``<مجلد المهمة>/ai_debug``. لا يرفع أبدًا."""
+    directory = _DUMP.get("dir")
+    if directory is None or _DUMP["count"] >= MAX_DUMPS:
+        return
+    try:
+        import re as _re
+
+        target = directory / "ai_debug"
+        target.mkdir(parents=True, exist_ok=True)
+        _DUMP["count"] += 1
+        safe = _re.sub(r"[^\w\-]+", "_", label, flags=_re.UNICODE).strip("_")[:60]
+        name = f"{_DUMP['count']:02d}_{safe or 'response'}.txt"
+        (target / name).write_text(
+            f"# السبب: {reason}\n# الطول: {len(raw or '')} حرفًا\n\n{raw or ''}",
+            encoding="utf-8")
+    except Exception as exc:                      # noqa: BLE001
+        logger.debug(f"تعذّر حفظ الردّ للتشخيص: {exc}")
+
+
 def _friendly_error(detail: str) -> str:
     """يستخرج رسالة الخطأ من رد JSON بدل عرض الرد الخام.
 
@@ -68,7 +124,7 @@ def _friendly_error(detail: str) -> str:
 # فالتسجيل الآن يقع **عند حدود الشبكة**: لحظة إرسال الطلب فعلًا، ومن
 # داخل المزوّد نفسه. ولا سبيل إلى ``complete`` سحابيّ لا يمرّ بها.
 
-_EGRESS: dict = {"sent": False, "providers": [], "attempts": []}
+_EGRESS: dict = {"sent": False, "providers": [], "attempts": [], "images": 0}
 
 
 def reset_egress() -> None:
@@ -76,17 +132,37 @@ def reset_egress() -> None:
     _EGRESS["sent"] = False
     _EGRESS["providers"] = []
     _EGRESS["attempts"] = []
+    _EGRESS["images"] = 0
 
 
-def record_egress(provider: str, sent: bool, detail: str = "") -> None:
-    """يسجّل محاولة إرسال. ``sent`` = غادرت البيانات فعلًا."""
+def record_egress(provider: str, sent: bool, detail: str = "",
+                  images: int = 0) -> None:
+    """يسجّل محاولة إرسال. ``sent`` = غادرت البيانات فعلًا.
+
+    ``images`` عدد لقطات الشاشة في الطلب (الوضع المرئي). تُعدّ منفصلةً
+    عن النصّ لأنها قد تحمل ما لا يحمله التفريغ: أسماءً وأرقامًا ظاهرة.
+    """
     name = str(provider or "?").strip().lower()
     _EGRESS["attempts"].append(
-        {"provider": name, "sent": bool(sent), "detail": detail[:160]})
+        {"provider": name, "sent": bool(sent), "detail": detail[:160],
+         "images": int(images)})
     if sent:
         _EGRESS["sent"] = True
+        _EGRESS["images"] += int(images)
         if name not in _EGRESS["providers"]:
             _EGRESS["providers"].append(name)
+
+
+def _body_images(body: dict) -> int:
+    """عدد الصور في جسم طلب Messages أو Chat Completions."""
+    total = 0
+    for message in body.get("messages", []) or []:
+        content = message.get("content")
+        if isinstance(content, list):
+            total += sum(1 for part in content
+                         if isinstance(part, dict)
+                         and part.get("type") in ("image", "image_url"))
+    return total
 
 
 def egress_report() -> dict:
@@ -95,6 +171,7 @@ def egress_report() -> dict:
         "sent": _EGRESS["sent"],
         "providers": list(_EGRESS["providers"]),
         "attempts": list(_EGRESS["attempts"]),
+        "images": int(_EGRESS["images"]),
     }
 
 
@@ -102,6 +179,47 @@ def egress_report() -> dict:
 #: انقطاع شبكة). والتراجع أُسّي كي لا نُغرق خدمةً تشتكي أصلًا.
 MAX_ATTEMPTS = 3
 BACKOFF_SECONDS = 3.0
+
+
+# ---------------------------------------------------------------------
+# المحتوى متعدّد الوسائط — نصٌّ وصور في رسالة واحدة
+# ---------------------------------------------------------------------
+# ``user_prompt`` في ``complete`` نصٌّ عادةً. المؤلّف المرئيّ
+# (``ai/visual_author``) يمرّر بدلًا منه **قائمة أجزاء**:
+#     {"type": "text", "text": "..."}
+#     {"type": "image", "media_type": "image/jpeg", "data": "<base64>"}
+# وكل مزوّد يحوّلها إلى صيغة واجهته. مزوّدٌ لا يدعم الصور يرفض القائمة
+# صراحةً (``supports_vision``) بدل أن يُسقط الصور بصمت فيكتب النموذج
+# دليلًا عن شاشات لم يرها.
+
+def text_part(text: str) -> dict:
+    return {"type": "text", "text": text}
+
+
+def image_part(data_b64: str, media_type: str = "image/jpeg") -> dict:
+    return {"type": "image", "media_type": media_type, "data": data_b64}
+
+
+def _is_parts(user_prompt) -> bool:
+    return isinstance(user_prompt, list)
+
+
+def _parts_text(parts: list) -> str:
+    """النصّ وحده من قائمة أجزاء — لمزوّدٍ يستقبل الصور في حقل مستقل."""
+    return "\n".join(p.get("text", "") for p in parts if p.get("type") == "text")
+
+
+def _parts_images(parts: list) -> list:
+    return [p["data"] for p in parts if p.get("type") == "image"]
+
+
+def count_images(user_prompt) -> int:
+    return len(_parts_images(user_prompt)) if _is_parts(user_prompt) else 0
+
+#: نماذج Ollama التي تقرأ الصور. البقيّة نصّية، وإرسال صورٍ إليها يُهمَل
+#: بصمت من جهة الخادم — أسوأ من الرفض الصريح.
+_OLLAMA_VISION_HINTS = ("vl", "llava", "vision", "gemma3", "minicpm-v",
+                        "moondream", "bakllava", "llama4", "mistral-small3")
 
 
 def complete_with_retry(provider: "LLMProvider", system_prompt: str,
@@ -146,6 +264,8 @@ class ProviderInfo:
 
 class LLMProvider(ABC):
     info: ProviderInfo
+    #: هل يقرأ المزوّد صورًا ضمن الرسالة؟ انظر ``image_part``.
+    supports_vision: bool = False
 
     @abstractmethod
     def is_available(self) -> bool:
@@ -170,6 +290,11 @@ class OllamaProvider(LLMProvider):
         self.model = model
         self.host = host.rstrip("/")
 
+    @property
+    def supports_vision(self) -> bool:  # type: ignore[override]
+        name = (self.model or "").lower()
+        return any(hint in name for hint in _OLLAMA_VISION_HINTS)
+
     def is_available(self) -> bool:
         try:
             with urllib.request.urlopen(f"{self.host}/api/tags", timeout=4) as r:
@@ -188,7 +313,7 @@ class OllamaProvider(LLMProvider):
             "options": {"temperature": 0.2, "num_predict": max_tokens},
             "messages": [
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
+                self._user_message(user_prompt),
             ],
         }).encode("utf-8")
         request = urllib.request.Request(
@@ -197,10 +322,27 @@ class OllamaProvider(LLMProvider):
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 data = json.loads(response.read())
-            return data.get("message", {}).get("content", "")
+            text = data.get("message", {}).get("content", "")
+            if data.get("done_reason") == "length":
+                raise ResponseTruncatedError(
+                    f"قُطع ردّ Ollama عند سقف {max_tokens} رمزًا.", partial=text)
+            return text
         except urllib.error.URLError as exc:
             raise RewriteUnavailableError(
                 f"تعذر الوصول إلى Ollama: {exc}", retryable=True) from exc
+
+    def _user_message(self, user_prompt) -> dict:
+        if not _is_parts(user_prompt):
+            return {"role": "user", "content": user_prompt}
+        images = _parts_images(user_prompt)
+        if images and not self.supports_vision:
+            raise RewriteUnavailableError(
+                f"النموذج «{self.model}» لا يقرأ الصور. اختر نموذجًا مرئيًّا "
+                "(مثل qwen2.5vl) أو عطّل «إرسال لقطات الشاشة».")
+        message = {"role": "user", "content": _parts_text(user_prompt)}
+        if images:
+            message["images"] = images
+        return message
 
 
 class OpenAICompatibleProvider(LLMProvider):
@@ -213,6 +355,10 @@ class OpenAICompatibleProvider(LLMProvider):
         name="openai_compatible", label_ar="خدمة سحابية (واجهة OpenAI)",
         is_local=False,
         privacy_note="⚠ يُرسل نص التفريغ إلى خادم خارجي.")
+
+    #: نماذج الواجهة الحديثة تقرأ الصور (‏gpt-4o وما بعده). خادمٌ متوافق
+    #: لا يدعمها يردّ بخطأ صريح يصل إلى المستخدم.
+    supports_vision = True
 
     def __init__(self, model: str = "gpt-4o-mini",
                  base_url: str = "https://api.openai.com/v1",
@@ -241,9 +387,10 @@ class OpenAICompatibleProvider(LLMProvider):
             "max_tokens": max_tokens,
             "messages": [
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
+                {"role": "user", "content": self._user_content(user_prompt)},
             ],
         }).encode("utf-8")
+        images = count_images(user_prompt)
         request = urllib.request.Request(
             f"{self.base_url}/chat/completions", data=payload,
             headers={"Content-Type": "application/json",
@@ -251,12 +398,17 @@ class OpenAICompatibleProvider(LLMProvider):
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 # الاتصال قام والردّ وصل ⇒ النصّ غادر الجهاز يقينًا.
-                record_egress(self.info.name, True)
+                record_egress(self.info.name, True, images=images)
                 data = json.loads(response.read())
-            return data["choices"][0]["message"]["content"]
+            choice = data["choices"][0]
+            text = choice["message"]["content"] or ""
+            if choice.get("finish_reason") == "length":
+                raise ResponseTruncatedError(
+                    f"قُطع الردّ عند سقف {max_tokens} رمزًا.", partial=text)
+            return text
         except urllib.error.HTTPError as exc:
             # ردٌّ بخطأ يعني أن الطلب **وصل** — أي أن النصّ غادر.
-            record_egress(self.info.name, True, f"HTTP {exc.code}")
+            record_egress(self.info.name, True, f"HTTP {exc.code}", images=images)
             detail = exc.read().decode("utf-8", "replace")[:300]
             raise RewriteUnavailableError(
                 f"رفضت الخدمة الطلب ({exc.code}): {detail}",
@@ -266,6 +418,20 @@ class OpenAICompatibleProvider(LLMProvider):
             record_egress(self.info.name, False, str(exc))
             raise RewriteUnavailableError(
                 f"تعذر الاتصال بالخدمة: {exc}", retryable=True) from exc
+
+    @staticmethod
+    def _user_content(user_prompt):
+        if not _is_parts(user_prompt):
+            return user_prompt
+        content = []
+        for part in user_prompt:
+            if part.get("type") == "image":
+                content.append({"type": "image_url", "image_url": {
+                    "url": f"data:{part.get('media_type', 'image/jpeg')};"
+                           f"base64,{part['data']}"}})
+            else:
+                content.append({"type": "text", "text": part.get("text", "")})
+        return content
 
 
 # المزوّدون المتاحون بالترتيب المعروض في الواجهة
@@ -302,16 +468,19 @@ class AnthropicProvider(LLMProvider):
     و ``system`` حقل مستقل لا رسالة في القائمة، والرد في ``content[0].text``.
     لذلك لا يصلح استخدام المزوّد المتوافق مع OpenAI معه.
 
-    ⚠ سحابي: نص التفريغ يُرسل إلى خوادم Anthropic. الفيديو والصوت والصور
-    لا تُرسل إطلاقًا.
+    ⚠ سحابي: نص التفريغ يُرسل إلى خوادم Anthropic، ومعه لقطات الشاشة
+    المختارة حين يُفعَّل الوضع المرئي (``rewrite.send_images``). الفيديو
+    والصوت لا يُرسلان إطلاقًا.
     """
 
     API_VERSION = "2023-06-01"
     DEFAULT_MODEL = "claude-sonnet-5"
+    supports_vision = True
 
     info = ProviderInfo(
         name="anthropic", label_ar="Claude API (Anthropic)", is_local=False,
-        privacy_note="⚠ يُرسل نص التفريغ إلى خوادم Anthropic (النص فقط).")
+        privacy_note="⚠ يُرسل نص التفريغ — ولقطات الشاشة إن فُعّل الوضع "
+                     "المرئي — إلى خوادم Anthropic. الفيديو والصوت لا يُرسلان.")
 
     WORKSPACE_ENV = "ANTHROPIC_WORKSPACE_ID"
 
@@ -369,7 +538,8 @@ class AnthropicProvider(LLMProvider):
             "model": self.model,
             "max_tokens": max_tokens,
             "system": system_prompt,          # حقل مستقل، لا رسالة
-            "messages": [{"role": "user", "content": user_prompt}],
+            "messages": [{"role": "user",
+                          "content": self._user_content(user_prompt)}],
         }
         if self.temperature is not None:
             body["temperature"] = self.temperature
@@ -453,20 +623,42 @@ class AnthropicProvider(LLMProvider):
             data=json.dumps(body).encode("utf-8"), headers=headers)
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
-                record_egress(self.info.name, True)
+                record_egress(self.info.name, True, images=_body_images(body))
                 return json.loads(response.read())
         except urllib.error.HTTPError as exc:
             # ردٌّ بخطأ يعني أن الطلب وصل — النصّ غادر ولو رُفض.
-            record_egress(self.info.name, True, f"HTTP {exc.code}")
+            record_egress(self.info.name, True, f"HTTP {exc.code}",
+                          images=_body_images(body))
             raise
         except urllib.error.URLError as exc:
             record_egress(self.info.name, False, str(exc))
             raise
 
     @staticmethod
+    def _user_content(user_prompt):
+        if not _is_parts(user_prompt):
+            return user_prompt
+        content = []
+        for part in user_prompt:
+            if part.get("type") == "image":
+                content.append({"type": "image", "source": {
+                    "type": "base64",
+                    "media_type": part.get("media_type", "image/jpeg"),
+                    "data": part["data"]}})
+            else:
+                content.append({"type": "text", "text": part.get("text", "")})
+        return content
+
+    @staticmethod
     def _extract_text(data: dict) -> str:
-        return "".join(block.get("text", "") for block in data.get("content", [])
+        text = "".join(block.get("text", "") for block in data.get("content", [])
                        if block.get("type") == "text")
+        if data.get("stop_reason") == "max_tokens":
+            # JSON مقطوع في منتصفه لا يُحلَّل — انظر ``ResponseTruncatedError``.
+            limit = (data.get("usage") or {}).get("output_tokens", "?")
+            raise ResponseTruncatedError(
+                f"قُطع ردّ Claude عند سقف الرموز ({limit} رمزًا).", partial=text)
+        return text
 
 
 def provider_from_settings(settings) -> "LLMProvider":

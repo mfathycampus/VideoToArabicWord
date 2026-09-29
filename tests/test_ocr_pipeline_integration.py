@@ -31,6 +31,12 @@ def test_ocr_disabled_by_default_leaves_ocr_text_empty(tmp_path):
 
 
 def test_ocr_enabled_calls_extract_text_and_persists_result(tmp_path, monkeypatch):
+    # ``calls`` يخلط استدعاءين مصدرهما مختلف: مسح مصطلحات الشاشة
+    # (``screen_terms.scan_video``) يستدعي OCR على إطارات مرشَّحة قبل
+    # اختيار اللقطات النهائية (أسماء ``scan_*.jpg``)، ثم يُستدعى مجددًا
+    # على كل لقطة نهائية محفوظة (اسمها = ``keyframe.filename``). عدّ كل
+    # الاستدعاءات معًا كان يقارن 15 (10 مسح + 5 لقطات) بـ5 — لا عطل هنا،
+    # فقط تأكيدٌ يجب أن يقتصر على استدعاءات اللقطات النهائية وحدها.
     calls = []
 
     def fake_extract_text(image_path, timeout_seconds=20.0):
@@ -53,7 +59,12 @@ def test_ocr_enabled_calls_extract_text_and_persists_result(tmp_path, monkeypatc
     saved = json.loads((job_dir / "keyframes.json").read_text(encoding="utf-8"))
     assert saved["keyframes"]
     assert all(k["ocr_text"] == "نص وهمي من OCR" for k in saved["keyframes"])
-    assert len(calls) == len(saved["keyframes"])
+
+    keyframe_names = {k["filename"] for k in saved["keyframes"]}
+    keyframe_calls = [name for name in calls if name in keyframe_names]
+    assert len(keyframe_calls) == len(saved["keyframes"]), (
+        f"OCR لكل لقطة نهائية: نودي {len(keyframe_calls)} من "
+        f"{len(saved['keyframes'])} — كل الاستدعاءات: {calls}")
 
 
 def test_ocr_enabled_but_tesseract_missing_does_not_break_pipeline(tmp_path, monkeypatch):

@@ -23,7 +23,12 @@ import re
 from dataclasses import dataclass
 from typing import Callable, List, Optional
 
-from ai.providers import LLMProvider, RewriteUnavailableError
+from ai.providers import (
+    LLMProvider,
+    ResponseTruncatedError,
+    RewriteUnavailableError,
+    dump_failed_response,
+)
 from config.schemas import (
     AudioSegment,
     DocumentBlock,
@@ -135,23 +140,78 @@ class RewriteConfig:
 
 
 def _extract_json(raw: str) -> Optional[dict]:
-    """يستخرج JSON من رد النموذج حتى لو أحاطه بنص أو أسوار شيفرة."""
+    """يستخرج JSON من رد النموذج حتى لو أحاطه بنص أو أسوار شيفرة.
+
+    يجرّب بالترتيب: النصّ كلّه، ثم ما بين أسوار الشيفرة أينما وقعت، ثم
+    أوّل كائن JSON كامل يبدأ عند أيّ «{» (``raw_decode``) — فشرحٌ قبل
+    الكائن أو بعده، أو قوسٌ معقوف في ملاحظة ختامية، لا يُسقط ردًّا سليمًا.
+    """
     if not raw:
         return None
     cleaned = raw.strip()
-    if cleaned.startswith("```"):
-        cleaned = re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", cleaned).strip()
-    try:
-        return json.loads(cleaned)
-    except json.JSONDecodeError:
-        pass
+    fenced = re.search(r"```(?:json|JSON)?\s*(.*?)```", cleaned, re.S)
+    candidates = [cleaned]
+    if fenced:
+        candidates.insert(0, fenced.group(1).strip())
+    for candidate in candidates:
+        try:
+            value = json.loads(candidate)
+            if isinstance(value, dict):
+                return value
+        except json.JSONDecodeError:
+            pass
+    decoder = json.JSONDecoder()
+    for text in candidates:
+        position = text.find("{")
+        while position != -1:
+            try:
+                value, _ = decoder.raw_decode(text, position)
+                if isinstance(value, dict):
+                    return value
+            except json.JSONDecodeError:
+                pass
+            position = text.find("{", position + 1)
     match = _JSON_BLOCK.search(cleaned)
     if match:
         try:
-            return json.loads(match.group(0))
+            value = json.loads(match.group(0))
+            return value if isinstance(value, dict) else None
         except json.JSONDecodeError:
             return None
     return None
+
+
+def _looks_like_person(text: str) -> bool:
+    from video.redact import looks_like_person_name
+
+    return looks_like_person_name(text)
+
+
+def raw_paragraphs(segments: List[AudioSegment],
+                   max_chars: int = 700) -> List[str]:
+    """النصّ الخام لدفعة مقسومًا فقرات عند حدود المقاطع.
+
+    السقوط إلى الخام كان يضع الدفعة كلّها فقرةً واحدة: على تشغيل حقيقي
+    خرجت 14 فقرة من 22 أطول من 1400 حرف. حدود مقاطع التفريغ سكتاتٌ
+    فعلية، فالقطع عندها يُقرأ، ويُفضَّل مقطعٌ ينتهي بعلامة نهاية جملة.
+    """
+    paragraphs: List[str] = []
+    current: List[str] = []
+    size = 0
+    for segment in segments:
+        text = (segment.text_clean or segment.text_raw or "").strip()
+        if not text:
+            continue
+        ends_sentence = bool(current) and current[-1][-1:] in ".؟?!…"
+        if current and (size + len(text) + 1 > max_chars
+                        or (ends_sentence and size >= max_chars * 0.6)):
+            paragraphs.append(" ".join(current))
+            current, size = [], 0
+        current.append(text)
+        size += len(text) + 1
+    if current:
+        paragraphs.append(" ".join(current))
+    return paragraphs
 
 
 #: سقف الفقرة المدموجة. يطابق ``DocumentConfig.paragraph_max_chars``.
@@ -209,6 +269,13 @@ class TranscriptRewriter:
     # انقطاع شبكة). التراجع الأسّي يمنع إغراق خدمة تشتكي أصلًا.
     MAX_ATTEMPTS = 3
     BACKOFF_SECONDS = 3.0
+    #: سقف رموز ردّ الدفعة. كان 2048 (الافتراضي): دفعةٌ من 3500 حرف
+    #: عربي مع تعليقات لثماني لقطات فأكثر تتجاوزه، فيُقطع JSON في منتصفه
+    #: — وهذا ما أسقط 14 من 16 دفعة على تشغيل حقيقي. والعربية تكلّف
+    #: رموزًا أكثر من الإنجليزية للحرف نفسه.
+    MAX_TOKENS = 8192
+    #: سقف المحاولة الثانية حين يُقطع الردّ رغم ذلك.
+    MAX_TOKENS_RETRY = 16000
 
     def __init__(self, provider: LLMProvider, config: RewriteConfig) -> None:
         self.provider = provider
@@ -217,6 +284,13 @@ class TranscriptRewriter:
         self._last_failure: str = ""
         #: عنوان التسجيل (من اسم الملفّ) — يُضبط في ``build_plan``.
         self._source_title: str = ""
+        #: عدد الدفعات التي بقيت خامًا من كلّها — يقرؤه الـ pipeline.
+        self.raw_batches = 0
+        self.total_batches = 0
+
+    @property
+    def last_failure(self) -> str:
+        return self._last_failure
 
     def _complete_with_retry(self, system_prompt: str, user_prompt: str,
                              max_tokens: int = 2048) -> str:
@@ -237,6 +311,31 @@ class TranscriptRewriter:
                 max_tokens=max_tokens, timeout=self.config.timeout_seconds)
         finally:
             providers.MAX_ATTEMPTS, providers.BACKOFF_SECONDS = attempts, backoff
+
+    def _ask(self, user_prompt: str, label: str) -> Optional[dict]:
+        """نداءٌ واحد يعيد JSON محلَّلًا أو ``None`` — ويتعافى من القطع.
+
+        ردٌّ قُطع عند سقف الرموز يُعاد مرّة بسقفٍ أعلى بدل أن يُعامل
+        ردًّا فارغًا. وكل ردٍّ لم يُستعمل يُحفظ في ``ai_debug`` للتشخيص.
+        """
+        budget = self.MAX_TOKENS
+        while True:
+            try:
+                raw = self._complete_with_retry(
+                    SYSTEM_PROMPT, user_prompt, max_tokens=budget)
+            except ResponseTruncatedError as exc:
+                if budget < self.MAX_TOKENS_RETRY:
+                    logger.warning(f"دفعة {label}: قُطع الردّ عند سقف {budget} "
+                                   f"رمزًا — إعادة بسقف {self.MAX_TOKENS_RETRY}.")
+                    budget = self.MAX_TOKENS_RETRY
+                    continue
+                dump_failed_response(f"rewrite_{label}", exc.partial,
+                                     f"قُطع عند {budget} رمزًا")
+                raise
+            parsed = _extract_json(raw)
+            if parsed is None:
+                dump_failed_response(f"rewrite_{label}", raw, "ليس JSON")
+            return parsed
 
     # ------------------------------------------------------------------
     # عدد الأقسام المستهدف — فهرس مفيد بلا تفتيت
@@ -313,10 +412,9 @@ class TranscriptRewriter:
             context += ANONYMIZE_NOTE
         failed = False
         try:
-            raw = self._complete_with_retry(
-                SYSTEM_PROMPT,
-                f"{context}التفريغ الخام (يبدأ عند {start}):\n\n{source}{note}")
-            parsed = _extract_json(raw)
+            parsed = self._ask(
+                f"{context}التفريغ الخام (يبدأ عند {start}):\n\n{source}{note}",
+                start)
         except Exception as exc:
             # الفشل معزول عند حدود الدفعة. النسخة السابقة كانت تُعيد رفع
             # ``RewriteUnavailableError`` فتنتشر إلى الـ pipeline: تحديدُ
@@ -334,18 +432,19 @@ class TranscriptRewriter:
             paragraphs = [p.strip() for p in parsed.get("paragraphs", [])
                           if isinstance(p, str) and p.strip()]
 
-        if not paragraphs and parsed is not None and not failed:
+        if not paragraphs and not failed:
             # ردٌّ سليم بلا فقرات: رُصد على أوّل دفعة من تسجيلٍ عامّيّ مشوَّه
             # — النموذج أحجم عن الكتابة كليًّا بعد تعليمة «لا تخمّن»، فخرج
             # القسم الأول خامًا بـ«المتاجر». محاولةٌ ثانية تطلب المفهوم وحده.
+            # وردٌّ ليس JSON أصلًا (``parsed is None``) يستحقّ المحاولة نفسها:
+            # كان يسقط إلى الخام بلا إعادة.
             try:
-                raw = self._complete_with_retry(
-                    SYSTEM_PROMPT,
+                retry = self._ask(
                     f"{context}التفريغ الخام (يبدأ عند {start}):\n\n{source}{note}"
-                    "\n\nتنبيه: أعِد فقرةً واحدة على الأقل تلخّص ما يُفهم من هذا "
-                    "المقطع بمساعدة السياق، ولو جملة قصيرة، وضع [غير واضح] "
-                    "مكان ما لا يُفهم. لا تُعِد paragraphs فارغة.")
-                retry = _extract_json(raw)
+                    "\n\nتنبيه: أعِد JSON صالحًا فقط بالشكل المطلوب، وفيه فقرةٌ "
+                    "واحدة على الأقل تلخّص ما يُفهم من هذا المقطع بمساعدة السياق، "
+                    "ولو جملة قصيرة، وضع [غير واضح] مكان ما لا يُفهم. لا تُعِد "
+                    "paragraphs فارغة.", f"{start}_retry")
                 if retry:
                     parsed = retry
                     paragraphs = [p.strip() for p in retry.get("paragraphs", [])
@@ -364,7 +463,7 @@ class TranscriptRewriter:
             # موسومًا ``ai:`` — ويُطبع على غلافه «صياغة النص: ai:…».
             logger.warning(
                 f"دفعة {start}: ردٌّ بلا فقرات — استُخدم النص الخام.")
-            paragraphs = [source]
+            paragraphs = raw_paragraphs(batch) or [source]
             parsed = parsed or {}
             failed = True
             self._last_failure = self._last_failure or "ردٌّ بلا فقرات قابلة للاستعمال"
@@ -387,7 +486,7 @@ class TranscriptRewriter:
             "failed": failed,
             "captions": captions,
             "title": (parsed.get("title") or "").strip()
-                     or f"المقطع الزمني {start}",
+                     or self._fallback_title(figures, batch[0].start),
             "summary": (parsed.get("summary") or "").strip(),
             "paragraphs": paragraphs,
             "segment_ids": [s.id for s in batch],
@@ -400,6 +499,28 @@ class TranscriptRewriter:
                        len((s.text_clean or s.text_raw).strip()))
                       for s in batch],
         }
+
+    #: ترتيب الدفعة الجارية (من 1) — للعنوان الترتيبي عند السقوط.
+    _current_index = 1
+
+    def _fallback_title(self, figures: List[KeyframeMetadata],
+                        start: float) -> str:
+        """عنوان دفعةٍ لم يُعنونها النموذج: من نصّ الشاشة، وإلا ترتيبي.
+
+        كان «المقطع الزمني 00:05:10» — لا يقول شيئًا، ولم يكن مقياس
+        العناوين يعرفه فأعطى 100٪ لمستندٍ أربعة عشر من عناوينه كذلك.
+        الترتيبي الآن يعرفه المقياس (``document.titles.ORDINAL_TITLE``).
+        """
+        from document.planner import _ordinal_title
+        from document.titles import clean_title_candidate
+
+        for figure in figures[:3]:
+            for line in (figure.ocr_text or "").splitlines():
+                candidate = clean_title_candidate(line)
+                if candidate and not (self.config.anonymize_names
+                                      and _looks_like_person(candidate)):
+                    return candidate
+        return _ordinal_title(self._current_index, start)
 
     @staticmethod
     def _paragraph_times(entry: dict) -> List[float]:
@@ -523,6 +644,11 @@ class TranscriptRewriter:
             if text:
                 lines.append(f"- نصوص ظاهرة على الشاشة (قراءة آلية قد تحوي أخطاء): {text}")
         glossary = " ".join((self.config.glossary or "").split())
+        if self.config.anonymize_names:
+            # مصطلحات الشاشة الآلية تحمل أسماء المعلّمات كما في القوائم.
+            from video.redact import scrub_person_terms
+
+            glossary = scrub_person_terms(glossary)
         if glossary:
             lines.append(f"- مصطلحات محتملة: {glossary[:400]}")
         if not lines:
@@ -547,6 +673,7 @@ class TranscriptRewriter:
                                          keyframes)
         rewritten: List[dict] = []
         for index, batch in enumerate(batches, start=1):
+            self._current_index = index
             rewritten.append(self._rewrite_batch(batch, groups[index - 1]))
             if progress_callback:
                 progress_callback(
@@ -554,6 +681,7 @@ class TranscriptRewriter:
                     f"إعادة الصياغة: القسم {index} من {len(batches)}")
 
         failures = sum(1 for entry in rewritten if entry.get("failed"))
+        self.raw_batches, self.total_batches = failures, len(rewritten)
         if failures == len(rewritten):
             # لا فائدة من مستند يحمل وسم «ai:» ومحتواه خام بالكامل
             reason = self._last_failure or "لم يُعد النموذج نصًّا قابلًا للاستعمال"

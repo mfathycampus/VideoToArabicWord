@@ -35,6 +35,12 @@ from utils.timestamps import seconds_to_display
 #: لقطة × ~180KB ≈ 27MB خامًا، و‏base64 يضيف الثلث — ملف 36MB لا يفتحه
 #: متصفّح هاتف. دون السقف تبقى الصفحة ملفًّا واحدًا قابلًا للإرسال.
 MAX_EMBEDDED_IMAGE_BYTES = 12 * 1024 ** 2
+#: بين السقف وثلاثة أضعافه تُضمَّن الصور **مصغّرة** بدل ربطها: على تشغيل
+#: حقيقي (128 لقطة، 16.3MB) خرجت صفحة HTML لا تعمل إن أُرسلت وحدها.
+#: التصغير إلى 1280px بجودة 70 يقارب ثلث الحجم ويبقي نصّ الواجهات مقروءًا.
+COMPACT_EMBED_FACTOR = 3
+COMPACT_MAX_WIDTH = 1280
+COMPACT_QUALITY = 70
 
 _CSS = """
 :root{
@@ -92,6 +98,13 @@ section.chapter > h2{
 .summary{color:var(--muted); font-size:.93rem; margin:0 0 14px}
 p.para{margin:0 0 14px; text-align:justify}
 ul.bullets{margin:0 0 14px; padding-inline-start:22px}
+.step{display:flex; gap:12px; align-items:flex-start; margin:0 0 12px}
+.step .n{flex:none; width:28px; height:28px; border-radius:50%;
+  background:var(--brand); color:#fff; font-weight:700; font-size:.9rem;
+  display:flex; align-items:center; justify-content:center}
+.step p{margin:3px 0 0}
+.note{margin:0 0 14px; padding:10px 14px; border-inline-start:4px solid var(--brand);
+  background:var(--brand-soft); border-radius:0 8px 8px 0; font-size:.95rem}
 blockquote{margin:0 0 14px; padding:10px 16px; border-inline-start:3px solid var(--brand);
   background:var(--brand-soft); border-radius:0 8px 8px 0}
 
@@ -239,10 +252,29 @@ def _esc(text: str) -> str:
     return html.escape(text or "", quote=True)
 
 
-def _data_uri(path: Path) -> Optional[str]:
+def _compact_bytes(path: Path) -> bytes:
+    import io
+
+    from PIL import Image
+
+    with Image.open(path) as image:
+        image = image.convert("RGB")
+        if image.width > COMPACT_MAX_WIDTH:
+            ratio = COMPACT_MAX_WIDTH / image.width
+            image = image.resize((COMPACT_MAX_WIDTH, max(1, int(image.height * ratio))))
+        buffer = io.BytesIO()
+        image.save(buffer, "JPEG", quality=COMPACT_QUALITY, optimize=True)
+    return buffer.getvalue()
+
+
+def _data_uri(path: Path, compact: bool = False) -> Optional[str]:
     mime = mimetypes.guess_type(path.name)[0] or "image/jpeg"
     try:
-        payload = base64.b64encode(path.read_bytes()).decode("ascii")
+        if compact:
+            data, mime = _compact_bytes(path), "image/jpeg"
+        else:
+            data = path.read_bytes()
+        payload = base64.b64encode(data).decode("ascii")
     except Exception as exc:
         logger.warning(f"تعذّر تضمين الصورة {path.name}: {exc}")
         return None
@@ -270,7 +302,7 @@ def _stamp_button(timestamp: Optional[float]) -> str:
 
 
 def _render_block(block: DocumentBlock, images_dir: Path,
-                  embed: bool) -> str:
+                  embed: bool, step_number: int = 0) -> str:
     if block.kind == "paragraph":
         text = (block.text or "").strip()
         if not text:
@@ -293,7 +325,23 @@ def _render_block(block: DocumentBlock, images_dir: Path,
     if block.kind == "figure":
         return _render_figure(block, images_dir, embed)
 
-    return ""
+    if block.kind == "step":
+        text = (block.text or "").strip()
+        if not text:
+            return ""
+        return (f'<div class="step"><span class="n">{step_number}</span>'
+                f'<p data-searchable>{_esc(text)}</p></div>')
+
+    if block.kind == "note":
+        text = (block.text or "").strip()
+        if not text:
+            return ""
+        return (f'<div class="note" data-searchable><strong>ملاحظة: </strong>'
+                f'{_esc(text)}</div>')
+
+    # نوعٌ لا يعرفه المُصيِّر يُعرض فقرةً: لا يضيع نصّ.
+    text = (block.text or "").strip()
+    return f'<p class="para" data-searchable>{_esc(text)}</p>' if text else ""
 
 
 def _render_figure(block: DocumentBlock, images_dir: Path,
@@ -307,7 +355,8 @@ def _render_figure(block: DocumentBlock, images_dir: Path,
         logger.warning(f"صورة مفقودة، تُخطّت في HTML: {block.image_filename}")
         return ""
 
-    src = _data_uri(path) if embed else f"keyframes/{block.image_filename}"
+    src = (_data_uri(path, compact=embed == "compact") if embed
+           else f"keyframes/{block.image_filename}")
     if src is None:
         return ""
 
@@ -341,16 +390,9 @@ def _render_nav(plan: DocumentPlan) -> str:
 
 def _render_facts(ctx: ExportContext) -> str:
     meta = ctx.metadata
+    # ما يحتاجه القارئ لا ما يحتاجه المطوّر: الأبعاد والترميز وعدد
+    # الأقسام بيانات تشخيص، لا تعريفٌ بالمستند.
     facts = [f"المدة: {seconds_to_display(meta.duration_seconds)}"]
-    if meta.has_video and meta.width and meta.height:
-        facts.append(f"الأبعاد: {meta.width}×{meta.height}")
-    if meta.codec:
-        facts.append(f"الترميز: {meta.codec}")
-    facts.append(f"الأقسام: {len(ctx.plan.sections)}")
-    figures = sum(1 for s in ctx.plan.sections for b in s.blocks
-                  if b.kind == "figure")
-    if figures:
-        facts.append(f"الأشكال: {figures}")
     return "".join(f'<span>{_esc(f)}</span>' for f in facts)
 
 
@@ -358,16 +400,26 @@ def render_html(ctx: ExportContext) -> str:
     """يبني الصفحة كاملةً كنصّ — منفصلة عن الكتابة ليسهُل اختبارها."""
     plan = ctx.plan
     size = _total_image_bytes(plan, ctx.images_dir)
-    embed = size <= MAX_EMBEDDED_IMAGE_BYTES
-    if not embed:
+    embed: object = size <= MAX_EMBEDDED_IMAGE_BYTES
+    if not embed and size <= MAX_EMBEDDED_IMAGE_BYTES * COMPACT_EMBED_FACTOR:
+        embed = "compact"
+        logger.info(
+            "صور المهمة %.1f ميغابايت — تُضمَّن مصغّرةً لتبقى الصفحة ملفًّا واحدًا.",
+            size / 1024 ** 2)
+    elif not embed:
         logger.info(
             "صور المهمة %.1f ميغابايت — تتجاوز سقف التضمين، "
             "فتُربط الصفحة بمجلد keyframes نسبيًّا.", size / 1024 ** 2)
 
     body: List[str] = []
     for index, section in enumerate(plan.sections, start=1):
-        blocks = "".join(_render_block(b, ctx.images_dir, embed)
-                         for b in section.blocks)
+        rendered: List[str] = []
+        step = 0
+        for block in section.blocks:
+            if block.kind == "step":
+                step += 1
+            rendered.append(_render_block(block, ctx.images_dir, embed, step))
+        blocks = "".join(rendered)
         summary = (section.summary or "").strip()
         body.append(
             f'<section class="chapter" id="sec{index}">'

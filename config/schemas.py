@@ -140,6 +140,9 @@ class KeyframeMetadata(BaseModel):
     # افتراضية: مهمة قديمة تُستأنف من keyframes.json محفوظ قبله تُحمَّل
     # بلا مشكلة، وحقلها هذا فارغ ببساطة.
     ocr_text: str = ""
+    #: مرّت اللقطة بإخفاء الأسماء (``video/redact``) — وإن لم يُعثر فيها
+    #: على اسم. شرطٌ لإرسالها إلى مزوّد سحابي حين يُطلب الإخفاء.
+    redacted: bool = False
 
 
 # ملاحظة: ``TimelineMatchResult`` من الإصدار 1.1 حُذف. حلّ محلّه
@@ -154,7 +157,10 @@ class KeyframeMetadata(BaseModel):
 
 class DocumentBlock(BaseModel):
     """كتلة محتوى داخل قسم."""
-    kind: Literal["paragraph", "figure", "bullets", "quote"]
+    #: ‏``step`` خطوة إجرائية مرقّمة (دليل استخدام نظام)، و``note`` تنبيه
+    #: أو ملاحظة في إطار. كلاهما يُنتجه المؤلّف المرئيّ (ai/visual_author)،
+    #: والمُصيِّر الذي لا يعرفهما يعاملهما فقرةً — لا يضيع نصّ.
+    kind: Literal["paragraph", "figure", "bullets", "quote", "step", "note"]
     text: str = ""
     bullets: List[str] = Field(default_factory=list)
     timestamp: Optional[float] = None
@@ -200,6 +206,10 @@ class DocumentPlan(BaseModel):
     total_segments_out: int = 0
     total_figures_in: int = 0
     total_figures_out: int = 0
+    #: لقطات استبعدها المؤلّف المرئيّ **عمدًا** لأنها مكرّرة أو خارج
+    #: الموضوع (نافذة أخرى، شاشة تحميل). تُسجَّل بمعرّفها فيبقى الحساب
+    #: صادقًا: الداخل = المستعمل + المستبعد، ولا ضياع صامت (ADR-010).
+    figures_omitted: List[int] = Field(default_factory=list)
     # تقرير جودة آخر بناء محفوظ داخل الخطة، اختياري للتوافق مع الخطط القديمة.
     quality_score: Optional[float] = None
     quality_warnings: List[str] = Field(default_factory=list)

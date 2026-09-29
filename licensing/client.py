@@ -9,7 +9,6 @@ import json
 import re
 import urllib.error
 import urllib.request
-from typing import Optional
 
 #: يُضبط عند النشر (``licensing/server_url.py`` أو متغيّر بيئة).
 DEFAULT_TIMEOUT = 15

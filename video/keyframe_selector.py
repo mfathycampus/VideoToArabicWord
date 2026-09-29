@@ -89,6 +89,8 @@ class KeyframeSelector:
         if box.height and frame.shape[0] != box.height:
             # ارتفاعٌ مختلف عمّا عُوير عليه الصندوق: لا نقصّ بالتخمين.
             return frame
+        if hasattr(box, "matches") and not box.matches(frame):
+            return frame
         return box.apply(frame)
 
     # فوق هذه المسافة يصير البحث العشوائي أرخص من التقدّم إطارًا إطارًا.

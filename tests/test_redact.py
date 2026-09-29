@@ -49,6 +49,19 @@ def test_misread_rows_in_the_same_list_column_are_hidden():
     assert "12:15" not in hidden          # سطر زمنٍ في العمود نفسه يبقى
 
 
+def test_app_menus_and_posts_under_a_single_name_are_not_hidden():
+    """قائمة تطبيقات PowerSchool ومنشورات عربية تحت اسم المستخدم في الترويسة:
+    موّهها الإصدار السابق كلّها — وهي الخطوة التي يشرحها الفيديو."""
+    words = [_w("Mohammed", 1, 48, top=10), _w("Yosef", 1, 130, top=10),
+             _w("Performance", 2, 48, top=60), _w("Matters", 2, 140, top=60),
+             _w("Schoology", 3, 48, top=90), _w("Learning", 3, 130, top=90),
+             _w("McGraw", 4, 48, top=120), _w("Hill", 4, 110, top=120),
+             _w("الخطة", 5, 47, top=150), _w("الأسبوعية", 5, 90, top=150)]
+    boxes, names = find_name_boxes(words)
+    assert names == ["Mohammed Yosef"]
+    assert {b["text"] for b in boxes} == {"Mohammed", "Yosef"}
+
+
 def test_emails_are_hidden():
     boxes, names = find_name_boxes([_w("teacher.one@school.edu.sa", 1, 10)])
     assert names == ["teacher.one@school.edu.sa"] and len(boxes) == 1
@@ -71,3 +84,12 @@ def test_redaction_changes_the_pixels_and_scrubs_the_text(tmp_path):
     assert names == ["Afnan Alharbi"]
     assert text == "Planned 9"
     assert image.read_bytes() != before
+
+
+def test_lowercase_student_names_are_hidden():
+    """‏PowerSchool SIS يعرض أسماء الطلاب بحروف صغيرة."""
+    words = [_w("rashad", 1, 48), _w("abdelmohaymen", 1, 110),
+             _w("abu", 1, 220), _w("alsaimi", 1, 250),
+             _w("mass", 2, 48, top=40), _w("register", 2, 100, top=40)]
+    _boxes, names = find_name_boxes(words)
+    assert names == ["rashad abdelmohaymen abu alsaimi"]

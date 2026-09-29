@@ -49,8 +49,45 @@ def collapse_hallucinated_repeats(text: str) -> str:
     return text
 
 
+# ── عبارات يختلقها Whisper العربي من بيانات تدريبه ──────────────────
+#
+# ليست كلامًا في التسجيل بل «ترويسات» مقاطع يوتيوب التي تدرّب عليها
+# النموذج، تظهر على صمتٍ أو نقرٍ أو موسيقى. رُصدت حرفيًّا على تسجيل
+# شاشة حقيقي («متابعة تحضير المعلمين»): «اشتركوا في القناة» في منتصف
+# شرح نظام، و«ترجمة نانسي قنقر» بين خطوتين — وطُبعتا في المستند.
+#
+# القائمة ضيّقة عمدًا: عبارات لا يقولها معلّمٌ يشرح نظامًا أبدًا بهذه
+# الصيغة الحرفية. التكرار والعبارات العامّة («شكرًا لكم») لها طيّها
+# الخاصّ أعلاه، ولا تُحذف هنا لأنها قد تكون كلامًا حقيقيًّا.
+_H = "[ًٌٍَُِّْ]*"          # تشكيل اختياري بين الحروف لا يغيّر العبارة
+#: ‏«القناة» قد تكون قناة Teams فعلًا («اشتركوا في القناة العامة») —
+#: فالعبارة تُحذف فقط حين لا يليها ما يعرّف القناة.
+_NOT_QUALIFIED = r"(?!\s+(?:ال[\u0621-\u064A]+|الخاص|التي|اللي|بتاع|دي|هذه))"
+_KNOWN_HALLUCINATIONS = [re.compile(p) for p in (
+    r"ترجمة\s+نانسي\s+قنقر",
+    r"(?:لا\s+تنس(?:وا|ى)\s+)?(?:ال)?اشترا?ك(?:وا)?\s+(?:في|ب)\s*القناة"
+    + _NOT_QUALIFIED
+    + r"(?:\s+(?:و\s*)?(?:تفعيل\s+)?(?:زر\s+)?الجرس)?",
+    r"شكر" + _H + r"ا?" + _H + r"\s+(?:لكم\s+)?(?:على|ل)\s*(?:ال|ل)?مشاهدة",
+    r"(?i)subtitles\s+by\s+the\s+amara\.org\s+community",
+)]
+_ORPHAN_PUNCT = re.compile(r"(^|\s)[،.؛!؟,]+(?=\s|$)")
+
+
+def strip_known_hallucinations(text: str) -> str:
+    """يحذف عبارات Whisper المختلَقة المعروفة من ``text_clean`` وحده."""
+    original = text
+    for pattern in _KNOWN_HALLUCINATIONS:
+        text = pattern.sub(" ", text)
+    if text == original:
+        return text
+    text = _ORPHAN_PUNCT.sub(r"\1", text)
+    return _MULTISPACE.sub(" ", text).strip(" ،,")
+
+
 def clean_segment_text(text: str) -> str:
-    return collapse_hallucinated_repeats(normalize_arabic(text))
+    return strip_known_hallucinations(
+        collapse_hallucinated_repeats(normalize_arabic(text)))
 
 
 # ── التكرار الممتدّ عبر المقاطع ───────────────────────────────────────

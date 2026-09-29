@@ -57,6 +57,10 @@ class Policy:
     #: ``False`` يمنع كل مزوّد يُخرج النصّ من الجهاز، ويُسقط الاختيار
     #: إلى المحلّي. لا يوجد ``True`` مُفعِّل — انظر مقدّمة الوحدة.
     allow_cloud_ai: Optional[bool] = None
+    #: ``False`` يمنع إرسال لقطات الشاشة إلى مزوّد سحابي (الوضع المرئي)
+    #: ويُبقي إرسال النصّ إن سمح به ``allow_cloud_ai``. اللقطة قد تحمل ما
+    #: لا يحمله التفريغ: أسماء طلاب وأرقامًا ظاهرة على الشاشة.
+    allow_cloud_images: Optional[bool] = None
     #: يفرض مجلد الحفظ (مجلد مشترك مؤرشَف مثلًا).
     force_output_dir: Optional[str] = None
     #: يُلزم كتابة سجلّ التدقيق ويمنع تعطيله.
@@ -103,6 +107,7 @@ def load(path: Optional[Path] = None) -> Policy:
     policy = Policy(source=str(path), notice=str(data.get("notice") or ""))
     known = {
         "allow_cloud_ai": bool,
+        "allow_cloud_images": bool,
         "force_output_dir": str,
         "require_audit_log": bool,
         "allow_model_download": bool,
@@ -147,6 +152,13 @@ def apply(config, policy: Optional[Policy] = None) -> Policy:
                 # المفتاح يُمسح من الإعداد الفعّال أيضًا: إبقاؤه يعني
                 # أن تعطيل السياسة يومًا يُعيد الإرسال بلا قرار جديد.
                 settings.api_key = ""
+
+    if policy.allow_cloud_images is False:
+        rewrite = getattr(config, "rewrite", None)
+        if rewrite is not None and _is_cloud(getattr(rewrite, "provider", "")):
+            if getattr(rewrite, "send_images", False):
+                logger.info("سياسة الجهاز تمنع إرسال لقطات الشاشة — الصياغة نصّية فقط.")
+            rewrite.send_images = False
 
     if policy.require_audit_log is True:
         config.application.audit_log = True

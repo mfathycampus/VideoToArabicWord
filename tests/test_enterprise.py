@@ -244,7 +244,8 @@ def test_audit_never_stores_the_transcript(tmp_path, monkeypatch):
         "at", "app_version", "user", "host", "os", "source_name",
         "source_bytes", "duration_seconds", "job_dir", "outputs", "engine",
         "model", "text_left_device", "cloud_providers", "permitted_providers",
-        "attempted_no_egress", "status", "error", "elapsed_seconds"}
+        "attempted_no_egress", "images_left_device", "status", "error",
+        "elapsed_seconds"}
 
 
 def test_audit_failure_never_breaks_a_job(tmp_path, monkeypatch):

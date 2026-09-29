@@ -390,6 +390,29 @@ _TIME_STAMP = re.compile(r"\b\d{1,2}:\d{2}(?::\d{2})?\b")
 _ARABIC_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
 
 
+#: أسماء أنظمة ومصطلحات تُنطق بالعربية وتكتبها الصياغة بحرفها اللاتيني.
+#: رُصد على تشغيل حقيقي: «شير بوينت» و«تيمز» في التفريغ، و«SharePoint»
+#: و«Teams» في المستند — فأنذر الفحص باختلاقٍ لم يقع.
+_TRANSLITERATIONS: dict[str, tuple[str, ...]] = {
+    "teams": ("تيمز",), "sharepoint": ("شير بوينت", "شيربوينت", "شيربوينت"),
+    "excel": ("اكسل", "إكسل", "أكسل"), "word": ("وورد",),
+    "outlook": ("اوتلوك", "أوتلوك", "آوتلوك"), "onedrive": ("ون درايف", "وان درايف"),
+    "powerpoint": ("باوربوينت", "بوربوينت", "باور بوينت"),
+    "google": ("جوجل", "قوقل", "غوغل"), "chrome": ("كروم",),
+    "email": ("ايميل", "إيميل", "الايميل", "الإيميل"), "link": ("لينك",),
+    "observation": ("اوبزرفيشن", "أوبزرفيشن", "ابزرفيشن"),
+    "process": ("بروسيس", "بروسس"), "form": ("فورم",), "forms": ("فورمز",),
+    "admin": ("ادمن", "أدمن"), "dashboard": ("داشبورد",),
+    "upload": ("ابلود", "أبلود"), "password": ("باسورد", "باسوورد"),
+    "zoom": ("زوم",), "whatsapp": ("واتساب", "واتس اب"),
+}
+
+
+def _transliterated_latin(source: str) -> set[str]:
+    return {latin for latin, spellings in _TRANSLITERATIONS.items()
+            if any(spelling in source for spelling in spellings)}
+
+
 def unsupported_tokens(plan: DocumentPlan, segments: Iterable,
                        keyframes: Iterable[KeyframeMetadata] = ()
                        ) -> dict[str, list[str]]:
@@ -401,8 +424,13 @@ def unsupported_tokens(plan: DocumentPlan, segments: Iterable,
     """
     source = " ".join((s.text_clean or s.text_raw or "") for s in segments)
     source += " " + " ".join(k.ocr_text or "" for k in keyframes)
+    # في الوضع المرئي، نصّ الشاشة هو ما قرأه النموذج من اللقطة نفسها
+    # (‏``screen_text``) ويُحفظ على كتلة الشكل.
+    source += " " + " ".join(b.ocr_text or "" for s in plan.sections
+                             for b in s.blocks if b.image_id is not None)
     source += " " + (plan.title or "")
     source_latin = {t.lower() for t in _LATIN_TOKEN.findall(source)}
+    source_latin |= _transliterated_latin(source)
     source_numbers = {n.translate(_ARABIC_DIGITS)
                       for n in _NUMBER_TOKEN.findall(source)}
 
@@ -444,9 +472,13 @@ def evaluate(plan: DocumentPlan,
             else:
                 text = _text_of(block)
                 if text.strip():
-                    text_blocks.append(block)
                     words += len(text.split())
                     filler_hits += len(_FILLER.findall(text))
+                    # الخطوة والملاحظة قصيرتان **بتصميمهما**: «اضغط «Admin»
+                    # في الشريط العلوي.» خطوةٌ كاملة لا شظيّة. مقاييس تدفّق
+                    # الفقرة وطولها لا تنطبق عليهما.
+                    if block.kind not in ("step", "note"):
+                        text_blocks.append(block)
 
     metrics = (
         _paragraph_flow(text_blocks),

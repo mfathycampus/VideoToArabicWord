@@ -200,7 +200,11 @@ class MediaStagesMixin:
             ffmpeg=self.ffmpeg, temp_dir=job.job_dir / "temp",
             progress_callback=lambda f, m: emit(Stage.KEYFRAMES, f * 0.85, m))
 
-        if self.config.frames.enable_ocr:
+        # الإخفاء يحتاج OCR ليجد الأسماء، فيُشغَّل ولو كان نصّ الشاشة
+        # معطّلًا متى كانت اللقطات ستغادر الجهاز إلى نموذجٍ مرئيّ. كان
+        # الإخفاء حبيس ``enable_ocr`` (المعطّل افتراضيًّا)، أي أن
+        # ``anonymize_names`` المفعّل افتراضيًّا لم يكن يموّه شيئًا.
+        if self.config.frames.enable_ocr or self._images_may_leave():
             self._run_ocr(keyframes, images_dir, cancel_token, emit)
 
         job.save_artifact("keyframes", "keyframes.json", json.dumps(
@@ -211,6 +215,12 @@ class MediaStagesMixin:
         job.complete_stage(Stage.KEYFRAMES)
         cancel_token.raise_if_cancelled()
         return keyframes
+
+    def _images_may_leave(self) -> bool:
+        """هل قد تُرسَل اللقطات إلى نموذج مرئي مع طلب إخفاء الأسماء؟"""
+        rewrite = self.config.rewrite
+        return bool(rewrite.enabled and getattr(rewrite, "send_images", False)
+                    and getattr(self.config.document, "anonymize_names", False))
 
     def _run_ocr(self, keyframes: List[KeyframeMetadata], images_dir: Path,
                 cancel_token: CancellationToken, emit) -> None:
@@ -242,6 +252,7 @@ class MediaStagesMixin:
 
                 text, words = extract_text_and_words(path)
                 kf.ocr_text, names = redact_keyframe(path, words, text)
+                kf.redacted = True
                 if names:
                     hidden += len(names)
                     try:

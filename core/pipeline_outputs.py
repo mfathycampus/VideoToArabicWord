@@ -103,9 +103,13 @@ class OutputsMixin:
         بإرسال النص إلى هذا المزوّد أصلًا، فلا يُفتح بابُ خروجٍ جديد.
         """
         rewrite = self.config.rewrite
+        # **لا يُشترط أن يختلف اسم المزوّد.** رُصد على تشغيل حقيقي: الصياغة
+        # عبر «anthropic» نجحت، والحزمة التعليمية مضبوطة على «anthropic»
+        # أيضًا لكن بلا مفتاح (المفتاح محفوظ في إعداد الصياغة وحده)، فكان
+        # الشرط ``rewrite.provider != study.provider`` يمنع البديل — وخرجت
+        # الحزمة بلا أهداف ولا أسئلة وفي السجلّ «anthropic غير متاح».
         if not (getattr(study_settings, "use_rewrite_provider_as_fallback", True)
-                and rewrite.enabled and rewrite.provider
-                and rewrite.provider != study_settings.provider):
+                and rewrite.enabled and rewrite.provider):
             return None
         try:
             from ai.providers import provider_from_settings
@@ -116,9 +120,14 @@ class OutputsMixin:
         except Exception as exc:
             logger.debug(f"مزوّد الصياغة غير صالح بديلًا للحزمة: {exc}")
             return None
-        logger.info(
-            f"مزوّد الحزمة التعليمية «{study_settings.provider}» غير متاح — "
-            f"تُبنى الحزمة بمزوّد الصياغة «{rewrite.provider}».")
+        if rewrite.provider == study_settings.provider:
+            logger.info(
+                f"إعداد الحزمة التعليمية «{study_settings.provider}» بلا مفتاح — "
+                "تُبنى الحزمة بإعداد الصياغة (المزوّد نفسه ومفتاحه).")
+        else:
+            logger.info(
+                f"مزوّد الحزمة التعليمية «{study_settings.provider}» غير متاح — "
+                f"تُبنى الحزمة بمزوّد الصياغة «{rewrite.provider}».")
         return provider
 
     def _generate_study_pack(self, plan, transcript, keyframes, emit):
@@ -192,6 +201,8 @@ class OutputsMixin:
             settings = self.config.study
             provider = provider_from_settings(settings)
             if not provider.is_available():
+                provider = self._rewrite_provider_for_study(settings)
+            if provider is None or not provider.is_available():
                 logger.info(
                     f"مزوّد الترجمة «{settings.provider}» غير متاح — "
                     "تُخطّى الترجمة.")
@@ -267,12 +278,16 @@ class OutputsMixin:
             return stored == "timeline"
         return stored.startswith(expected)
 
-    def _build_plan(self, transcript, keyframes, video_path, metadata, emit
-                    ) -> DocumentPlan:
-        """يبني بنية الوثيقة — بإعادة صياغة إن طُلبت، وإلا زمنيًا.
+    def _build_plan(self, transcript, keyframes, video_path, metadata, emit,
+                    images_dir=None) -> DocumentPlan:
+        """يبني بنية الوثيقة — مرئيًّا، أو بإعادة صياغة، وإلا زمنيًا.
 
-        فشل إعادة الصياغة **لا يُفشل المهمة**: نسقط إلى المخطِّط الزمني
-        وننبّه. المستند الخام أفضل من لا مستند.
+        الترتيب من الأغنى إلى الأبسط، وكل فشل يسقط إلى التالي ولا يُفشل
+        المهمة: المستند الخام أفضل من لا مستند.
+
+        1. المؤلّف المرئي (‏``ai/visual_author``): اللقطات صورًا + التفريغ.
+        2. الصياغة النصّية (‏``ai/rewriter``): التفريغ + نصّ الشاشة.
+        3. المخطّط الزمني: التفريغ كما هو بين اللقطات.
         """
         title = humanize_title(video_path.stem)
         # لا نكرّر اسم الملف هنا: هو في جدول الغلاف أصلًا، وتكراره
@@ -280,42 +295,125 @@ class OutputsMixin:
         subtitle = ("مستند مُولَّد من تسجيل مرئي" if metadata.has_video
                     else "مستند مُولَّد من تسجيل صوتي")
         settings = self.config.rewrite
+        anonymize = getattr(self.config.document, "anonymize_names", False)
+        has_text = any((s.text_clean or s.text_raw or "").strip()
+                       for s in transcript.segments)
+        #: ما يجب أن يعرفه المستخدم عن طريقة بناء المستند — يُلحق بتحذيرات
+        #: الجودة. كان سقوط الوضع المرئي و14 دفعة خامًا يمرّان سطرًا في
+        #: السجلّ وحده، والمستند يحمل وسم «ai:».
+        self._plan_notes = []
+        try:
+            from ai.providers import set_response_dump_dir
+
+            set_response_dump_dir(Path(images_dir).parent if images_dir else None)
+        except Exception:                                   # noqa: BLE001
+            pass
 
         if settings.enabled:
-            emit(Stage.MATCHING, 0.1, "إعادة صياغة النص…")
+            provider = None
             try:
                 from ai.providers import provider_from_settings
-                from ai.rewriter import RewriteConfig, TranscriptRewriter
 
                 provider = provider_from_settings(settings)
                 if not provider.is_available():
                     raise RuntimeError(
                         f"المزوّد «{provider.info.label_ar}» غير متاح.")
-                rewriter = TranscriptRewriter(
-                    provider,
-                    RewriteConfig(enabled=True, provider=settings.provider,
-                                  model=settings.model,
-                                  batch_chars=settings.batch_chars,
-                                  make_outline=settings.make_outline,
-                                  timeout_seconds=settings.timeout_seconds,
-                                  glossary=self.config.whisper.glossary or "",
-                                  anonymize_names=getattr(
-                                      self.config.document, "anonymize_names", False)))
-                plan = rewriter.build_plan(
-                    transcript, keyframes, title, subtitle,
-                    lambda f, m: emit(Stage.MATCHING, 0.1 + f * 0.8, m))
-                logger.info(f"أُعيدت الصياغة عبر {plan.generated_by}")
-                return plan
             except Exception as exc:
-                # السبب يُعرض في الواجهة لا في السجلّ وحده: المستخدم
-                # الذي يرى «تعذّرت» بلا سبب لا يستطيع فعل شيء، والمستخدم
-                # الذي يرى «مفتاح غير صالح» يُصلحها في دقيقة.
                 reason = str(exc).strip() or type(exc).__name__
-                logger.warning(
-                    f"تعذّرت إعادة الصياغة — المتابعة بالنص الخام. السبب: {reason}")
+                logger.warning(f"تعذّرت إعادة الصياغة — السبب: {reason}")
+                self._plan_notes.append(
+                    f"ai_unavailable: تعذّرت إعادة الصياغة ({reason[:160]}) — "
+                    "المستند نصٌّ خام")
                 emit(Stage.MATCHING, 0.85,
                      f"تعذّرت إعادة الصياغة ({reason[:120]}) — "
                      "المتابعة بالنص الخام")
+                provider = None
+
+            if (provider is not None and getattr(settings, "send_images", True)
+                    and images_dir is not None):
+                from ai.visual_author import VisualAuthor, VisualAuthorConfig
+
+                unredacted = [k for k in keyframes if not getattr(k, "redacted", False)]
+                blocked = (anonymize and unredacted and not provider.info.is_local
+                           and not getattr(settings, "send_unredacted_images", False))
+                if blocked and VisualAuthor.usable(provider, keyframes):
+                    logger.warning(
+                        "إخفاء الأسماء مطلوب ولم تُموَّه اللقطات (Tesseract غير "
+                        "مثبَّت؟) — لن تُرسل اللقطات، والصياغة نصّية. ثبّت "
+                        "Tesseract، أو فعّل rewrite.send_unredacted_images.")
+                    self._plan_notes.append(
+                        "ai_visual: اللقطات لم تُموَّه فيها الأسماء فلم تُرسل — "
+                        "كُتب المستند بالصياغة النصّية")
+                    emit(Stage.MATCHING, 0.1,
+                         "اللقطات لم تُموَّه فيها الأسماء — لن تُرسل؛ صياغة نصّية")
+                elif VisualAuthor.usable(provider, keyframes):
+                    emit(Stage.MATCHING, 0.1, "كتابة المستند من لقطات الشاشة والكلام…")
+                    try:
+                        author = VisualAuthor(provider, VisualAuthorConfig(
+                            max_images_per_call=getattr(settings, "max_images_per_call", 12),
+                            # ردٌّ بـ16000 رمز يستغرق دقائق؛ 300 ث كانت تقطعه.
+                            timeout_seconds=max(600, settings.timeout_seconds),
+                            glossary=self.config.whisper.glossary or "",
+                            anonymize_names=anonymize))
+                        plan = author.build_plan(
+                            transcript, keyframes, Path(images_dir), title, "",
+                            duration_seconds=metadata.duration_seconds,
+                            progress_callback=lambda f, m: emit(
+                                Stage.MATCHING, 0.1 + f * 0.8, m))
+                        logger.info(f"كُتب المستند مرئيًّا عبر {plan.generated_by} "
+                                    f"({author.images_sent} لقطة أُرسلت)")
+                        return plan
+                    except Exception as exc:
+                        reason = str(exc).strip() or type(exc).__name__
+                        logger.warning(
+                            f"تعذّر الوضع المرئي — المتابعة بالصياغة النصّية. السبب: {reason}")
+                        self._plan_notes.append(
+                            f"ai_visual: تعذّر الوضع المرئي ({reason[:160]}) — "
+                            "كُتب المستند بالصياغة النصّية")
+                        emit(Stage.MATCHING, 0.15,
+                             f"تعذّر الوضع المرئي ({reason[:100]}) — صياغة نصّية")
+                elif keyframes:
+                    logger.info(f"المزوّد «{provider.info.name}» لا يقرأ الصور — "
+                                "صياغة نصّية بلا لقطات.")
+
+            if provider is not None and has_text:
+                emit(Stage.MATCHING, 0.1, "إعادة صياغة النص…")
+                try:
+                    from ai.rewriter import RewriteConfig, TranscriptRewriter
+
+                    rewriter = TranscriptRewriter(
+                        provider,
+                        RewriteConfig(enabled=True, provider=settings.provider,
+                                      model=settings.model,
+                                      batch_chars=settings.batch_chars,
+                                      make_outline=settings.make_outline,
+                                      timeout_seconds=settings.timeout_seconds,
+                                      glossary=self.config.whisper.glossary or "",
+                                      anonymize_names=anonymize))
+                    plan = rewriter.build_plan(
+                        transcript, keyframes, title, subtitle,
+                        lambda f, m: emit(Stage.MATCHING, 0.1 + f * 0.8, m))
+                    logger.info(f"أُعيدت الصياغة عبر {plan.generated_by}")
+                    raw, total = rewriter.raw_batches, rewriter.total_batches
+                    if raw:
+                        self._plan_notes.append(
+                            f"ai_raw_batches: {raw} من {total} قسمًا بقي نصًّا خامًا "
+                            f"لأن ردّ النموذج لم يُستعمل ({rewriter.last_failure[:120]}) "
+                            "— الردود محفوظة في ai_debug")
+                    return plan
+                except Exception as exc:
+                    # السبب يُعرض في الواجهة لا في السجلّ وحده: المستخدم
+                    # الذي يرى «تعذّرت» بلا سبب لا يستطيع فعل شيء، والمستخدم
+                    # الذي يرى «مفتاح غير صالح» يُصلحها في دقيقة.
+                    reason = str(exc).strip() or type(exc).__name__
+                    logger.warning(
+                        f"تعذّرت إعادة الصياغة — المتابعة بالنص الخام. السبب: {reason}")
+                    self._plan_notes.append(
+                        f"ai_unavailable: تعذّرت إعادة الصياغة ({reason[:160]}) — "
+                        "المستند نصٌّ خام")
+                    emit(Stage.MATCHING, 0.85,
+                         f"تعذّرت إعادة الصياغة ({reason[:120]}) — "
+                         "المتابعة بالنص الخام")
 
         emit(Stage.MATCHING, 0.9, "بناء بنية المستند…")
         return self.planner.build(transcript, keyframes, title, subtitle)

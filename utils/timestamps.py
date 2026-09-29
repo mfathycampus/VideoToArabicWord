@@ -60,12 +60,28 @@ def humanize_duration(seconds: float) -> str:
     hours, remainder = divmod(seconds, 3600)
     minutes = remainder // 60
     if hours and minutes:
-        return f"{hours} ساعة و{minutes} دقيقة"
+        return f"{_count(hours, 'ساعة', 'ساعتان', 'ساعات')} و{_count(minutes, 'دقيقة', 'دقيقتان', 'دقائق')}"
     if hours:
-        return f"{hours} ساعة"
+        return _count(hours, "ساعة", "ساعتان", "ساعات")
     if minutes:
-        return f"{minutes} دقيقة"
-    return f"{seconds} ثانية"
+        return _count(minutes, "دقيقة", "دقيقتان", "دقائق")
+    return _count(seconds, "ثانية", "ثانيتان", "ثوانٍ")
+
+
+def _count(n: int, one: str, two: str, few: str) -> str:
+    """العدد مع معدوده بقاعدة العربية: «5 دقائق» لا «5 دقيقة».
+
+    ‏1 ← المفرد، 2 ← المثنّى، 3–10 ← الجمع، 11 فما فوق ← المفرد
+    («15 دقيقة»، «100 دقيقة»)، ويعود الجمع حين ينتهي العدد بـ3–10
+    بعد المئة («103 دقائق»).
+    """
+    if n == 1:
+        return one
+    if n == 2:
+        return two
+    if 3 <= n % 100 <= 10:
+        return f"{n} {few}"
+    return f"{n} {one}"
 
 
 def estimate_remaining(elapsed: float, fraction_done: float) -> float | None:

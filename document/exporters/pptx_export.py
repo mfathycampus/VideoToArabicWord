@@ -77,6 +77,13 @@ def section_bullets(section: DocumentSection) -> List[str]:
     if explicit:
         return [_fit(b, MAX_BULLET_CHARS) for b in explicit[:MAX_BULLETS]]
 
+    # خطوات الدليل الإجرائي نقاطٌ جاهزة للعرض بترتيبها.
+    steps = [f"{n}. {(b.text or '').strip()}" for n, b in enumerate(
+        (b for b in section.blocks if b.kind == "step" and (b.text or "").strip()),
+        start=1)]
+    if steps:
+        return [_fit(t, MAX_BULLET_CHARS) for t in steps[:MAX_BULLETS]]
+
     sentences: List[str] = []
     for block in section.blocks:
         if block.kind != "paragraph":
@@ -96,7 +103,7 @@ def _speaker_notes(section: DocumentSection) -> str:
     return "\n\n".join(
         (block.text or "").strip()
         for block in section.blocks
-        if block.kind == "paragraph" and (block.text or "").strip())
+        if block.kind in ("paragraph", "step", "note") and (block.text or "").strip())
 
 
 def _add_text_slide(presentation, title: str, lines: List[str],

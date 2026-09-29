@@ -24,7 +24,8 @@ VIDEO = CORPUS / "h264_mp4.mp4"
 class FakeRewritePipeline(VideoToDocPipeline):
     """يستبدل استدعاء النموذج بخطة ثابتة تُحاكي نجاح الصياغة."""
 
-    def _build_plan(self, transcript, keyframes, video_path, metadata, emit):
+    def _build_plan(self, transcript, keyframes, video_path, metadata, emit,
+                    images_dir=None):
         if self.config.rewrite.enabled:
             from config.schemas import DocumentBlock, DocumentSection
             sections = [DocumentSection(
