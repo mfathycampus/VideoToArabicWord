@@ -26,7 +26,7 @@ from utils.console import enable_utf8_console  # noqa: E402
 from utils.deps import diagnose, fix_commands, format_report  # noqa: E402
 from version import APP_VERSION  # noqa: E402
 
-APP_TITLE = "محوّل الفيديو إلى Word"
+APP_TITLE = "معين"
 
 
 def _show_failure_dialog(report: str, commands: list[str]) -> bool:

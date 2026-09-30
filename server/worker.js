@@ -29,7 +29,7 @@ const PREFIX = "VTAW1";
 const ADMIN_PAGE = `<!doctype html>
 <html lang="ar" dir="rtl"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>أكواد التفعيل — محوّل الفيديو إلى Word</title>
+<title>أكواد التفعيل — معين</title>
 <style>
 :root{--bg:#f6f7f6;--card:#fff;--ink:#12211f;--muted:#5d6b68;--line:#dfe5e3;
       --brand:#0b2e2a;--ok:#1c7c54;--warn:#a8630b;--bad:#a52222}
@@ -66,7 +66,7 @@ code{font-family:ui-monospace,Consolas,monospace;font-size:14px}
 </style></head><body>
 
 <h1>أكواد التفعيل</h1>
-<p class="sub">محوّل الفيديو إلى مستند Word — لوحة إصدار الأكواد ومتابعتها.</p>
+<p class="sub">معين — لوحة إصدار الأكواد ومتابعتها.</p>
 
 <div class="card" id="auth">
   <label for="token">رمز الإدارة</label>

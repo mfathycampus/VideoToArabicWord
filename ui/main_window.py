@@ -108,7 +108,7 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
 
     # ------------------------------------------------------------------
     def _build_ui(self) -> None:
-        self.setWindowTitle("محوّل الفيديو إلى مستند Word — محلي بالكامل")
+        self.setWindowTitle("معين — الفيديو إلى مستند Word، محلي بالكامل")
         # الحد الأدنى يكفي أضيق مجموعة؛ الباقي يتكفّل به التمرير
         self.setMinimumSize(720, 480)
         self.resize(900, 760)
@@ -806,21 +806,28 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
         # هنا وقد رآهما المستخدم معًا: الشعار مرسوم بلون الشريط نفسه
         # فلا يُرى، وأسطر النصّ عند 34 بكسل بقعٌ رمادية لا تُقرأ.
         assets = Path(__file__).resolve().parents[1] / "assets"
-        logo = assets / "logo_light.png"
+        # شعار «معين» الأفقي (العلامة + الاسم) إن وُجد، وإلا العلامة وحدها
+        # مع الاسم نصًّا — فلا يخرج الشريط بلا اسم لو فُقد أصلٌ من الحزمة.
+        wordmark = assets / "logo_wordmark_light.png"
+        has_wordmark = wordmark.is_file()
+        logo = wordmark if has_wordmark else assets / "logo_light.png"
         if not logo.is_file():
             logo = assets / "logo.png"
         if logo.is_file():
             mark.setPixmap(QPixmap(str(logo)).scaledToHeight(
-                34, Qt.TransformationMode.SmoothTransformation))
+                54 if has_wordmark else 34,
+                Qt.TransformationMode.SmoothTransformation))
+        mark.setAccessibleName("معين")
         row.addWidget(mark)
 
         titles = QVBoxLayout()
         titles.setSpacing(1)
-        name = QLabel("محوّل المحاضرات")
+        name = QLabel("معين")
         name.setStyleSheet(
             f"color: {theme.ON_INK}; font-size: 15px; font-weight: 600;")
         note = QLabel("يعمل على جهازك بالكامل — بلا إنترنت")
         note.setStyleSheet(f"color: {theme.ON_INK_MUTED}; font-size: 11px;")
+        name.setVisible(not has_wordmark)
         titles.addWidget(name)
         titles.addWidget(note)
         row.addLayout(titles)

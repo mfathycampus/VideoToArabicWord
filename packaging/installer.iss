@@ -20,7 +20,7 @@
   #define AppVersion "0.0.0"
 #endif
 
-#define AppName        "محوّل الفيديو إلى Word"
+#define AppName        "معين"
 #define AppNameLatin   "VideoToArabicWord"
 #define AppPublisher   "Mohammed Yosef"
 #define AppExe         "VideoToArabicWord.exe"

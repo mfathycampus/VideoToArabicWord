@@ -42,7 +42,8 @@ datas = []
 # ‏logo.png ترويسةُ المستند، وlogo_light.png شريطُ الواجهة الداكن.
 # شحن الأوّل وحده هو ما يجعل الشعار يختفي في الحزمة بينما يظهر عند
 # التشغيل من المصدر — عطلٌ لا يراه أحد إلا المستخدم النهائي.
-for name in ("logo.png", "logo_light.png"):
+for name in ("logo.png", "logo_light.png", "logo_wordmark.png",
+             "logo_wordmark_light.png"):
     asset = PROJECT / "assets" / name
     if asset.is_file():
         datas.append((str(asset), "assets"))
