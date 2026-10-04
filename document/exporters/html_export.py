@@ -355,8 +355,12 @@ def _render_figure(block: DocumentBlock, images_dir: Path,
         logger.warning(f"صورة مفقودة، تُخطّت في HTML: {block.image_filename}")
         return ""
 
-    src = (_data_uri(path, compact=embed == "compact") if embed
-           else f"keyframes/{block.image_filename}")
+    if callable(embed):
+        # مُصيِّر آخر (مشغّل SCORM) يقرّر مسار الصورة في حزمته
+        src = embed(path)
+    else:
+        src = (_data_uri(path, compact=embed == "compact") if embed
+               else f"keyframes/{block.image_filename}")
     if src is None:
         return ""
 
