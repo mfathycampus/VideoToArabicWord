@@ -378,3 +378,34 @@ def test_html_embeds_compact_images_just_above_the_cap(ctx, monkeypatch):
     text = html_export.render_html(ctx)
     assert "data:image/jpeg;base64," in text
     assert 'src="keyframes/' not in text
+
+
+# ---------------------------------------------------------------------
+# عربية الأعداد وخريطة المراجعة (ملاحظات من مخرج حقيقي)
+# ---------------------------------------------------------------------
+@pytest.mark.parametrize("n, expected", [
+    (1, "لقطة واحدة"), (2, "لقطتان"), (3, "3 لقطات"), (10, "10 لقطات"),
+    (11, "11 لقطة"), (24, "24 لقطة")])
+def test_arabic_count_agrees_with_the_noun(n, expected):
+    from document.exporters._design import ar_count
+
+    assert ar_count(n, "figure") == expected
+
+
+def test_arabic_count_uses_the_accusative_after_ten():
+    from document.exporters._design import ar_count
+
+    assert ar_count(5, "section") == "5 أقسام"
+    assert ar_count(12, "section") == "12 قسمًا"
+
+
+def test_review_map_does_not_truncate_long_steps():
+    """الخريطة صفحة قراءة: خطوةٌ مقتطعة بنقاط «…» تخفي نصف التعليمة."""
+    from config.schemas import DocumentSection
+    from document.exporters.pptx_export import section_bullets
+
+    long_step = "اكتب نص الوصف في حقل «الوصف» " * 12
+    section = DocumentSection(title="ق", blocks=[
+        DocumentBlock(kind="step", text=long_step)])
+    assert section_bullets(section)[0].endswith("…")
+    assert not section_bullets(section, max_chars=600)[0].endswith("…")

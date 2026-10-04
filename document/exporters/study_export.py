@@ -272,7 +272,8 @@ def _review_map(plan: Optional[DocumentPlan]) -> str:
 
     units: List[str] = []
     for number, section in enumerate(plan.sections, start=1):
-        bullets = section_bullets(section)
+        # صفحة قراءة لا شريحة: الخطوة تُعرض كاملة دون اقتطاع
+        bullets = section_bullets(section, max_chars=600, max_items=20)
         has_steps = any(b.kind == "step" for b in section.blocks)
         shots = sum(1 for b in section.blocks
                     if b.kind == "figure" and b.image_filename)
@@ -288,7 +289,7 @@ def _review_map(plan: Optional[DocumentPlan]) -> str:
         if not (lead or points):
             continue
         meta = "".join([
-            f'<span class="tag">{shots} لقطة</span>' if shots else "",
+            f'<span class="tag">{D.ar_count(shots, "figure")}</span>' if shots else "",
             _stamp(section.start_timestamp)])
         units.append(
             '<details class="unit"><summary>'
@@ -390,13 +391,13 @@ def _dropped(pack: StudyPack) -> str:
 def _stats(pack: StudyPack, plan: Optional[DocumentPlan]) -> str:
     cells = []
     if plan is not None and plan.sections:
-        cells.append((len(plan.sections), "قسمًا"))
-    for count, label in ((len(pack.objectives), "هدفًا"),
-                         (len(pack.questions), "سؤالًا"),
-                         (len(pack.glossary), "مصطلحًا"),
-                         (len(pack.flashcards), "بطاقة")):
+        cells.append((len(plan.sections), D.ar_noun(len(plan.sections), "section")))
+    for count, kind in ((len(pack.objectives), "objective"),
+                        (len(pack.questions), "question"),
+                        (len(pack.glossary), "term"),
+                        (len(pack.flashcards), "card")):
         if count:
-            cells.append((count, label))
+            cells.append((count, D.ar_noun(count, kind)))
     return ('<div class="stats">' + "".join(
         f'<div class="stat"><b>{n}</b><span>{label}</span></div>'
         for n, label in cells) + "</div>") if cells else ""

@@ -81,3 +81,36 @@ def split_step(text: str):
     if not match:
         return None, (text or "").strip()
     return match.group(1), text[match.end():].strip()
+
+
+# ---------------------------------------------------------------------
+# الأعداد العربية: «3 لقطة» خطأ نحوي يراه كل قارئ، والصواب «3 لقطات».
+# ---------------------------------------------------------------------
+#: ‏(مفرد، مثنّى، جمع للعدد 3–10، تمييز للعدد 11 فما فوق)
+_FORMS = {
+    "figure": ("لقطة", "لقطتان", "لقطات", "لقطة"),
+    "section": ("قسم", "قسمان", "أقسام", "قسمًا"),
+    "objective": ("هدف", "هدفان", "أهداف", "هدفًا"),
+    "question": ("سؤال", "سؤالان", "أسئلة", "سؤالًا"),
+    "term": ("مصطلح", "مصطلحان", "مصطلحات", "مصطلحًا"),
+    "card": ("بطاقة", "بطاقتان", "بطاقات", "بطاقة"),
+}
+
+
+def ar_noun(n: int, kind: str) -> str:
+    """الاسم بصيغته الصحيحة للعدد ``n`` (دون العدد نفسه)."""
+    one, two, few, many = _FORMS[kind]
+    if n == 1:
+        return one
+    if n == 2:
+        return two
+    return few if 3 <= n <= 10 else many
+
+
+def ar_count(n: int, kind: str) -> str:
+    """«قسم واحد» · «قسمان» · «5 أقسام» · «12 قسمًا»."""
+    if n == 1:
+        return f"{_FORMS[kind][0]} واحد" if kind in ("section", "objective", "question", "term") else f"{_FORMS[kind][0]} واحدة"
+    if n == 2:
+        return ar_noun(2, kind)
+    return f"{n} {ar_noun(n, kind)}"

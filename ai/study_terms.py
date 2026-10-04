@@ -45,6 +45,12 @@ _STOPWORDS = {
     "ده", "احنا", "إحنا", "انت", "أنت", "نحن", "هو", "هي", "هم", "ما",
     "لا", "نعم", "أن", "إن", "أو", "او", "ثم", "حتى", "لكن", "قد",
     "الآن", "اليوم", "شوية", "كده", "كدا", "خلاص", "برضه", "طب",
+    # كلام منطوق عامّي: رُصد ثنائياتٍ «مصطلحات» في مسرد تشغيل حقيقي
+    # («انا عايز»، «ازاي ننزل»، «اول حاجه»، «مثلا انا»، «اقدر اعمل»).
+    "انا", "انتي", "ازاي", "ازاى", "عايز", "عايزه", "عايزين", "اقدر",
+    "نقدر", "ننزل", "ننزّل", "بدخل", "ندخل", "حاجه", "حاجة", "اول",
+    "اولا", "ثاني", "مثلا", "بتاع", "بتاعه", "دلوقتي", "كمان", "تاني", "اعمل", "نعمل", "هعمل", "نشوف", "شوف",
+    "علي", "ايه", "ليه", "فين", "امتي", "لو", "اللي", "الي",
 }
 
 
@@ -95,6 +101,26 @@ _GENERIC_UI = {
 MAX_TERM_WORDS = 4
 
 
+#: كلمات صغيرة تقع وسط مصطلح إنجليزي سليم («Monitoring and Feedback»).
+_LOWER_CONNECTORS = {"of", "and", "for", "the", "to", "in", "on", "a"}
+
+
+def _is_ocr_fragment(words: list) -> bool:
+    """شظيّة قراءة ضوئية: «ate text fro» أو «OneNote Class Notebook mij».
+
+    مصطلح الشاشة اللاتيني يبدأ بحرف كبير أو رقم، ولا ينتهي بكلمة صغيرة
+    مقصوصة. كلمة آخر المصطلح الصغيرة القصيرة (≤3 أحرف) علامة قصّ.
+    """
+    latin = [w for w in words if re.fullmatch(r"[A-Za-z][A-Za-z0-9'&/+.-]*", w)]
+    if not latin:
+        return False
+    if re.fullmatch(r"[a-z][a-z'-]*", latin[0]):
+        return True
+    last = words[-1]
+    return (re.fullmatch(r"[a-z]{1,3}", last) is not None
+            and last not in _LOWER_CONNECTORS)
+
+
 def _is_noise_term(term: str, origin: str) -> bool:
     """مصطلحٌ مرشّح لا يصلح للمسرد: اسم شخص، شظيّة OCR، زرّ، رأس جدول."""
     from video.redact import looks_like_person_name
@@ -113,6 +139,8 @@ def _is_noise_term(term: str, origin: str) -> bool:
         if origin == "screen" and re.fullmatch(r"[a-z][a-z\-]*", word):
             return True
     if origin == "screen" and len(words) > MAX_TERM_WORDS:
+        return True
+    if origin == "screen" and _is_ocr_fragment(words):
         return True
     # زرٌّ من كلمات واجهة كلّها («Reset Filters»، «Collapse Filters»).
     if all(w.lower() in _GENERIC_UI for w in words):

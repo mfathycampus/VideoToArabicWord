@@ -68,7 +68,8 @@ def _fit(text: str, limit: int) -> str:
     return D.fit(text, limit)
 
 
-def section_bullets(section: DocumentSection) -> List[str]:
+def section_bullets(section: DocumentSection, max_chars: int = MAX_BULLET_CHARS,
+                    max_items: int = MAX_BULLETS) -> List[str]:
     """نقاط الشريحة: ما كتبته إعادة الصياغة إن وُجد، وإلا يُشتقّ من النصّ.
 
     ترتيب الأفضلية مقصود. خطةُ الذكاء الاصطناعي تحمل ``bullets`` مكتوبة
@@ -81,14 +82,14 @@ def section_bullets(section: DocumentSection) -> List[str]:
         if block.kind == "bullets":
             explicit.extend(b for b in block.bullets if (b or "").strip())
     if explicit:
-        return [_fit(b, MAX_BULLET_CHARS) for b in explicit[:MAX_BULLETS]]
+        return [_fit(b, max_chars) for b in explicit[:max_items]]
 
     # خطوات الدليل الإجرائي نقاطٌ جاهزة للعرض بترتيبها.
     steps = [f"{n}. {(b.text or '').strip()}" for n, b in enumerate(
         (b for b in section.blocks if b.kind == "step" and (b.text or "").strip()),
         start=1)]
     if steps:
-        return [_fit(t, MAX_BULLET_CHARS) for t in steps[:MAX_BULLETS]]
+        return [_fit(t, max_chars) for t in steps[:max_items]]
 
     sentences: List[str] = []
     for block in section.blocks:
@@ -99,8 +100,8 @@ def section_bullets(section: DocumentSection) -> List[str]:
             # الجملة الأقصر من ثلاثين حرفًا في كلامٍ منطوق شبه دائمًا
             # حشوٌ («طيب»، «تمام يا شباب») لا فكرة.
             if len(sentence) >= 30:
-                sentences.append(_fit(sentence, MAX_BULLET_CHARS))
-            if len(sentences) >= MAX_BULLETS:
+                sentences.append(_fit(sentence, max_chars))
+            if len(sentences) >= max_items:
                 return sentences
     return sentences
 
@@ -516,9 +517,9 @@ def export(ctx: ExportContext) -> Optional[Path]:
     first_image = next((f[0][1] for f in per_section if f), None)
 
     facts = [f"المدة {seconds_to_display(ctx.metadata.duration_seconds)}",
-             f"{len(plan.sections)} قسمًا"]
+             D.ar_count(len(plan.sections), "section")]
     if total_figures:
-        facts.append(f"{total_figures} لقطة")
+        facts.append(D.ar_count(total_figures, "figure"))
     deck.cover(title, plan.subtitle, facts, first_image)
 
     section_titles = [s.title or "قسم" for s in plan.sections]
@@ -549,8 +550,8 @@ def export(ctx: ExportContext) -> Optional[Path]:
                 logger.warning(
                     f"تعذّرت إضافة الشريحة {block.image_filename}: {exc}")
 
-    deck.closing(title, [f"{total} قسمًا"] + ([f"{total_figures} لقطة"]
-                                             if total_figures else []))
+    deck.closing(title, [D.ar_count(total, "section")]
+                 + ([D.ar_count(total_figures, "figure")] if total_figures else []))
 
     props = presentation.core_properties
     props.title = title
