@@ -421,7 +421,7 @@ class _Deck:
             if sum(heights) + gap * (len(heights) - 1) <= bottom - top:
                 break
         y = top
-        for index, ((num, body), height) in enumerate(zip(parsed, heights)):
+        for (num, body), height in zip(parsed, heights):
             if y + height > bottom + 0.01:
                 break  # الباقي في ملاحظات المتحدّث لا على الشريحة
             self.box(slide, MARGIN, y, full_w, height, fill=D.WHITE, line=D.LINE,

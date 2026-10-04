@@ -32,12 +32,11 @@ import zipfile
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from config.schemas import DocumentPlan, StudyPack
+from config.schemas import StudyPack
 from document.exporters import ExportContext, register
 from document.exporters import _design as D
 from document.exporters._web import base_css
 from utils.logger import logger
-from utils.timestamps import seconds_to_display
 
 #: درجة النجاح المُبلَّغة للمنصّة. ‏70٪ عرفٌ شائع في SCORM 1.2، والمنصّة
 #: تستطيع تجاوزه من إعدادها — لكن غيابه يجعلها تعتبر كل محاولة ناجحة.
@@ -473,8 +472,8 @@ def render_player(ctx: ExportContext, pack: Optional[StudyPack],
     extra = ""
     if has_quiz and extra_pages:
         extra = ('<p class="muted" style="margin-top:20px">مواد مساندة: '
-                 + " ".join(f'<a href="{_esc(h)}" target="_blank">{_esc(l)}</a>'
-                            for l, h in extra_pages) + "</p>")
+                 + " ".join(f'<a href="{_esc(h)}" target="_blank">{_esc(label)}</a>'
+                            for label, h in extra_pages) + "</p>")
 
     return (
         "<!doctype html>\n"
