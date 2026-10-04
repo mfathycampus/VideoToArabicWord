@@ -106,6 +106,16 @@ def run_matrix() -> dict:
             "rows": rows, "documents": [str(d) for d in documents]}
 
 
+def _expects_toc(plan_file: Path) -> bool:
+    """هل يُفترض أن يحمل المستند جدول محتويات؟ — قرار المولّد نفسه."""
+    from document.word_generator import MIN_TOC_SECTIONS
+
+    if not plan_file.exists():
+        return True  # لا خطة نقيس عليها: نطلب الفهرس كما كانت البوابة
+    plan = json.loads(plan_file.read_text(encoding="utf-8"))
+    return len(plan.get("sections", [])) >= MIN_TOC_SECTIONS
+
+
 def run_output_gates(documents: list[str]) -> dict:
     """بوابات جودة على كل مستند ناتج فعليًا."""
     print("\n[3/3] بوابات جودة المخرج…")
@@ -203,7 +213,13 @@ def run_output_gates(documents: list[str]) -> dict:
             frames = [h for h in media_hashes if h not in branding]
             gates["has_embedded_images"] += (len(frames) == expected)
             body = etree.tostring(root)
-            gates["has_toc_field"] += b"TOC" in body
+            # كالصور: الفهرس مطلوب **متى يُكتب**. دون MIN_TOC_SECTIONS
+            # أقسام لا يُدرج المولّد جدول محتويات عمدًا (صفحةٌ ضائعة)،
+            # وفيديوهات المصفوفة قصيرة فتخرج بقسم أو قسمين — فالبوابة
+            # القديمة كانت تعدّ هذا السلوك الصحيح فشلًا (0/27).
+            has_toc = b"TOC" in body
+            expects_toc = _expects_toc(job_dir / "plan.json")
+            gates["has_toc_field"] += (has_toc == expects_toc)
             gates["has_headings"] += b'w:pStyle w:val="Heading' in body \
                 or b'Heading1' in body or b"Heading 1" in body
             gates["page_number_field"] += b"PAGE" in footer
