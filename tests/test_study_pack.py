@@ -449,3 +449,23 @@ def test_fallback_can_be_disabled(monkeypatch):
 def test_unavailable_rewrite_provider_is_not_used(monkeypatch):
     pipeline, _ = _study_pipeline(monkeypatch, available=False)
     assert pipeline._rewrite_provider_for_study(pipeline.config.study) is None
+
+
+def test_spoken_colloquial_pairs_are_not_glossary_terms():
+    """رُصدت «انا عايز» و«ازاي ننزل» و«اول حاجه» مصطلحاتٍ في مسرد حقيقي."""
+    from ai.study_terms import _arabic_phrases
+
+    text = ("انا عايز ازاي ننزل اول حاجه مثلا انا اقدر اعمل بدخل علي "
+            "صفحة المقرر. " * 4)
+    kept = _arabic_phrases(text)
+    assert not any(w in phrase for phrase in kept
+                   for w in ("عايز", "ننزل", "حاجه", "مثلا", "اقدر"))
+
+
+def test_ocr_fragments_are_not_glossary_terms():
+    from ai.study_terms import _is_noise_term
+
+    assert _is_noise_term("ate text fro", "screen")
+    assert _is_noise_term("OneNote Class Notebook mij", "screen")
+    assert not _is_noise_term("Monitoring and Feedback", "screen")
+    assert not _is_noise_term("Teacher Evaluation Process", "screen")
