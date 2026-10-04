@@ -213,7 +213,7 @@ def _soft_name_words(lines, hidden: list[dict], names: list[str]) -> list[dict]:
     for items in lines.values():
         tokens = [w["text"].strip(".,:;()[]!|") for w in items]
 
-        def take(position: int) -> bool:
+        def take(position: int, items: list[dict] = items) -> bool:
             if 0 <= position < len(items) and id(items[position]) not in hidden_here:
                 hide.append(items[position])
                 hidden_here.add(id(items[position]))
