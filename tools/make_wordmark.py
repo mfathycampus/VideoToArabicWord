@@ -154,7 +154,6 @@ def render_png(ink, accent, latin_colour, *, full_mark: bool):
         mark = make_logo.render_mark(int(plan["mark_size"] * super_),
                                      ink=ink, accent=accent)
     mark = mark.crop(mark.getbbox())
-    box = mark.getbbox()
     target_h = int(plan["mark_size"] * super_)
     scale = target_h / mark.height
     mark = mark.resize((max(1, int(mark.width * scale)), target_h),
