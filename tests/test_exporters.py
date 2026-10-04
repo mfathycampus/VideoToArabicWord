@@ -305,8 +305,8 @@ def test_pptx_builds_a_deck_with_a_slide_per_section_and_figure(ctx):
     path = export(ctx)
     assert path is not None and path.suffix == ".pptx"
     deck = pptx.Presentation(str(path))
-    # غلاف + ملخّص + ثلاثة أقسام + شكل واحد
-    assert len(deck.slides.__iter__.__self__._sldIdLst) == 6
+    # غلاف + فهرس + ملخّص + ثلاثة أقسام + شكل واحد + ختام
+    assert len(deck.slides.__iter__.__self__._sldIdLst) == 8
 
 
 def test_pptx_is_skipped_when_the_library_is_absent(ctx, monkeypatch):

@@ -103,7 +103,8 @@ def test_scorm_package_is_a_valid_scorm_12_zip(ctx):
     # البيان في **جذر** الملفّ المضغوط: أشهر سبب لرفض الحزمة هو ضغط
     # المجلد نفسه بدل محتواه.
     assert "imsmanifest.xml" in names
-    assert not any("/" in name for name in names)
+    # المحتوى قد يكون في مجلد فرعي (media/)؛ المهمّ أن البيان لا يكون كذلك
+    assert all("/" in n or n in ("imsmanifest.xml", "index.html") for n in names)
     assert "index.html" in names
 
     assert "<schemaversion>1.2</schemaversion>" in manifest
@@ -124,6 +125,7 @@ def test_every_file_named_in_the_manifest_exists_in_the_package(ctx):
     assert declared, "بيانٌ بلا ملفّات"
     assert declared <= names                       # لا مذكورٌ مفقود
     assert names - declared == {"imsmanifest.xml"}  # ولا موجودٌ مُغفَل
+    assert any(n.startswith("media/") for n in declared)  # اللقطات ملفّات لا base64
 
 
 def test_scorm_manifest_is_wellformed_xml(ctx):
