@@ -249,8 +249,8 @@ def test_pdf_reports_failure_when_soffice_exits_zero_without_a_file(
 
     monkeypatch.setattr(pdf_export, "find_soffice", lambda: Path("/bin/true"))
     monkeypatch.setattr(
-        subprocess, "run",
-        lambda *a, **k: subprocess.CompletedProcess(a, 0, "", ""))
+        pdf_export, "_run",
+        lambda cmd, timeout, env=None: subprocess.CompletedProcess(cmd, 0, "", ""))
     ctx.docx_path = tmp_path / "lecture.docx"
     ctx.docx_path.write_bytes(b"PK\x03\x04")
     assert pdf_export.export(ctx) is None
@@ -358,12 +358,12 @@ def test_word_conversion_passes_paths_through_the_environment(monkeypatch, tmp_p
     target = tmp_path / "درس 'أ'.pdf"
     seen = {}
 
-    def fake_run(cmd, **kwargs):
-        seen["cmd"], seen["env"] = cmd, kwargs["env"]
+    def fake_run(cmd, timeout, env=None):
+        seen["cmd"], seen["env"] = cmd, env
         target.write_bytes(b"%PDF")
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
-    monkeypatch.setattr(pdf_export.subprocess, "run", fake_run)
+    monkeypatch.setattr(pdf_export, "_run", fake_run)
     assert pdf_export.convert_with_word(tmp_path / "درس 'أ'.docx", target) == target
     assert "درس" not in " ".join(seen["cmd"])
     assert seen["env"]["VTAD_PDF"].endswith("درس 'أ'.pdf")
@@ -409,3 +409,128 @@ def test_review_map_does_not_truncate_long_steps():
         DocumentBlock(kind="step", text=long_step)])
     assert section_bullets(section)[0].endswith("…")
     assert not section_bullets(section, max_chars=600)[0].endswith("…")
+
+
+# ---------------------------------------------------------------------
+# حزمة الصلابة: مهلة PDF لا تترك عمليات يتيمة، والاستبدال ذرّي
+# ---------------------------------------------------------------------
+@pytest.mark.skipif(sys.platform.startswith("win"),
+                    reason="فحص الشجرة هنا بـ os.kill(pid, 0) — POSIX")
+def test_pdf_timeout_kills_the_whole_process_tree(tmp_path):
+    """‏soffice.exe يُطلق soffice.bin: قتل الأب وحده يترك الابن حيًّا."""
+    import os
+    import subprocess
+    import time
+
+    from document.exporters import pdf_export
+
+    pid_file = tmp_path / "child.pid"
+    code = (
+        "import subprocess, sys, time\n"
+        "c = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+        f"open({str(pid_file)!r}, 'w').write(str(c.pid))\n"
+        "time.sleep(60)\n")
+    with pytest.raises(subprocess.TimeoutExpired):
+        pdf_export._run([sys.executable, "-c", code], timeout=2)
+    child = int(pid_file.read_text())
+
+    def alive(pid: int) -> bool:
+        # عمليةٌ ميتةٌ لم يحصدها أبوها الجديد (zombie) تبقى مرئيةً لـkill(0)؛
+        # وهي ميتةٌ فعلًا.
+        try:
+            state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
+            return state != "Z"
+        except OSError:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return False
+            return True
+
+    for _ in range(20):
+        if not alive(child):
+            break
+        time.sleep(0.1)
+    else:
+        os.kill(child, 9)
+        pytest.fail("الابن بقي حيًّا بعد انتهاء المهلة")
+
+
+def test_recorded_word_pid_is_the_only_one_killed(monkeypatch, tmp_path):
+    """لا نقتل كل WINWORD على الجهاز — قد يكون المعلّم يكتب في مستند آخر."""
+    import subprocess
+
+    from document.exporters import pdf_export
+
+    pid_file = tmp_path / "word.pid"
+    pid_file.write_text("4242", encoding="utf-8")
+    calls = []
+    monkeypatch.setattr(
+        pdf_export.subprocess, "run",
+        lambda cmd, **kw: calls.append(cmd) or subprocess.CompletedProcess(cmd, 0))
+    pdf_export._kill_recorded_word(pid_file)
+    assert calls == [["taskkill", "/F", "/PID", "4242"]]
+
+    calls.clear()
+    pdf_export._kill_recorded_word(tmp_path / "missing.pid")   # لا ملف: لا قتل
+    assert calls == []
+
+
+def test_pdf_result_is_replaced_atomically_and_leaves_no_partial(
+        ctx, monkeypatch, tmp_path):
+    import subprocess
+
+    from document.exporters import pdf_export
+
+    monkeypatch.setattr(pdf_export, "find_soffice", lambda: Path("/bin/true"))
+
+    def fake_run(cmd, timeout, env=None):
+        out = Path(cmd[cmd.index("--outdir") + 1])
+        (out / "lecture.pdf").write_bytes(b"%PDF-new")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(pdf_export, "_run", fake_run)
+    ctx.docx_path = tmp_path / "lecture.docx"
+    ctx.docx_path.write_bytes(b"PK\x03\x04")
+    (tmp_path / "lecture.pdf").write_bytes(b"%PDF-old")      # تشغيل سابق
+    result = pdf_export.export(ctx)
+    assert result.read_bytes() == b"%PDF-new"
+    assert not list(tmp_path.glob("*.part"))
+
+
+# ---------------------------------------------------------------------
+# SCORM: معرّف ثابت — إعادة الرفع تحديثٌ لا دورة مكرّرة
+# ---------------------------------------------------------------------
+def test_scorm_identifier_is_stable_for_the_same_course():
+    from document.exporters.scorm_export import stable_identifier
+
+    first = stable_identifier("إدارة الواجبات", "lecture")
+    assert first == stable_identifier("إدارة الواجبات", "lecture")
+    assert first != stable_identifier("عنوان آخر", "lecture")
+    assert first.startswith("VTAD-") and len(first) == 17
+
+
+def test_regenerated_scorm_package_keeps_its_manifest_identifier(ctx):
+    import re
+    import zipfile
+
+    from document.exporters.scorm_export import export
+
+    def identifier():
+        with zipfile.ZipFile(export(ctx)) as archive:
+            text = archive.read("imsmanifest.xml").decode("utf-8")
+        return re.search(r'<manifest identifier="([^"]+)"', text).group(1)
+
+    assert identifier() == identifier()
+
+
+# ---------------------------------------------------------------------
+# دليل المذاكرة: لوحة المفاتيح
+# ---------------------------------------------------------------------
+def test_study_options_are_operable_from_the_keyboard():
+    from document.exporters.study_export import render_study_html
+    from tests.test_study_pack import _built_pack
+
+    page = render_study_html(_built_pack())
+    assert 'role="button" tabindex="0"' in page
+    assert "e.key!=='Enter'" in page and "e.key!==' '" in page

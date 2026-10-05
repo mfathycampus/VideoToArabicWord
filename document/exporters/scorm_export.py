@@ -23,6 +23,7 @@ Canvas) لا تقبل ملفًّا يُرفع ويُقرأ؛ تقبل **وحدة
 """
 from __future__ import annotations
 
+import hashlib
 import html
 import re
 import shutil
@@ -538,6 +539,18 @@ def build_manifest(title: str, files: List[str],
 """
 
 
+def stable_identifier(title: str, source_stem: str) -> str:
+    """معرّف حزمة **ثابت** لنفس الدورة.
+
+    كان ``uuid4`` في كل توليد: فمن يصلح خطأً في المحاضرة ويعيد رفع الحزمة
+    إلى المنصّة يحصل على **دورة ثانية** بجوار الأولى، وتبقى درجات طلابه
+    على القديمة. الاشتقاق من العنوان واسم المصدر يجعل المنصّة (التي
+    تطابق ``identifier``) تعامل الرفع الجديد تحديثًا للدورة نفسها.
+    """
+    digest = hashlib.sha1(f"{title}|{source_stem}".encode("utf-8")).hexdigest()
+    return f"VTAD-{digest[:12].upper()}"
+
+
 def export(ctx: ExportContext) -> Optional[Path]:
     from document.exporters.study_export import _load_pack, render_study_html
 
@@ -567,7 +580,10 @@ def export(ctx: ExportContext) -> Optional[Path]:
         names = sorted(path.relative_to(staging).as_posix()
                        for path in staging.rglob("*") if path.is_file())
         (staging / "imsmanifest.xml").write_text(
-            build_manifest(ctx.plan.title or ctx.base_path.stem, names),
+            build_manifest(
+                ctx.plan.title or ctx.base_path.stem, names,
+                identifier=stable_identifier(ctx.plan.title or "",
+                                             ctx.base_path.stem)),
             encoding="utf-8")
 
         # الكتابة إلى ملفّ مؤقّت ثم النقل: حزمةٌ نصفُ مكتوبة في مجلد

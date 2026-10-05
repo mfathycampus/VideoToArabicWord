@@ -217,6 +217,14 @@ _JS = """
     if(mini.classList.contains('hidden')){ pending=sec; pick.click(); }
     else seek(sec);
   });
+  // خيار السؤال عنصرٌ قابل للتركيز: بلا هذا لا يستطيع مستخدم لوحة المفاتيح
+  // ولا قارئ الشاشة اختياره أبدًا (WCAG 2.1.1).
+  document.addEventListener('keydown',function(e){
+    if(e.key!=='Enter' && e.key!==' ') return;
+    var opt=e.target.closest && e.target.closest('li.opt');
+    if(!opt) return;
+    e.preventDefault(); opt.click();
+  });
   var all=document.getElementById('revealAll');
   if(all) all.addEventListener('click',function(){
     var btns=[].slice.call(document.querySelectorAll('button.reveal'));
@@ -342,7 +350,7 @@ def _questions(pack: StudyPack) -> str:
         if question.kind == "mcq" and question.options:
             letters = "أبجدهوزحطي"
             options = ('<ul class="opts">' + "".join(
-                f'<li class="opt" tabindex="0" data-v="{_esc(o)}">'
+                f'<li class="opt" role="button" tabindex="0" data-v="{_esc(o)}">'
                 f'<span class="k">{letters[i] if i < len(letters) else i + 1}</span>'
                 f'<span>{_esc(o)}</span></li>'
                 for i, o in enumerate(question.options)) + "</ul>")

@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -78,12 +79,87 @@ def find_soffice() -> Optional[Path]:
     return None
 
 
+def _no_window() -> int:
+    return (getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            if sys.platform.startswith("win") else 0)
+
+
+def _kill_tree(process: "subprocess.Popen") -> None:
+    """يُنهي العملية **وأبناءها**.
+
+    ``subprocess.run(timeout=…)`` يقتل العملية المباشرة وحدها. و‏soffice
+    على ويندوز مُطلِق (``soffice.exe``) يُشغّل ‏``soffice.bin`` ابنًا له:
+    قتل الأول يترك الثاني حيًّا يقفل الملف ويأكل ذاكرة جهاز المعلّم إلى
+    أن يُعاد تشغيله.
+    """
+    try:
+        if sys.platform.startswith("win"):
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(process.pid)],
+                           capture_output=True, timeout=30,
+                           creationflags=_no_window())
+        else:
+            os.killpg(process.pid, signal.SIGKILL)
+    except Exception:                                   # noqa: BLE001
+        try:
+            process.kill()
+        except Exception:                               # noqa: BLE001
+            pass
+
+
+def _run(command: List[str], timeout: float,
+         env: Optional[dict] = None) -> "subprocess.CompletedProcess":
+    """مثل ``subprocess.run`` لكن المهلة تُنهي شجرة العمليات كلّها."""
+    kwargs: dict = {"stdout": subprocess.PIPE, "stderr": subprocess.PIPE,
+                    "text": True, "env": env}
+    if sys.platform.startswith("win"):
+        kwargs["creationflags"] = _no_window()
+    else:
+        kwargs["start_new_session"] = True      # مجموعة عمليات قابلة للقتل معًا
+    process = subprocess.Popen(command, **kwargs)
+    try:
+        out, err = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _kill_tree(process)
+        try:
+            process.communicate(timeout=10)
+        except Exception:                               # noqa: BLE001
+            pass
+        raise
+    return subprocess.CompletedProcess(command, process.returncode, out, err)
+
+
+def _kill_recorded_word(pid_file: Path) -> None:
+    """يقتل نسخة Word التي أطلقها هذا التحويل وحدها.
+
+    Word يُشغَّل عبر COM فليس ابنًا لـPowerShell، فلا يطاله قتل الشجرة.
+    والسكربت يسجّل معرّف النسخة **الجديدة** التي ظهرت بعد إنشائها؛
+    ولا نقتل إلا ما سُجِّل — لا كل ``WINWORD`` على الجهاز، فقد يكون
+    المعلّم يكتب في مستندٍ آخر.
+    """
+    try:
+        pid = int(Path(pid_file).read_text(encoding="utf-8").strip())
+    except Exception:                                   # noqa: BLE001
+        return
+    try:
+        subprocess.run(["taskkill", "/F", "/PID", str(pid)],
+                       capture_output=True, timeout=30,
+                       creationflags=_no_window())
+    except Exception as exc:                            # noqa: BLE001
+        logger.debug(f"تعذّر إنهاء Word العالق ({pid}): {exc}")
+
+
 #: ‏Word عبر COM من PowerShell — بلا أي حزمة Python إضافية (لا pywin32).
 #: ‏wdExportFormatPDF = 17. المسارات تُمرَّر متغيّراتِ بيئة لا نصًّا داخل
 #: السكربت: أسماء الملفّات العربية وعلامات الاقتباس فيها تكسر السكربت.
 _WORD_SCRIPT = r"""
 $ErrorActionPreference = 'Stop'
+$before = @(Get-Process WINWORD -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
 $word = New-Object -ComObject Word.Application
+$mine = @(Get-Process WINWORD -ErrorAction SilentlyContinue |
+          ForEach-Object { $_.Id } | Where-Object { $before -notcontains $_ })
+if ($mine.Count -eq 1 -and $env:VTAD_PIDFILE) {
+    Set-Content -Path $env:VTAD_PIDFILE -Value $mine[0]
+}
 $word.Visible = $false
 $word.DisplayAlerts = 0
 try {
@@ -109,20 +185,23 @@ def convert_with_word(docx_path: Path, target: Path) -> Optional[Path]:
     shell = shutil.which("powershell") or shutil.which("pwsh")
     if shell is None:
         return None
-    env = dict(os.environ, VTAD_DOCX=str(Path(docx_path).resolve()),
-               VTAD_PDF=str(Path(target).resolve()))
-    try:
-        result = subprocess.run(
-            [shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy",
-             "Bypass", "-Command", _WORD_SCRIPT],
-            capture_output=True, text=True, env=env, timeout=TIMEOUT_SECONDS,
-            creationflags=subprocess.CREATE_NO_WINDOW)
-    except subprocess.TimeoutExpired:
-        logger.warning(f"تجاوز تحويل PDF عبر Word {TIMEOUT_SECONDS} ثانية.")
-        return None
-    except Exception as exc:                            # noqa: BLE001
-        logger.debug(f"تعذّر تشغيل Word للتحويل: {exc}")
-        return None
+    with tempfile.TemporaryDirectory(prefix="vtad_word_") as scratch:
+        pid_file = Path(scratch) / "word.pid"
+        env = dict(os.environ, VTAD_DOCX=str(Path(docx_path).resolve()),
+                   VTAD_PDF=str(Path(target).resolve()),
+                   VTAD_PIDFILE=str(pid_file))
+        try:
+            result = _run(
+                [shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy",
+                 "Bypass", "-Command", _WORD_SCRIPT],
+                TIMEOUT_SECONDS, env)
+        except subprocess.TimeoutExpired:
+            _kill_recorded_word(pid_file)
+            logger.warning(f"تجاوز تحويل PDF عبر Word {TIMEOUT_SECONDS} ثانية.")
+            return None
+        except Exception as exc:                        # noqa: BLE001
+            logger.debug(f"تعذّر تشغيل Word للتحويل: {exc}")
+            return None
     if Path(target).is_file() and Path(target).stat().st_size > 0:
         return Path(target)
     detail = (result.stderr or "").strip().splitlines()
@@ -169,14 +248,9 @@ def convert(docx_path: Path, output_dir: Path,
             str(docx_path),
         ]
         try:
-            result = subprocess.run(
-                command, capture_output=True, text=True,
-                timeout=TIMEOUT_SECONDS,
-                # نافذة وحدة التحكّم على ويندوز: بلا هذا يومض إطار أسود
-                # أمام المستخدم في منتصف المعالجة.
-                creationflags=(subprocess.CREATE_NO_WINDOW
-                               if sys.platform.startswith("win") else 0),
-            )
+            # ‏_run يُخفي نافذة وحدة التحكّم على ويندوز (بلا هذا يومض إطار
+            # أسود أمام المستخدم)، ويُنهي شجرة العمليات عند المهلة.
+            result = _run(command, TIMEOUT_SECONDS)
         except subprocess.TimeoutExpired:
             logger.warning(
                 f"تجاوز تحويل PDF {TIMEOUT_SECONDS} ثانية — أُلغي.")
@@ -187,9 +261,16 @@ def convert(docx_path: Path, output_dir: Path,
 
         produced = staging / f"{docx_path.stem}.pdf"
         if produced.is_file() and produced.stat().st_size > 0:
-            # ‏replace لا move: مجلد المهمة قد يحمل PDF من تشغيل سابق،
-            # والاستبدال الذرّي لا يترك نصف ملف إن انقطع شيء.
-            shutil.move(str(produced), str(target))
+            # نسخٌ إلى جوار الهدف ثم ``os.replace``: المجلد المؤقّت قد يقع
+            # على قرصٍ آخر (فلا يصحّ replace مباشرةً)، والاستبدال الأخير
+            # ذرّي — مجلد المهمة قد يحمل PDF من تشغيل سابق، وانقطاعٌ في
+            # المنتصف لا يجوز أن يترك نصف ملف مكانه.
+            partial = target.with_name(target.name + ".part")
+            try:
+                shutil.copyfile(produced, partial)
+                os.replace(partial, target)
+            finally:
+                partial.unlink(missing_ok=True)
             return target
 
         # ‏soffice يعيد رمز خروج صفر حتى حين يفشل التحويل. وجود الملف هو
