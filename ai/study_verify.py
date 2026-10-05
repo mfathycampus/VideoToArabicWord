@@ -187,6 +187,24 @@ def _verify_objectives(items: List[LearningObjective],
     return kept
 
 
+def term_in_source(term: str, haystack: str) -> bool:
+    """هل ورد المصطلح في المصدر؟ — حرفيًّا أو ككلمات مضمونه كلّها.
+
+    المطابقة الحرفية وحدها أسقطت «الفئة (لم يتم التصحيح)» من مسردٍ حقيقيّ
+    لأن النموذج وضع القوس تفسيرًا والمنطوق قال «الفئة… لم يتم التصحيح» بينهما
+    كلام، فبقيت البطاقة المبنيّة عليه في الدليل نفسه والمصطلح مرفوض. فإن لم
+    يرد حرفيًّا يُقبل إن وردت **كلُّ** كلماته المضمونية (الثلاثة أحرف فأكثر)
+    في المصدر؛ والمصطلح بكلمةٍ واحدة يبقى حرفيًّا — لا تساهل فيه.
+    """
+    key = fold(term)
+    if key and key in haystack:
+        return True
+    words = _content_tokens(term)
+    if len(words) < 2:
+        return False
+    return words <= _content_tokens(haystack)
+
+
 def _verify_glossary(items: List[GlossaryTerm], spans, haystack: str,
                      dropped: List[str]) -> List[GlossaryTerm]:
     kept: List[GlossaryTerm] = []
@@ -200,7 +218,7 @@ def _verify_glossary(items: List[GlossaryTerm], spans, haystack: str,
             continue
         # المصطلح الذي لا يرد في التفريغ ولا على الشاشة مخترَع — مهما
         # بدا صحيحًا في مادّته. هذا أشيع هلوسات المسرد.
-        if key not in haystack:
+        if not term_in_source(term, haystack):
             dropped.append(f"مصطلح لا يرد في المصدر: «{term}»")
             continue
         # المشتقّ إحصائيًّا مصدره نصّ الشاشة لا مقطع بعينه، فلا يُطالَب

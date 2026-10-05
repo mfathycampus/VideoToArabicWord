@@ -84,6 +84,7 @@ section.unit.on{display:block;animation:fade .25s}
 section.unit>h2{display:flex;gap:12px;align-items:center;margin:0 0 6px;
   font-size:1.5rem;line-height:1.5;color:var(--navy)}
 @media (prefers-color-scheme:dark){section.unit>h2{color:var(--ink)}}
+section.unit>h2:focus{outline:none}
 section.unit>h2 .num{flex:none;background:var(--accent);color:#2a1d00;
   font-size:.9rem;border-radius:999px;padding:0 12px;font-weight:800}
 .summary{color:var(--muted);margin:0 0 18px}
@@ -392,6 +393,9 @@ function paint(){
   TOC.forEach(function(b, i){
     b.classList.toggle('cur', i === cur);
     b.classList.toggle('done', !!visited[i]);
+    // قارئ الشاشة يعلن «الخطوة الحالية»؛ اللون وحده لا يقوله لأحد.
+    if (i === cur) b.setAttribute('aria-current', 'step');
+    else b.removeAttribute('aria-current');
   });
   var seen = visited.reduce(function(a, b){ return a + b; }, 0);
   var pct = Math.round(seen * 100 / UNITS.length);
@@ -405,7 +409,13 @@ function go(i, scroll){
   cur = i; visited[i] = 1; paint();
   if (!QUIZ_UNIT && contentDone()) { set('cmi.core.lesson_status', 'completed'); markDone(); }
   persist();
-  if (scroll !== false) window.scrollTo({top: 0, behavior: 'smooth'});
+  if (scroll !== false) {
+    window.scrollTo({top: 0, behavior: 'smooth'});
+    // انتقال الوحدة يُحرّك التركيز إلى عنوانها: بلا هذا يبقى مستخدم لوحة
+    // المفاتيح على زرّ «التالي» وقارئ الشاشة صامتًا عن المحتوى الجديد.
+    var heading = UNITS[i].querySelector('h2');
+    if (heading) { heading.setAttribute('tabindex', '-1'); heading.focus({preventScroll: true}); }
+  }
   document.getElementById('toc').classList.remove('open');
 }
 function boot(){

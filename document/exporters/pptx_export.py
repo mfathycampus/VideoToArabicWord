@@ -243,6 +243,28 @@ class _Deck:
         element.getparent().append(element)
         return shape
 
+    def slide_number(self, slide, x, y, w, h, color: str, size: float = 11,
+                     align: str = "l"):
+        """رقم الشريحة **حقلًا** (``slidenum``) لا نصًّا ثابتًا.
+
+        النصّ الثابت يبقى «7» بعد أن يسحب المعلّم الشريحة إلى الموضع 3؛
+        والحقل يُعيد PowerPoint حسابه. والقيمة المخزَّنة داخله (الرقم وقت
+        التوليد) هي ما يعرضه أي عارضٍ لا يحسب الحقول.
+        """
+        from pptx.oxml.ns import qn
+
+        shape = self.text(slide, x, y, w, h, str(self.count), size, color,
+                          align=align, anchor="m")
+        paragraph = shape.text_frame.paragraphs[0]
+        run = paragraph.runs[0]._r
+        field = run.makeelement(qn("a:fld"), {
+            "id": "{B6F15528-21DE-4FAA-801E-634DDDAF4B2B}", "type": "slidenum"})
+        for child in list(run):
+            run.remove(child)
+            field.append(child)
+        run.getparent().replace(run, field)
+        return shape
+
     def footer(self, slide, dark: bool = False):
         muted = "9A9DC8" if dark else D.MUTED
         line = "2E3070" if dark else D.LINE
@@ -250,8 +272,7 @@ class _Deck:
                  fill=line)
         self.text(slide, SLIDE_W / 2, SLIDE_H - 0.44, SLIDE_W / 2 - MARGIN, 0.3,
                   _fit(self.course_title, 70), 11, muted, anchor="m")
-        self.text(slide, MARGIN, SLIDE_H - 0.44, 1.2, 0.3, str(self.count),
-                  11, muted, align="l", anchor="m")
+        self.slide_number(slide, MARGIN, SLIDE_H - 0.44, 1.2, 0.3, muted)
 
     def picture(self, slide, image_path: Path, x, y, w, h, alt: str = "",
                 frame: Optional[str] = None, radius: float = 0.12):
@@ -460,8 +481,8 @@ class _Deck:
             self.chip(slide, MARGIN, SLIDE_H - 0.5, 1.15, 0.34,
                       seconds_to_display(timestamp), "2E3070", "C9CBF0", 11,
                       bold=False)
-        self.text(slide, SLIDE_W - MARGIN - 1.2, SLIDE_H - 0.5, 1.2, 0.34,
-                  str(self.count), 11, "9A9DC8", align="l", anchor="m")
+        self.slide_number(slide, SLIDE_W - MARGIN - 1.2, SLIDE_H - 0.5, 1.2, 0.34,
+                          "9A9DC8")
         return slide
 
     def closing(self, title: str, facts: List[str]):
