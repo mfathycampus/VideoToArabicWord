@@ -415,3 +415,47 @@ def test_mastery_score_is_configurable_and_validated(ctx):
         page = archive.read("index.html").decode("utf-8")
     assert "<adlcp:masteryscore>85</adlcp:masteryscore>" in manifest
     assert "var MASTERY = 85;" in page
+
+
+# ---------------------------------------------------------------------
+# SCORM: الاختبار الثاني على Schoology — لا يُحفظ ما أُنجز، و«التالي» لا يفعل شيئًا
+# ---------------------------------------------------------------------
+def _quiz_page(ctx):
+    from document.exporters.scorm_export import export
+
+    ctx.options = {"study_pack": _pack_with_short_answer()}
+    with zipfile.ZipFile(export(ctx)) as archive:
+        return archive.read("index.html").decode("utf-8")
+
+
+def test_scorm_never_ends_the_attempt_so_progress_survives_a_return(ctx):
+    """بعد النجاح كان ``exit=""`` ⇒ المنصّة تبدأ محاولة جديدة بصفحة بيضاء."""
+    page = _quiz_page(ctx)
+    assert 'set("cmi.core.exit", "")' not in page
+    assert "markDone" not in page
+    assert 'set("cmi.core.exit", "suspend")' in page
+
+
+def test_scorm_saves_quiz_answers_and_result_in_suspend_data(ctx):
+    page = _quiz_page(ctx)
+    assert "answersString()" in page and "QUIZ_GRADED" in page
+    assert "grade(true)" in page                 # إعادة عرض النتيجة المحفوظة
+    # ولا تُرسَل الدرجة ثانيةً عند العودة: الكتابة كلّها تحت ‹!silent›
+    assert "if (!silent)" in page
+
+
+def test_the_last_unit_has_a_working_finish_button(ctx):
+    page = _quiz_page(ctx)
+    assert "إنهاء الدورة" in page and 'id="done"' in page and "finishCourse" in page
+    assert "next.disabled = false" in page       # كان معطَّلًا في آخر وحدة
+
+
+def test_scorm_has_a_diagnostics_panel_for_lms_problems(ctx):
+    """حين لا تحفظ منصّة شيئًا نحتاج أن نرى ما أعادته لا أن نخمّن."""
+    page = _quiz_page(ctx)
+    assert "معلومات تقنية" in page and "DIAG" in page and "LMSGetLastError" in page
+
+
+def test_the_grade_button_is_bound_once(ctx):
+    page = _quiz_page(ctx)
+    assert page.count("grade(false)") == 1       # كان يُربط مرّتين فيُصحَّح مرّتين

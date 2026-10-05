@@ -510,6 +510,23 @@ def test_scorm_identifier_is_stable_for_the_same_course():
     assert first.startswith("VTAD-") and len(first) == 17
 
 
+def test_scorm_identifier_changes_when_the_content_changes(ctx):
+    """على Schoology المعرّف نفسه = «حزمة موجودة» ⇒ لا يُرفع شيء جديد."""
+    import re
+    import zipfile
+
+    from document.exporters.scorm_export import export
+
+    def identifier():
+        with zipfile.ZipFile(export(ctx)) as archive:
+            text = archive.read("imsmanifest.xml").decode("utf-8")
+        return re.search(r'<manifest identifier="([^"]+)"', text).group(1)
+
+    before = identifier()
+    ctx.plan.sections[0].title = "عنوان قسم مُعدَّل"
+    assert identifier() != before
+
+
 def test_regenerated_scorm_package_keeps_its_manifest_identifier(ctx):
     import re
     import zipfile
