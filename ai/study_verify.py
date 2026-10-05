@@ -18,6 +18,8 @@
 """
 from __future__ import annotations
 
+import hashlib
+import random
 import re
 import unicodedata
 from typing import Dict, List, Sequence, Tuple
@@ -37,6 +39,12 @@ _SPACES = re.compile(r"\s+")
 
 _TRUE_WORDS = {"صح", "صحيح", "نعم", "true", "t", "1"}
 _FALSE_WORDS = {"خطأ", "خطا", "غير صحيح", "لا", "false", "f", "0"}
+
+#: خيارات «كل ما سبق» تبقى أخيرة: خلطها يجعل «كل ما سبق» أوّل الخيارات
+#: فيفقد معناه.
+_ANCHORED_LAST = ("كل ما سبق", "جميع ما سبق", "جميع الاجابات", "كل الاجابات",
+                  "لا شيء مما سبق", "لا شيء مما ذكر", "all of the above",
+                  "none of the above")
 
 MIN_MCQ_OPTIONS = 3
 MIN_QUESTION_CHARS = 10
@@ -84,6 +92,21 @@ def _resolve_sources(item, spans: Dict[int, Tuple[float, float]]) -> bool:
     item.source_start = min(spans[i][0] for i in known)
     item.source_end = max(spans[i][1] for i in known)
     return True
+
+
+def shuffled_options(question: str, options: List[str]) -> List[str]:
+    """خلطٌ **حتميّ** لخيارات الاختيار من متعدد.
+
+    النماذج تضع الإجابة الصحيحة في موضعٍ ثابتٍ تقريبًا (الأول أو الثاني)،
+    فيتعلّم الطالب تخمين الموضع لا الجواب. والخلط بنواةٍ مشتقّةٍ من نصّ
+    السؤال لا ``random`` عامّة: إعادة التوليد (``--rebuild``) تُخرج الترتيب
+    نفسه، فلا يتغيّر ما رآه المعلّم ولا تتباين اختبارات الحزمة.
+    """
+    movable = [o for o in options if fold(o) not in _ANCHORED_LAST]
+    anchored = [o for o in options if fold(o) in _ANCHORED_LAST]
+    seed = int(hashlib.sha1(fold(question).encode("utf-8")).hexdigest()[:12], 16)
+    random.Random(seed).shuffle(movable)
+    return movable + anchored
 
 
 # ---------------------------------------------------------------------
@@ -186,7 +209,7 @@ def _verify_questions(items: List[QuizQuestion], spans,
             if match is None:
                 dropped.append(f"إجابة خارج الخيارات: «{label}»")
                 continue
-            item.options, item.answer = options, match
+            item.options, item.answer = shuffled_options(question, options), match
 
         elif item.kind == "true_false":
             folded = fold(answer)

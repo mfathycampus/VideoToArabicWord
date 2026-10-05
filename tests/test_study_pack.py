@@ -469,3 +469,32 @@ def test_ocr_fragments_are_not_glossary_terms():
     assert _is_noise_term("OneNote Class Notebook mij", "screen")
     assert not _is_noise_term("Monitoring and Feedback", "screen")
     assert not _is_noise_term("Teacher Evaluation Process", "screen")
+
+
+def test_mcq_options_are_shuffled_deterministically():
+    """النموذج يضع الصحيحة في موضعٍ ثابت؛ والخلط حتميّ فلا يتغيّر عند --rebuild."""
+    from ai.study_verify import shuffled_options
+
+    options = ["TCP", "UDP", "ICMP", "ARP", "DNS", "HTTP"]
+    first = shuffled_options("أي بروتوكول يضمن الوصول؟", options)
+    assert first == shuffled_options("أي بروتوكول يضمن الوصول؟", options)
+    assert sorted(first) == sorted(options)           # لا فقدان ولا إضافة
+    orders = {tuple(shuffled_options(f"سؤال رقم {i} طويل كفاية", options))
+              for i in range(12)}
+    assert len(orders) > 1                            # لا يثبّت ترتيبًا واحدًا
+
+
+def test_all_of_the_above_stays_last():
+    from ai.study_verify import shuffled_options
+
+    options = ["أ", "ب", "ج", "كل ما سبق"]
+    for i in range(10):
+        assert shuffled_options(f"سؤال {i} كافٍ طولًا", options)[-1] == "كل ما سبق"
+
+
+def test_verified_answer_still_matches_an_option_after_shuffle():
+    pack = StudyPack(questions=[QuizQuestion(
+        kind="mcq", question="أي البروتوكولات يضمن الوصول والترتيب؟",
+        options=["UDP", "TCP", "ICMP", "ARP"], answer="TCP", segment_ids=[2])])
+    kept = verify(pack, _transcript()).questions[0]
+    assert kept.answer in kept.options
