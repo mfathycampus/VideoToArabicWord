@@ -54,6 +54,7 @@ LANGUAGES = "ara+eng"
 MIN_LINE_CONFIDENCE = 75.0
 
 _cached_exe: Optional[str] = ""   # "" = لم يُفحص بعد، None = غير موجود
+_cached_langs: Optional[str] = None   # None = لم تُحسب بعد
 
 
 def _windows_install_dirs() -> list[Path]:
@@ -135,8 +136,9 @@ def tesseract_executable() -> Optional[str]:
 
 def refresh() -> Optional[str]:
     """يُبطل الفحص المخزَّن ويعيده — بعد تثبيتٍ والبرنامج مفتوح."""
-    global _cached_exe
+    global _cached_exe, _cached_langs
     _cached_exe = ""
+    _cached_langs = None
     return tesseract_executable()
 
 
@@ -165,6 +167,30 @@ def languages() -> list[str]:
     # أول سطر عنوان («List of available languages…») ثم لغة في كل سطر
     return [line.strip() for line in result.stdout.splitlines()[1:]
             if line.strip()]
+
+
+def ocr_languages() -> str:
+    """وسيط ``-l`` من اللغات المثبَّتة **فعلًا**.
+
+    ‏``ara+eng`` الثابتة تُفشل Tesseract كلّه إن غابت حزمة العربية (يطبع
+    «Failed loading language 'ara'» ويخرج برمز غير صفري)، فكانت كل لقطة
+    تُسجَّل فشلًا وتُعاد نصًّا فارغًا — مع أن الإنجليزية مثبَّتة وتقرأ نصف
+    الشاشة (القوائم والأزرار). الآن: ما وُجد من ``ara`` و``eng``، وإن تعذّر
+    السؤال ظلّ الافتراضي ليقول Tesseract نفسه ما ينقص.
+
+    يُحسب مرّة (السؤال عملية فرعية)، ويُبطله ``refresh()``.
+    """
+    global _cached_langs
+    if _cached_langs is not None:
+        return _cached_langs
+    installed = languages()
+    usable = [lang for lang in ("ara", "eng") if lang in installed]
+    if installed and usable and usable != ["ara", "eng"]:
+        logger.warning(
+            "حزمة لغة OCR ناقصة — تُقرأ اللقطات بـ"
+            + "+".join(usable) + " فقط. " + install_hint())
+    _cached_langs = "+".join(usable) if usable else LANGUAGES
+    return _cached_langs
 
 
 def has_arabic() -> bool:
@@ -225,7 +251,7 @@ def _ocr_tsv(image_path: Path, timeout_seconds: float) -> Optional[tuple[str, fl
         try:
             result = subprocess.run(
                 [exe, str(source), str(out_base),
-                 "-l", LANGUAGES, "--psm", "3", "tsv"],
+                 "-l", ocr_languages(), "--psm", "3", "tsv"],
                 capture_output=True, text=True, encoding="utf-8",
                 errors="replace", timeout=timeout_seconds)
         except subprocess.TimeoutExpired:

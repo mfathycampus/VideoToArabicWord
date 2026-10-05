@@ -53,15 +53,27 @@ def build_chapters(plan: DocumentPlan,
     raw[0] = (0.0, raw[0][1])
 
     merged: List[Tuple[float, str]] = [raw[0]]
+    folded: List[str] = []
     for start, title in raw[1:]:
         if start - merged[-1][0] < MIN_CHAPTER_SECONDS:
-            continue          # فصل أقصر من الحد: يُدمج فيما قبله
+            folded.append(title)   # فصل أقصر من الحد: يُدمج فيما قبله
+            continue
         merged.append((start, title))
 
     # وآخر فصل كذلك يحتاج مدى كافيًا قبل نهاية الفيديو
     if (len(merged) > 1 and duration_seconds > 0
             and duration_seconds - merged[-1][0] < MIN_CHAPTER_SECONDS):
-        merged.pop()
+        folded.append(merged.pop()[1])
+
+    if folded:
+        # حذفٌ صامت يجعل المعلّم يبحث عن فصلٍ كتبه ولم يجده في القائمة.
+        # المستند يحتفظ بكل الأقسام؛ القائمة وحدها تلتزم قاعدة يوتيوب.
+        shown = "، ".join(f"«{t}»" for t in folded[:5])
+        more = f" و{len(folded) - 5} أخرى" if len(folded) > 5 else ""
+        logger.info(
+            f"فصول الفيديو: دُمج {len(folded)} قسم قصير (دون "
+            f"{int(MIN_CHAPTER_SECONDS)} ثوانٍ) فيما قبله لأن يوتيوب يرفض "
+            f"القائمة كلّها إن قصر فصل: {shown}{more}")
 
     if len(merged) < MIN_CHAPTERS:
         return []
