@@ -107,6 +107,7 @@ figcaption{padding:10px 16px;font-size:.9rem;color:var(--muted);
   border-top:1px solid var(--line);display:flex;gap:10px;justify-content:space-between}
 details.ocr{display:none}
 .nav{display:flex;justify-content:space-between;gap:12px;margin-top:28px}
+.done{position:fixed;inset:0;z-index:70;background:rgba(8,9,24,.78);display:grid;place-items:center;padding:20px}
 .zoom{position:fixed;inset:0;z-index:60;background:rgba(8,9,24,.92);display:none;
   place-items:center;padding:20px;cursor:zoom-out}
 .zoom.on{display:grid}
@@ -184,7 +185,32 @@ function api(){
   if (!_api && window.opener) _api = _find(window.opener);
   return _api;
 }
-function set(key, value){ var a = api(); return a ? a.LMSSetValue(key, String(value)) : false; }
+// سجلّ تشخيصي يعرضه زرّ «معلومات تقنية»: حين لا تحفظ المنصّة شيئًا لا يكفي
+// أن نخمّن السبب — نحتاج أن نرى ما أعادته فعلًا (الـAPI موجود؟ رُفضت الكتابة؟).
+var DIAG = [];
+function _ok(r){ return r === true || r === "true"; }
+function set(key, value){
+  var a = api();
+  if (!a) return false;
+  var r = a.LMSSetValue(key, String(value));
+  if (!_ok(r)) {
+    var e = ''; try { e = a.LMSGetLastError(); } catch (x) {}
+    DIAG.push('فشلت الكتابة: ' + key + ' → ' + r + ' (خطأ ' + e + ')');
+  }
+  return r;
+}
+function commit(){
+  var a = api(); if (!a) return;
+  var r = a.LMSCommit("");
+  if (!_ok(r)) {
+    var e = ''; try { e = a.LMSGetLastError(); } catch (x) {}
+    DIAG.push('فشل الحفظ (Commit) → ' + r + ' (خطأ ' + e + ')');
+  }
+}
+function diagText(){
+  return ['‏API: ' + (api() ? 'موجود' : 'غير موجود (الصفحة تعمل خارج منصّة)')]
+    .concat(DIAG).join('\\n');
+}
 var _inited = false;
 function scormInit(){
   var a = api();
@@ -194,8 +220,10 @@ function scormInit(){
   if (_inited) return _ready;
   _inited = true;
   var r = a.LMSInitialize("");
-  _ready = (r === "true" || r === true);
+  _ready = _ok(r);
   var status = a.LMSGetValue("cmi.core.lesson_status");
+  DIAG.push('LMSInitialize → ' + r + ' · الحالة: ' + status + ' · الدخول: '
+    + a.LMSGetValue("cmi.core.entry"));
   if (status === "not attempted") set("cmi.core.lesson_status", "incomplete");
   // ‏``suspend`` يُبلغ المنصّة أن هذه الجلسة **غير منتهية**: عندها فقط تحتفظ
   // بـ``lesson_location`` و``suspend_data`` وتُعيدهما في الإطلاق التالي.
@@ -203,13 +231,14 @@ function scormInit(){
   // الموضع — فيعود الطالب إلى أول الدورة، وهذا ما رُصد على Schoology.
   // وكتابته **عند الفتح** لا عند الإغلاق: التبويب الذي يُغلَق فجأةً لا يُطلق
   // ``unload`` أصلًا.
-  if (status !== "passed" && status !== "completed") set("cmi.core.exit", "suspend");
-  a.LMSCommit("");
+  // ‏``suspend`` **دائمًا** — حتى بعد النجاح. كنت أكتب ``""`` للدورة
+  // المنتهية، فتعدّها المنصّة جلسةً منتهية وتبدأ محاولةً جديدة بصفحة
+  // بيضاء: يرجع الطالب الذي أتمّ الدورة فيجد العدّاد عند 1/7 ولا أثر
+  // لإجاباته. وهذا ما رُصد على Schoology في الاختبار الثاني.
+  set("cmi.core.exit", "suspend");
+  commit();
   return _ready;
 }
-// الدورة المنتهية تُغلق إغلاقًا عاديًّا: ``suspend`` بعد النجاح يُعيد الطالب
-// إلى نهاية دورةٍ أتمّها بدل أن يبدأ مراجعتها من أولها.
-function markDone(){ set("cmi.core.exit", ""); }
 function _hhmmss(ms){
   var s = Math.floor(ms/1000);
   return [Math.floor(s/3600), Math.floor(s/60)%60, s%60]
@@ -220,7 +249,7 @@ function scormFinish(){
   var a = api(); if (!a || _finished) return;
   _finished = true;               // LMSFinish مرّتين يُرجع خطأً ويُفسد السجلّ
   set("cmi.core.session_time", _hhmmss(Date.now() - _opened));
-  a.LMSCommit(""); a.LMSFinish("");
+  commit(); a.LMSFinish("");
 }
 // ``unload`` لا ``beforeunload``: الأخير لا يقع في بعض المنصّات التي
 // تُزيل الإطار برمجيًّا، فتضيع الدرجة بعد أن أجاب الطالب فعلًا. و``pagehide``
@@ -232,8 +261,29 @@ window.addEventListener("pagehide", scormFinish);
 
 def _quiz_js(mastery: int) -> str:
     return """
-function grade(){
-  var items = [].slice.call(document.querySelectorAll('[data-answer]'));
+var QUIZ_GRADED = false;
+function quizItems(){ return [].slice.call(document.querySelectorAll('[data-answer]')); }
+function answersString(){
+  // فهرس الخيار المحدَّد لكل سؤال مُصحَّح (-1 = بلا إجابة)
+  return quizItems().map(function(item){
+    var radios = [].slice.call(item.querySelectorAll('input[type=radio]'));
+    for (var i = 0; i < radios.length; i++) if (radios[i].checked) return i;
+    return -1;
+  }).join(',');
+}
+function applyAnswers(text){
+  var picks = (text || '').split(',');
+  quizItems().forEach(function(item, n){
+    var radios = [].slice.call(item.querySelectorAll('input[type=radio]'));
+    var at = parseInt(picks[n], 10);
+    if (!isNaN(at) && at >= 0 && at < radios.length) radios[at].checked = true;
+  });
+}
+// ‏``silent`` = إعادة عرض نتيجةٍ محفوظة: لا كتابة إلى المنصّة (النتيجة عندها
+// أصلًا)، وإلا صارت كل عودة محاولةً جديدة تُرسل الدرجة ثانيةً.
+function grade(silent){
+  silent = silent === true;
+  var items = quizItems();
   var right = 0;
   items.forEach(function(item){
     var expected = item.getAttribute('data-answer');
@@ -256,13 +306,15 @@ function grade(){
   var out = document.getElementById('result');
   out.textContent = 'نتيجتك: ' + right + ' من ' + items.length
     + '  (' + score + '%)';
-  set('cmi.core.score.raw', score);
-  set('cmi.core.score.min', 0);
-  set('cmi.core.score.max', 100);
   var passed = score >= MASTERY;
-  set('cmi.core.lesson_status', passed ? 'passed' : 'failed');
-  if (passed) markDone();
-  var a = api(); if (a) a.LMSCommit('');
+  QUIZ_GRADED = true;
+  if (!silent) {
+    set('cmi.core.score.raw', score);
+    set('cmi.core.score.min', 0);
+    set('cmi.core.score.max', 100);
+    set('cmi.core.lesson_status', passed ? 'passed' : 'failed');
+    persist();                       // يحفظ الإجابات والنتيجة مع الموضع
+  }
   document.getElementById('submit').disabled = true;
   // من لم يبلغ درجة النجاح يُعاد إليه الاختبار؛ ومن نجح لا يُسمح له بإعادةٍ
   // تُنزل درجةً نالها.
@@ -280,6 +332,8 @@ function retryQuiz(){
   document.getElementById('result').textContent = '';
   document.getElementById('submit').disabled = false;
   document.getElementById('retry').classList.add('hidden');
+  QUIZ_GRADED = false;
+  persist();
 }
 // نفس تطبيع ai/study_verify: همزة الألف والتاء المربوطة والتشكيل
 // فروقٌ لا يراها الطالب، وحسمُ إجابته عليها ظلم.
@@ -292,9 +346,12 @@ function fold(s){
 }
 var MASTERY = __MASTERY__;
 document.addEventListener('DOMContentLoaded', function(){
-  scormInit();
   var b = document.getElementById('submit');
-  if (b) b.addEventListener('click', grade);
+  if (b) b.addEventListener('click', function(){ grade(false); });
+  // كل إجابة تُحفظ فور اختيارها: الخروج في منتصف الاختبار لا يضيّعها
+  document.addEventListener('change', function(e){
+    if (!QUIZ_GRADED && e.target.closest && e.target.closest('[data-answer]')) persist();
+  });
   var r = document.getElementById('retry');
   if (r) r.addEventListener('click', retryQuiz);
   // الإتمام بلا أسئلة تُصحَّح يقرّره المشغّل عند زيارة كل الأقسام
@@ -373,17 +430,30 @@ var TOC = [].slice.call(document.querySelectorAll('aside.toc button'));
 var QUIZ_UNIT = document.querySelector('section.unit[data-quiz]');
 var visited = UNITS.map(function(){ return 0; });
 var cur = 0;
+// ‏suspend_data = «الوحدات المزارة|إجابات الاختبار|هل صُحّح»؛ والقديم (بتات
+// فقط) يُقرأ كما هو. حدّ SCORM 1.2 أربعة آلاف حرف وما نكتبه بضع عشرات.
+function suspendString(){
+  return visited.join('') + '|' + answersString() + '|' + (QUIZ_GRADED ? 1 : 0);
+}
 function persist(){
   set('cmi.core.lesson_location', String(cur));
-  set('cmi.suspend_data', visited.join(''));
-  var a = api(); if (a) a.LMSCommit('');
+  set('cmi.suspend_data', suspendString());
+  commit();
 }
 function restore(){
   var a = api(); if (!a) return;
-  var loc = parseInt(a.LMSGetValue('cmi.core.lesson_location'), 10);
+  var rawLoc = a.LMSGetValue('cmi.core.lesson_location');
+  var loc = parseInt(rawLoc, 10);
   var sus = a.LMSGetValue('cmi.suspend_data') || '';
-  for (var i = 0; i < visited.length && i < sus.length; i++) visited[i] = sus.charAt(i) === '1' ? 1 : 0;
+  DIAG.push('قراءة الموضع: «' + rawLoc + '» · بيانات الإيقاف: ' + sus.length + ' حرفًا');
+  var parts = sus.split('|');
+  var bits = parts[0] || '';
+  for (var i = 0; i < visited.length && i < bits.length; i++) visited[i] = bits.charAt(i) === '1' ? 1 : 0;
   if (!isNaN(loc) && loc >= 0 && loc < UNITS.length) cur = loc;
+  if (parts.length > 1) {
+    applyAnswers(parts[1]);
+    if (parts[2] === '1' && document.getElementById('submit')) grade(true);
+  }
 }
 function contentDone(){
   return UNITS.every(function(u, i){ return u === QUIZ_UNIT || visited[i]; });
@@ -402,12 +472,26 @@ function paint(){
   document.getElementById('fill').style.width = pct + '%';
   document.getElementById('pct').textContent = seen + ' / ' + UNITS.length + '  (' + pct + '%)';
   document.getElementById('prev').disabled = cur === 0;
-  document.getElementById('next').disabled = cur === UNITS.length - 1;
+  // في آخر وحدة يصير «التالي» «إنهاء»: كان معطَّلًا فيضغطه الطالب ولا يحدث شيء.
+  var next = document.getElementById('next');
+  var last = cur === UNITS.length - 1;
+  next.textContent = last ? 'إنهاء الدورة ✓' : 'التالي ←';
+  next.disabled = false;
+}
+function finishCourse(){
+  persist();
+  var msg = document.getElementById('doneMsg');
+  var result = document.getElementById('result');
+  msg.textContent = (result && result.textContent ? result.textContent + ' — ' : '')
+    + 'حُفظ تقدّمك. يمكنك مغادرة الصفحة أو الرجوع إلى المقرر من القائمة الجانبية.';
+  var box = document.getElementById('done');
+  box.classList.remove('hidden');
+  document.getElementById('doneClose').focus();
 }
 function go(i, scroll){
   if (i < 0 || i >= UNITS.length) return;
   cur = i; visited[i] = 1; paint();
-  if (!QUIZ_UNIT && contentDone()) { set('cmi.core.lesson_status', 'completed'); markDone(); }
+  if (!QUIZ_UNIT && contentDone()) set('cmi.core.lesson_status', 'completed');
   persist();
   if (scroll !== false) {
     window.scrollTo({top: 0, behavior: 'smooth'});
@@ -422,12 +506,26 @@ function boot(){
   scormInit(); restore();
   TOC.forEach(function(b, i){ b.addEventListener('click', function(){ go(i); }); });
   document.getElementById('prev').addEventListener('click', function(){ go(cur - 1); });
-  document.getElementById('next').addEventListener('click', function(){ go(cur + 1); });
+  document.getElementById('next').addEventListener('click', function(){
+    if (cur === UNITS.length - 1) finishCourse(); else go(cur + 1);
+  });
+  document.getElementById('doneClose').addEventListener('click', function(){
+    document.getElementById('done').classList.add('hidden'); });
+  document.getElementById('doneExit').addEventListener('click', function(){
+    try { window.close(); } catch (x) {}   // تنجح في النوافذ المنبثقة فقط
+    document.getElementById('doneMsg').textContent =
+      'أغلق هذه الصفحة أو ارجع إلى المقرر من القائمة الجانبية.';
+  });
+  document.getElementById('dbgBtn').addEventListener('click', function(){
+    var box = document.getElementById('dbg');
+    box.textContent = diagText();
+    box.classList.toggle('hidden');
+  });
   document.getElementById('menu').addEventListener('click', function(){
     document.getElementById('toc').classList.toggle('open'); });
   document.addEventListener('keydown', function(e){
     if (/INPUT|TEXTAREA/.test((e.target.tagName || ''))) return;
-    if (e.key === 'ArrowLeft') go(cur + 1);       // RTL: اليسار = التالي
+    if (e.key === 'ArrowLeft') go(Math.min(cur + 1, UNITS.length - 1));       // RTL: اليسار = التالي
     else if (e.key === 'ArrowRight') go(cur - 1);
     else if (e.key === 'Escape') document.getElementById('zoom').classList.remove('on');
   });
@@ -446,8 +544,6 @@ def _quiz_unit_js() -> str:
     """نهاية السكربت: التشغيل. المنطق نفسه سواء وُجدت أسئلة أم لا."""
     return ("document.addEventListener('DOMContentLoaded', function(){\n"
             "  boot();\n"
-            "  var b = document.getElementById('submit');\n"
-            "  if (b) b.addEventListener('click', grade);\n"
             "});\n")
 
 
@@ -585,7 +681,18 @@ def render_player(ctx: ExportContext, pack: Optional[StudyPack],
         f'<main class="stage">{"".join(sections)}'
         '<div class="nav"><button class="btn" id="prev" type="button">'
         '→ السابق</button><button class="btn primary" id="next" type="button">'
-        f'التالي ←</button></div>{extra}</main></div>\n'
+        f'التالي ←</button></div>{extra}'
+        '<p class="muted" style="margin-top:28px"><button class="btn" id="dbgBtn" '
+        'type="button">معلومات تقنية</button></p>'
+        '<pre class="hidden" id="dbg" dir="auto" style="white-space:pre-wrap;'
+        'background:var(--soft);border-radius:10px;padding:12px;font-size:.8rem"></pre>'
+        '</main></div>\n'
+        '<div class="done hidden" id="done" role="dialog" aria-modal="true" '
+        'aria-labelledby="doneT"><div class="card done-box"><div class="big">🎓</div>'
+        '<h2 id="doneT" style="justify-content:center">أنهيت الدورة</h2>'
+        '<p class="muted" id="doneMsg"></p><p>'
+        '<button class="btn primary" id="doneClose" type="button">متابعة المراجعة</button> '
+        '<button class="btn" id="doneExit" type="button">إغلاق النافذة</button></p></div></div>\n'
         '<div class="zoom" id="zoom"><img alt=""></div>\n'
         f"<script>{_SCORM_JS}{_PLAYER_JS}{_quiz_js(mastery)}"
         f"{_quiz_unit_js()}</script>\n"
@@ -635,16 +742,29 @@ def build_manifest(title: str, files: List[str],
 """
 
 
-def stable_identifier(title: str, source_stem: str) -> str:
-    """معرّف حزمة **ثابت** لنفس الدورة.
+def stable_identifier(title: str, source_stem: str, content: str = "") -> str:
+    """معرّف الحزمة: ثابتٌ لنفس **المحتوى**، ويتغيّر بتغيّره.
 
-    كان ``uuid4`` في كل توليد: فمن يصلح خطأً في المحاضرة ويعيد رفع الحزمة
-    إلى المنصّة يحصل على **دورة ثانية** بجوار الأولى، وتبقى درجات طلابه
-    على القديمة. الاشتقاق من العنوان واسم المصدر يجعل المنصّة (التي
-    تطابق ``identifier``) تعامل الرفع الجديد تحديثًا للدورة نفسها.
+    مرّ بمرحلتين. ‏``uuid4`` في كل توليد: إعادة الرفع تُنتج دورةً مكرّرة
+    حتى لو لم يتغيّر حرف. ثم معرّفٌ من العنوان واسم المصدر وحدهما: فعلى
+    Schoology تُعامَل الحزمة بالمعرّف نفسه على أنها **موجودة** فلا يُرفع
+    شيء جديد، ويجرّب المعلّم إصلاحًا فيرى المحتوى القديم — وهذا ما رُصد.
+    فالمعرّف الآن يضمّ بصمة المحتوى: تعديلٌ في الشرائح أو اللقطات أو
+    الأسئلة ⇒ معرّف جديد ⇒ حزمة جديدة؛ وإعادة توليد المحتوى نفسه ⇒ المعرّف
+    نفسه فلا تتكاثر الدورات بلا سبب.
     """
-    digest = hashlib.sha1(f"{title}|{source_stem}".encode("utf-8")).hexdigest()
+    digest = hashlib.sha1(
+        f"{title}|{source_stem}|{content}".encode("utf-8")).hexdigest()
     return f"VTAD-{digest[:12].upper()}"
+
+
+def _content_digest(staging: Path) -> str:
+    """بصمة كل ملفات الحزمة (مساراتها ومحتواها) قبل كتابة البيان."""
+    hasher = hashlib.sha1()
+    for path in sorted(p for p in staging.rglob("*") if p.is_file()):
+        hasher.update(path.relative_to(staging).as_posix().encode("utf-8"))
+        hasher.update(path.read_bytes())
+    return hasher.hexdigest()
 
 
 def export(ctx: ExportContext) -> Optional[Path]:
@@ -679,7 +799,8 @@ def export(ctx: ExportContext) -> Optional[Path]:
             build_manifest(
                 ctx.plan.title or ctx.base_path.stem, names,
                 identifier=stable_identifier(ctx.plan.title or "",
-                                             ctx.base_path.stem),
+                                             ctx.base_path.stem,
+                                             _content_digest(staging)),
                 mastery=mastery_score(ctx)),
             encoding="utf-8")
 
