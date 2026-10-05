@@ -66,6 +66,44 @@ def fold(text: str) -> str:
     return _SPACES.sub(" ", text).strip()
 
 
+def _texts(transcript: TranscriptionResult) -> Dict[int, str]:
+    return {s.id: (s.text_clean or s.text_raw or "") for s in transcript.segments}
+
+
+def _content_tokens(text: str) -> set:
+    """كلمات المضمون بعد التطبيع: ثلاثة أحرف فأكثر، بلا «ال» التعريف.
+
+    تجريدٌ خفيف لا تحليل صرفيّ: يكفي ليجعل «الواجبات» و«واجبات» كلمةً
+    واحدة، ولا يدّعي فهمًا أعمق.
+    """
+    tokens = set()
+    for word in fold(text).split():
+        if word.startswith("ال") and len(word) >= 5:
+            word = word[2:]
+        if len(word) >= 3:
+            tokens.add(word)
+    return tokens
+
+
+def answer_is_supported(answer: str, cited: Sequence[str],
+                        screen_text: str = "") -> bool:
+    """هل في المقاطع المستشهد بها (أو على الشاشة) أثرٌ للإجابة؟
+
+    الفحص القديم يثبت أن **رقم** المقطع موجود، لا أن الإجابة منه. ونموذجٌ
+    يستشهد بمقطع صحيح ويكتب إجابةً لا علاقة لها به يمرّ من كل بوابة.
+
+    **والفحص متساهلٌ عمدًا:** يكفي أن تشارك الإجابة كلمة مضمونٍ واحدة مع
+    ما استشهد به. الإجابة إعادة صياغة غالبًا، وإسقاط سؤالٍ سليمٍ لأن
+    صياغته غير حرفية أسوأ من قبول سؤالٍ ضعيف. وما دون كلمتين لا يُحكم
+    عليه («TCP»، «صح»).
+    """
+    wanted = _content_tokens(answer)
+    if len(wanted) < 2:
+        return True
+    available = _content_tokens(" ".join(cited) + " " + screen_text)
+    return bool(wanted & available)
+
+
 def _spans(transcript: TranscriptionResult) -> Dict[int, Tuple[float, float]]:
     return {s.id: (s.start, s.end) for s in transcript.segments}
 
@@ -119,7 +157,9 @@ def verify(pack: StudyPack, transcript: TranscriptionResult,
 
     pack.objectives = _verify_objectives(pack.objectives, spans, dropped)
     pack.glossary = _verify_glossary(pack.glossary, spans, haystack, dropped)
-    pack.questions = _verify_questions(pack.questions, spans, dropped)
+    pack.questions = _verify_questions(
+        pack.questions, spans, dropped, _texts(transcript),
+        " ".join(screen_texts))
     pack.flashcards = _verify_flashcards(pack.flashcards, spans, dropped)
     pack.dropped = dropped
     return pack
@@ -176,7 +216,8 @@ def _verify_glossary(items: List[GlossaryTerm], spans, haystack: str,
 
 
 def _verify_questions(items: List[QuizQuestion], spans,
-                      dropped: List[str]) -> List[QuizQuestion]:
+                      dropped: List[str], texts: Dict[int, str] = None,
+                      screen_text: str = "") -> List[QuizQuestion]:
     kept: List[QuizQuestion] = []
     seen: set = set()
     for item in items:
@@ -229,6 +270,14 @@ def _verify_questions(items: List[QuizQuestion], spans,
         if not _resolve_sources(item, spans):
             dropped.append(f"سؤال بلا مقطع مصدر موجود: «{label}»")
             continue
+
+        # الصح/الخطأ يُحكم على العبارة نفسها لا على «إجابة»؛ والاختيار
+        # والقصير تُفحص إجابتهما مقابل المقاطع المستشهد بها.
+        if item.kind != "true_false" and texts is not None:
+            cited = [texts.get(i, "") for i in item.segment_ids]
+            if not answer_is_supported(item.answer, cited, screen_text):
+                dropped.append(f"إجابة لا يدعمها المقطع المستشهد به: «{label}»")
+                continue
 
         item.question = question
         item.explanation = " ".join((item.explanation or "").split())

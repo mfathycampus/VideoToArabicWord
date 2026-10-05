@@ -126,12 +126,12 @@ def test_mcq_with_fewer_than_three_distinct_options_is_dropped():
 def test_answer_matching_an_option_only_after_folding_is_kept():
     pack = StudyPack(questions=[QuizQuestion(
         kind="mcq", question="ما البروتوكول الذي يضمن الترتيب؟",
-        options=["الإجابة الأولى", "UDP", "ICMP"],
-        answer="الاجابة الاولى", segment_ids=[2])])
+        options=["وصول البيانات إلى الوجهة", "UDP", "ICMP"],
+        answer="وصول البيانات الى الوجهة", segment_ids=[2])])
     result = verify(pack, _transcript())
     assert len(result.questions) == 1
     # النصّ المكتوب للطالب هو صيغة **الخيار** لا صيغة الإجابة
-    assert result.questions[0].answer == "الإجابة الأولى"
+    assert result.questions[0].answer == "وصول البيانات إلى الوجهة"
 
 
 @pytest.mark.parametrize("raw,expected", [
@@ -498,3 +498,29 @@ def test_verified_answer_still_matches_an_option_after_shuffle():
         options=["UDP", "TCP", "ICMP", "ARP"], answer="TCP", segment_ids=[2])])
     kept = verify(pack, _transcript()).questions[0]
     assert kept.answer in kept.options
+
+
+def test_answer_unrelated_to_the_cited_segment_is_dropped():
+    """رقم المقطع صحيح والإجابة من خارجه: كانت تمرّ من كل بوابة."""
+    pack = StudyPack(questions=[QuizQuestion(
+        kind="short", question="ما البروتوكول الذي يضمن الترتيب؟",
+        answer="جهاز توجيه حديث مستقل تمامًا", segment_ids=[1])])
+    result = verify(pack, _transcript())
+    assert result.questions == []
+    assert any("لا يدعمها المقطع" in reason for reason in result.dropped)
+
+
+def test_a_paraphrased_answer_that_shares_a_content_word_is_kept():
+    pack = StudyPack(questions=[QuizQuestion(
+        kind="short", question="ماذا يفعل TCP بالبيانات؟",
+        answer="يضمن ترتيب الوصول", segment_ids=[2])])
+    assert len(verify(pack, _transcript()).questions) == 1
+
+
+def test_one_word_answers_and_true_false_are_not_judged_by_overlap():
+    pack = StudyPack(questions=[
+        QuizQuestion(kind="short", question="ما البروتوكول الذي يضمن الوصول؟",
+                     answer="TCP", segment_ids=[3]),
+        QuizQuestion(kind="true_false", question="TCP يتخلّى عن الضمان لأجل السرعة.",
+                     answer="خطأ", segment_ids=[3])])
+    assert len(verify(pack, _transcript()).questions) == 2

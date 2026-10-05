@@ -144,6 +144,16 @@ input.short{width:100%;font:inherit;padding:10px 14px;border:1.5px solid var(--l
 """
 
 
+def mastery_score(ctx: ExportContext) -> int:
+    """درجة النجاح المُبلَّغة: ``options["scorm_mastery"]`` إن صحّت (1–100)."""
+    raw = (ctx.options or {}).get("scorm_mastery")
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return MASTERY_SCORE
+    return value if 1 <= value <= 100 else MASTERY_SCORE
+
+
 def _esc(text: str) -> str:
     return html.escape(text or "", quote=True)
 
@@ -174,30 +184,48 @@ function api(){
   return _api;
 }
 function set(key, value){ var a = api(); return a ? a.LMSSetValue(key, String(value)) : false; }
+var _inited = false;
 function scormInit(){
   var a = api();
   if (!a) return false;                    // تشغيل خارج منصّة: الصفحة تعمل كما هي
+  // مرّة واحدة: ‏LMSInitialize الثانية تُرجع خطأ 101 (مُهيَّأ مسبقًا) في
+  // المنصّات الصارمة، وقد تُسقط الجلسة.
+  if (_inited) return _ready;
+  _inited = true;
   var r = a.LMSInitialize("");
   _ready = (r === "true" || r === true);
-  if (a.LMSGetValue("cmi.core.lesson_status") === "not attempted")
-    set("cmi.core.lesson_status", "incomplete");
+  var status = a.LMSGetValue("cmi.core.lesson_status");
+  if (status === "not attempted") set("cmi.core.lesson_status", "incomplete");
+  // ‏``suspend`` يُبلغ المنصّة أن هذه الجلسة **غير منتهية**: عندها فقط تحتفظ
+  // بـ``lesson_location`` و``suspend_data`` وتُعيدهما في الإطلاق التالي.
+  // بدونه (الافتراضي) تعامل أغلب المنصّات الخروج إنهاءً عاديًّا وتُصفّر
+  // الموضع — فيعود الطالب إلى أول الدورة، وهذا ما رُصد على Schoology.
+  // وكتابته **عند الفتح** لا عند الإغلاق: التبويب الذي يُغلَق فجأةً لا يُطلق
+  // ``unload`` أصلًا.
+  if (status !== "passed" && status !== "completed") set("cmi.core.exit", "suspend");
   a.LMSCommit("");
   return _ready;
 }
+// الدورة المنتهية تُغلق إغلاقًا عاديًّا: ``suspend`` بعد النجاح يُعيد الطالب
+// إلى نهاية دورةٍ أتمّها بدل أن يبدأ مراجعتها من أولها.
+function markDone(){ set("cmi.core.exit", ""); }
 function _hhmmss(ms){
   var s = Math.floor(ms/1000);
   return [Math.floor(s/3600), Math.floor(s/60)%60, s%60]
     .map(function(n){ return (n<10?"0":"") + n; }).join(":");
 }
-var _opened = Date.now();
+var _opened = Date.now(), _finished = false;
 function scormFinish(){
-  var a = api(); if (!a) return;
+  var a = api(); if (!a || _finished) return;
+  _finished = true;               // LMSFinish مرّتين يُرجع خطأً ويُفسد السجلّ
   set("cmi.core.session_time", _hhmmss(Date.now() - _opened));
   a.LMSCommit(""); a.LMSFinish("");
 }
 // ``unload`` لا ``beforeunload``: الأخير لا يقع في بعض المنصّات التي
-// تُزيل الإطار برمجيًّا، فتضيع الدرجة بعد أن أجاب الطالب فعلًا.
+// تُزيل الإطار برمجيًّا، فتضيع الدرجة بعد أن أجاب الطالب فعلًا. و``pagehide``
+// معه لأن ``unload`` لا يقع في متصفّحات الهاتف عند تبديل التطبيق.
 window.addEventListener("unload", scormFinish);
+window.addEventListener("pagehide", scormFinish);
 """
 
 
@@ -230,9 +258,27 @@ function grade(){
   set('cmi.core.score.raw', score);
   set('cmi.core.score.min', 0);
   set('cmi.core.score.max', 100);
-  set('cmi.core.lesson_status', score >= MASTERY ? 'passed' : 'failed');
+  var passed = score >= MASTERY;
+  set('cmi.core.lesson_status', passed ? 'passed' : 'failed');
+  if (passed) markDone();
   var a = api(); if (a) a.LMSCommit('');
   document.getElementById('submit').disabled = true;
+  // من لم يبلغ درجة النجاح يُعاد إليه الاختبار؛ ومن نجح لا يُسمح له بإعادةٍ
+  // تُنزل درجةً نالها.
+  var retry = document.getElementById('retry');
+  if (retry) retry.classList.toggle('hidden', passed);
+}
+function retryQuiz(){
+  [].forEach.call(document.querySelectorAll('[data-answer]'), function(item){
+    [].forEach.call(item.querySelectorAll('input'), function(i){
+      if (i.type === 'radio') i.checked = false; else i.value = '';
+    });
+    var box = item.querySelector('.verdict');
+    box.style.display = 'none'; box.textContent = '';
+  });
+  document.getElementById('result').textContent = '';
+  document.getElementById('submit').disabled = false;
+  document.getElementById('retry').classList.add('hidden');
 }
 // نفس تطبيع ai/study_verify: همزة الألف والتاء المربوطة والتشكيل
 // فروقٌ لا يراها الطالب، وحسمُ إجابته عليها ظلم.
@@ -248,40 +294,76 @@ document.addEventListener('DOMContentLoaded', function(){
   scormInit();
   var b = document.getElementById('submit');
   if (b) b.addEventListener('click', grade);
-  else { set('cmi.core.lesson_status','completed'); var a=api(); if(a) a.LMSCommit(''); }
+  var r = document.getElementById('retry');
+  if (r) r.addEventListener('click', retryQuiz);
+  // الإتمام بلا أسئلة تُصحَّح يقرّره المشغّل عند زيارة كل الأقسام
+  // (انظر go في _PLAYER_JS) — لا عند الفتح.
+  document.querySelectorAll('.reveal-model').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      var box = document.getElementById(btn.getAttribute('data-for'));
+      box.classList.toggle('hidden');
+    });
+  });
 });
 """.replace("__MASTERY__", str(mastery))
 
 
-def _render_quiz(pack: Optional[StudyPack]) -> str:
+def _render_quiz(pack: Optional[StudyPack]) -> tuple:
+    """يعيد ``(HTML، عدد الأسئلة المُصحَّحة)``.
+
+    **السؤال القصير لا يُصحَّح آليًّا.** إجابته النموذجية جملةٌ كاملة
+    («السماح بالآلة الحاسبة، ترتيب عشوائي…») والمطابقة الحرفية بينها وبين
+    ما يكتبه الطالب لا تنجح إلا إن نسخها حرفيًّا — فتُحسب كل إجابة
+    صحيحة خطأً. وقع هذا فعلًا في أول اختبار على Schoology: درجة 67٪ بحالة
+    «راسب» بسبب سؤالٍ لا يمكن لأحد أن يجيبه «صحيحًا». فيُعرض للتأمّل مع
+    إجابةٍ نموذجية يكشفها الطالب، ولا يدخل في الدرجة.
+    """
     if pack is None or not pack.questions:
         return ('<div class="card note">لا أسئلة في هذه الوحدة — '
-                'تُسجَّل «مكتملة» بمجرّد فتحها.</div>')
+                'تُسجَّل «مكتملة» بمجرّد فتحها.</div>'), 0
     items: List[str] = []
-    for question in pack.questions:
+    graded = 0
+    for index, question in enumerate(pack.questions):
         why = _esc(question.explanation)
-        body = ""
-        if question.kind == "mcq" and question.options:
-            name = f"q{id(question)}"
+        if question.kind == "short" or (
+                question.kind == "mcq" and not question.options):
+            model_id = f"model{index}"
+            items.append(
+                '<li><div class="card selfcheck">'
+                f'<p class="qtext">{_esc(question.question)}</p>'
+                '<textarea class="short" rows="2" placeholder="فكّر في إجابتك ثم '
+                'قارنها بالإجابة النموذجية…"></textarea>'
+                f'<p><button type="button" class="btn reveal-model" '
+                f'data-for="{model_id}">اعرض الإجابة النموذجية</button></p>'
+                f'<div class="verdict right hidden" id="{model_id}">'
+                f'{_esc(question.answer)}'
+                + (f" — {why}" if why else "") + "</div>"
+                '<p class="muted">سؤال للتأمّل — لا يدخل في الدرجة.</p>'
+                "</div></li>")
+            continue
+        name = f"q{index}"
+        if question.kind == "mcq":
             body = "".join(
                 f'<label class="opt"><input type="radio" name="{name}" '
                 f'value="{_esc(option)}">{_esc(option)}</label>'
                 for option in question.options)
-        elif question.kind == "true_false":
-            name = f"q{id(question)}"
+        else:                                            # true_false
             body = "".join(
                 f'<label class="opt"><input type="radio" name="{name}" '
                 f'value="{value}">{value}</label>' for value in ("صح", "خطأ"))
-        else:
-            body = '<input class="short" type="text" placeholder="اكتب إجابتك…">'
+        graded += 1
         items.append(
             f'<li><div class="card" data-answer="{_esc(question.answer)}" '
             f'data-why="{why}">'
             f'<p class="qtext">{_esc(question.question)}</p>{body}'
             '<div class="verdict" style="display:none"></div></div></li>')
-    return (f'<ol class="q">{"".join(items)}</ol>'
-            '<button class="submit" id="submit">صحّح وأرسل النتيجة</button>'
-            '<div id="result" role="status"></div>')
+    html_out = f'<ol class="q">{"".join(items)}</ol>'
+    if graded:
+        html_out += (
+            '<button class="submit" id="submit">صحّح وأرسل النتيجة</button> '
+            '<button class="btn hidden" id="retry" type="button">'
+            'أعد المحاولة</button><div id="result" role="status"></div>')
+    return html_out, graded
 
 
 _PLAYER_JS = """
@@ -321,7 +403,7 @@ function paint(){
 function go(i, scroll){
   if (i < 0 || i >= UNITS.length) return;
   cur = i; visited[i] = 1; paint();
-  if (!QUIZ_UNIT && contentDone()) set('cmi.core.lesson_status', 'completed');
+  if (!QUIZ_UNIT && contentDone()) { set('cmi.core.lesson_status', 'completed'); markDone(); }
   persist();
   if (scroll !== false) window.scrollTo({top: 0, behavior: 'smooth'});
   document.getElementById('toc').classList.remove('open');
@@ -430,6 +512,7 @@ def render_player(ctx: ExportContext, pack: Optional[StudyPack],
                   extra_pages: Optional[List[tuple]] = None) -> str:
     """صفحة المشغّل: وحدات تُعرض واحدةً واحدة، وتقدّم يُبلَّغ للمنصّة."""
     plan = ctx.plan
+    mastery = mastery_score(ctx)
     title = D.esc(plan.title or "وحدة تعليمية")
     units: List[tuple] = list(chapters)
 
@@ -447,11 +530,13 @@ def render_player(ctx: ExportContext, pack: Optional[StudyPack],
         units.append(("المصطلحات", f'<h2>المصطلحات</h2><div class="terms">{cards}</div>',
                       "terms"))
 
-    has_quiz = pack is not None and bool(pack.questions)
-    if has_quiz:
-        units.append(("أسئلة التقييم",
-                      "<h2>أسئلة التقييم</h2>" + _render_quiz(pack), "quiz"))
-    else:
+    quiz_html, graded = _render_quiz(pack)
+    has_quiz = graded > 0
+    if pack is not None and pack.questions:
+        units.append(("أسئلة التقييم" if has_quiz else "أسئلة للتأمّل",
+                      "<h2>أسئلة التقييم</h2>" + quiz_html,
+                      "quiz" if has_quiz else "review"))
+    if not has_quiz:
         links = "".join(
             f'<a class="btn" href="{_esc(href)}" target="_blank">{_esc(label)}</a> '
             for label, href in (extra_pages or []))
@@ -492,14 +577,15 @@ def render_player(ctx: ExportContext, pack: Optional[StudyPack],
         '→ السابق</button><button class="btn primary" id="next" type="button">'
         f'التالي ←</button></div>{extra}</main></div>\n'
         '<div class="zoom" id="zoom"><img alt=""></div>\n'
-        f"<script>{_SCORM_JS}{_PLAYER_JS}{_quiz_js(MASTERY_SCORE)}"
+        f"<script>{_SCORM_JS}{_PLAYER_JS}{_quiz_js(mastery)}"
         f"{_quiz_unit_js()}</script>\n"
         "</body>\n</html>\n")
 
 
 # ---------------------------------------------------------------------
 def build_manifest(title: str, files: List[str],
-                   identifier: Optional[str] = None) -> str:
+                   identifier: Optional[str] = None,
+                   mastery: int = MASTERY_SCORE) -> str:
     """‏``imsmanifest.xml`` بصيغة SCORM 1.2.
 
     كل ملفّ في الحزمة يُذكر في ``<file>``: منصّات تتحقّق من ذلك وترفض
@@ -525,7 +611,7 @@ def build_manifest(title: str, files: List[str],
       <title>{_xml(title)}</title>
       <item identifier="ITEM-1" identifierref="RES-1" isvisible="true">
         <title>{_xml(title)}</title>
-        <adlcp:masteryscore>{MASTERY_SCORE}</adlcp:masteryscore>
+        <adlcp:masteryscore>{mastery}</adlcp:masteryscore>
       </item>
     </organization>
   </organizations>
@@ -583,7 +669,8 @@ def export(ctx: ExportContext) -> Optional[Path]:
             build_manifest(
                 ctx.plan.title or ctx.base_path.stem, names,
                 identifier=stable_identifier(ctx.plan.title or "",
-                                             ctx.base_path.stem)),
+                                             ctx.base_path.stem),
+                mastery=mastery_score(ctx)),
             encoding="utf-8")
 
         # الكتابة إلى ملفّ مؤقّت ثم النقل: حزمةٌ نصفُ مكتوبة في مجلد

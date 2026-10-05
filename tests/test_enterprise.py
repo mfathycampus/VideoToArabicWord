@@ -332,3 +332,86 @@ def test_policy_path_is_machine_wide_not_per_user(monkeypatch):
 
     expected = Path("/etc/videotoarabicword") / POLICY_FILENAME
     assert str(expected).startswith("/etc/")
+
+
+# ---------------------------------------------------------------------
+# SCORM: ما كشفه أول اختبار على منصّة حقيقية (Schoology)
+# ---------------------------------------------------------------------
+def _pack_with_short_answer():
+    from config.schemas import QuizQuestion
+    from tests.test_study_pack import _built_pack
+
+    pack = _built_pack()
+    pack.questions.append(QuizQuestion(
+        kind="short", question="اذكر بعض الإعدادات التي يمكن تعديلها؟",
+        answer="السماح باستخدام الآلة الحاسبة، ترتيب عشوائي للأسئلة",
+        segment_ids=[2]))
+    return pack
+
+
+def test_scorm_asks_the_lms_to_keep_the_bookmark(ctx):
+    """بلا ``cmi.core.exit=suspend`` تُصفّر المنصّة الموضع: وهذا ما حدث فعلًا."""
+    from document.exporters.scorm_export import export
+
+    with zipfile.ZipFile(export(ctx)) as archive:
+        page = archive.read("index.html").decode("utf-8")
+    assert 'set("cmi.core.exit", "suspend")' in page
+    assert "pagehide" in page                       # ``unload`` وحده لا يكفي
+    assert page.count("a.LMSInitialize(") == 1       # ولا تهيئة مرّتين
+
+
+def test_short_answer_questions_do_not_count_toward_the_score(ctx):
+    """إجابة جملةٍ كاملة بمطابقة حرفية لا ينجح فيها أحد: درجة 67٪ ‹راسب›."""
+    from document.exporters.scorm_export import export
+
+    ctx.options = {"study_pack": _pack_with_short_answer()}
+    with zipfile.ZipFile(export(ctx)) as archive:
+        page = archive.read("index.html").decode("utf-8")
+    assert "اذكر بعض الإعدادات" in page              # يُعرض
+    pack = ctx.options["study_pack"]
+    graded = sum(1 for q in pack.questions if q.kind != "short")
+    assert graded >= 1
+    assert page.count("data-answer=") == graded      # المصحَّح وحده يحمل مفتاحًا
+    assert "سؤال للتأمّل" in page and "اعرض الإجابة النموذجية" in page
+
+
+def test_a_pack_with_only_short_questions_has_no_graded_quiz(ctx):
+    from config.schemas import QuizQuestion, StudyPack
+    from document.exporters.scorm_export import export
+
+    ctx.options = {"study_pack": StudyPack(questions=[QuizQuestion(
+        kind="short", question="اشرح الفرق بين البروتوكولين؟",
+        answer="TCP موثوق وUDP سريع", segment_ids=[2])])}
+    with zipfile.ZipFile(export(ctx)) as archive:
+        page = archive.read("index.html").decode("utf-8")
+    assert 'id="submit"' not in page                 # لا زرّ تصحيح بلا ما يُصحَّح
+    assert '<section class="unit" data-quiz' not in page   # فالإتمام بزيارة الأقسام
+
+
+def test_quiz_can_be_retried_until_it_is_passed(ctx):
+    from document.exporters.scorm_export import export
+
+    with zipfile.ZipFile(export(ctx)) as archive:
+        page = archive.read("index.html").decode("utf-8")
+    assert "لا أسئلة في هذه الوحدة" in page         # بلا حزمة: لا اختبار
+    ctx.options = {"study_pack": _pack_with_short_answer()}
+    with zipfile.ZipFile(export(ctx)) as archive:
+        page = archive.read("index.html").decode("utf-8")
+    assert 'id="retry"' in page and "retry.classList.toggle('hidden', passed)" in page
+
+
+def test_mastery_score_is_configurable_and_validated(ctx):
+    from document.exporters.scorm_export import MASTERY_SCORE, export, mastery_score
+
+    assert mastery_score(ctx) == MASTERY_SCORE
+    ctx.options = {"scorm_mastery": 85}
+    assert mastery_score(ctx) == 85
+    for bad in (0, 101, "abc", None, -5):
+        ctx.options = {"scorm_mastery": bad}
+        assert mastery_score(ctx) == MASTERY_SCORE
+    ctx.options = {"scorm_mastery": 85}
+    with zipfile.ZipFile(export(ctx)) as archive:
+        manifest = archive.read("imsmanifest.xml").decode("utf-8")
+        page = archive.read("index.html").decode("utf-8")
+    assert "<adlcp:masteryscore>85</adlcp:masteryscore>" in manifest
+    assert "var MASTERY = 85;" in page
