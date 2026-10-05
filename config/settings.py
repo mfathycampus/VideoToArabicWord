@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class SceneDetectionConfig(BaseModel):
@@ -401,6 +401,19 @@ class DocumentConfig(BaseModel):
     #: الصيغ المتاحة: html · pdf · pptx · chapters · study · flashcards · scorm
     export_formats: list[str] = Field(
         default_factory=lambda: ["html", "chapters", "study", "flashcards"])
+    #: درجة النجاح التي تُبلَّغ لمنصّة التعلّم في حزمة SCORM (1–100). قيمةٌ
+    #: خارج المدى تعود إلى 70 بدل أن تُسقط تحميل الإعداد كلّه: إعدادٌ
+    #: معطوب لا يجوز أن يمنع فتح البرنامج.
+    scorm_mastery: int = 70
+
+    @field_validator("scorm_mastery", mode="before")
+    @classmethod
+    def _valid_mastery(cls, value):
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            return 70
+        return number if 1 <= number <= 100 else 70
 
 
 class RewriteSettings(BaseModel):

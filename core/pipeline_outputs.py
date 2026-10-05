@@ -246,7 +246,11 @@ class OutputsMixin:
                     transcript=transcript,
                     source_media=source_media,
                     document_config=self.config.document,
-                    options={"study_pack": study_pack} if study_pack else {},
+                    options={
+                        **({"study_pack": study_pack} if study_pack else {}),
+                        "scorm_mastery": getattr(
+                            self.config.document, "scorm_mastery", 70),
+                    },
                 ),
                 formats)
         except Exception as exc:
