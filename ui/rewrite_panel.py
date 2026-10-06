@@ -199,6 +199,40 @@ class RewritePanelMixin:
             "النص الخام يُحفظ دائمًا، ويمكن توليد المستند منه لاحقًا.")
 
     # ------------------------------------------------------------------
+    def _auto_pick_managed(self) -> None:
+        """يختار «معين المُدار» وحده إن كان الكود المفعّل من باقة مُدار.
+
+        الشرط: لا مفتاح محفوظ، والمزوّد الحالي ليس المُدار ولا المحلي، وثمّة
+        كود مفعّل. التحقق بقراءة الرصيد من الخادم (لا تستهلك شيئًا)؛ نجاحها
+        يعني أن الكود مُدار فعلًا، وفشلها يترك اختيار المستخدم كما هو.
+        """
+        try:
+            from licensing import app_gate
+
+            if (self.provider_combo.currentData() in ("maeen_managed", "ollama")
+                    or self.config.rewrite.api_key.strip()
+                    or not app_gate.current_code()):
+                return
+        except Exception:                              # noqa: BLE001
+            return
+        thread = QThread(self)
+        worker = BalanceWorker()
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.succeeded.connect(self._select_managed)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        self._probe_thread = thread
+        thread.start()
+
+    def _select_managed(self, _minutes: float) -> None:
+        index = self.provider_combo.findData("maeen_managed")
+        if index >= 0 and self.provider_combo.currentIndex() != index:
+            self.provider_combo.setCurrentIndex(index)   # يحفظ ويحدّث الواجهة
+            self.append_log("كودك من باقة «مُدار»: اختير «معين المُدار» تلقائيًا.")
+
+    # ------------------------------------------------------------------
     # الرصيد المتبقي (باقة «مُدار») — يُقرأ دون استهلاك، خارج خيط الواجهة.
     def _credit_line(self) -> str:
         text = getattr(self, "_credit_text", "")

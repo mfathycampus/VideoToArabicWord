@@ -365,6 +365,9 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
         rewrite_layout.addWidget(self.rewrite_note)
         layout.addWidget(rewrite_box)
         self._update_rewrite_note()
+        # كود «مُدار» مفعّل ولا مفتاح محفوظ؟ اختر المزوّد المُدار تلقائيًا.
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(800, self._auto_pick_managed)
 
         # --- خيارات متقدّمة ---
         advanced = QGroupBox("٤ · خيارات متقدّمة")
