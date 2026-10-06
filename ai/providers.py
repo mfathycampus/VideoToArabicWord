@@ -645,7 +645,7 @@ class AnthropicProvider(LLMProvider):
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 record_egress(self.info.name, True, images=_body_images(body))
-                self._on_response_headers(response.headers)
+                self._on_response_headers(getattr(response, "headers", None) or {})
                 return json.loads(response.read())
         except urllib.error.HTTPError as exc:
             # ردٌّ بخطأ يعني أن الطلب وصل — النصّ غادر ولو رُفض.
