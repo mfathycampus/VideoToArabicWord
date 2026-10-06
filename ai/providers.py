@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 from abc import ABC, abstractmethod
@@ -437,6 +438,7 @@ class OpenAICompatibleProvider(LLMProvider):
 # المزوّدون المتاحون بالترتيب المعروض في الواجهة
 PROVIDER_CHOICES = (
     ("anthropic", "Claude API — أدق صياغة عربية"),
+    ("maeen_managed", "معين المُدار — بلا مفتاح (رصيد دقائق)"),
     ("ollama", "Ollama — نموذج محلي على جهازك"),
     ("openai_compatible", "خدمة أخرى بواجهة OpenAI"),
 )
@@ -449,6 +451,8 @@ def build_provider(name: str, model: str = "", base_url: str = "",
         return AnthropicProvider(model=model, base_url=base_url,
                                  api_key_env=api_key_env or "ANTHROPIC_API_KEY",
                                  api_key=api_key, workspace_id=workspace_id)
+    if name == "maeen_managed":
+        return MaeenManagedProvider()
     if name == "ollama":
         return OllamaProvider(model=model or "qwen2.5:7b-instruct",
                               host=base_url or "http://127.0.0.1:11434")
@@ -529,10 +533,7 @@ class AnthropicProvider(LLMProvider):
     def complete(self, system_prompt: str, user_prompt: str,
                  max_tokens: int = 2048, timeout: int = 180) -> str:
         if not self.api_key:
-            raise RewriteUnavailableError(
-                f"مفتاح Claude غير مضبوط. عيّن متغيّر البيئة {self.api_key_env}.\n"
-                "في PowerShell:  setx ANTHROPIC_API_KEY \"sk-ant-...\"\n"
-                "ثم أعد فتح البرنامج.")
+            raise RewriteUnavailableError(self._missing_key_message())
 
         body: dict = {
             "model": self.model,
@@ -551,11 +552,15 @@ class AnthropicProvider(LLMProvider):
         }
         if self.workspace_id:
             headers["anthropic-workspace-id"] = self.workspace_id
+        headers.update(self._extra_headers())
 
         try:
             data = self._post(body, headers, timeout)
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", "replace")[:400]
+            custom = self._translate_http_error(exc.code, detail)
+            if custom is not None:
+                raise custom from exc
 
             # وسيط مهمَل: أسقطه وأعد المحاولة مرة واحدة بدل الفشل.
             # يجعل المحرّك يعمل مع النماذج الحالية والقديمة معًا دون
@@ -617,6 +622,22 @@ class AnthropicProvider(LLMProvider):
         return self._extract_text(data)
 
     # ------------------------------------------------------------------
+    # خطّافات للمزوّد المُدار (``MaeenManagedProvider``): الأصل لا يغيّر سلوكه.
+    def _missing_key_message(self) -> str:
+        return (f"مفتاح Claude غير مضبوط. عيّن متغيّر البيئة {self.api_key_env}.\n"
+                "في PowerShell:  setx ANTHROPIC_API_KEY \"sk-ant-...\"\n"
+                "ثم أعد فتح البرنامج.")
+
+    def _extra_headers(self) -> dict:
+        return {}
+
+    def _on_response_headers(self, headers) -> None:
+        return None
+
+    def _translate_http_error(self, code: int, detail: str):
+        return None
+
+    # ------------------------------------------------------------------
     def _post(self, body: dict, headers: dict, timeout: int) -> dict:
         request = urllib.request.Request(
             f"{self.base_url}/v1/messages",
@@ -624,6 +645,7 @@ class AnthropicProvider(LLMProvider):
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 record_egress(self.info.name, True, images=_body_images(body))
+                self._on_response_headers(response.headers)
                 return json.loads(response.read())
         except urllib.error.HTTPError as exc:
             # ردٌّ بخطأ يعني أن الطلب وصل — النصّ غادر ولو رُفض.
@@ -659,6 +681,85 @@ class AnthropicProvider(LLMProvider):
             raise ResponseTruncatedError(
                 f"قُطع ردّ Claude عند سقف الرموز ({limit} رمزًا).", partial=text)
         return text
+
+
+#: آخر رصيد معلوم (دقائق) وزمن التقاطه — تقرؤه الواجهة دون اتصال إضافي.
+_managed_credit: dict = {}
+
+
+def managed_credit_state() -> dict:
+    """``{"minutes": float, "at": epoch}`` أو ``{}`` إن لم يصل رصيدٌ بعد."""
+    return dict(_managed_credit)
+
+
+class MaeenManagedProvider(AnthropicProvider):
+    """«معين المُدار»: Claude بلا مفتاح — الدفع برصيد دقائق عند المزوّد.
+
+    التفريغ واللقطات تجري على الجهاز كما هي. ما يتغيّر أن نداء Claude يمرّ
+    عبر خادم التفعيل نفسه ويحمل **كود التفعيل** بدل المفتاح ومعه معرّف
+    الجهاز. الخادم يتحقق من الكود والجهاز والرصيد، ويفرض النموذج، ثم
+    يمرّر الطلب بمفتاحه ويخصم الاستهلاك الفعلي. لا يحفظ المحتوى.
+
+    ``model`` و``api_key`` و``workspace_id`` من الإعداد تُتجاهل عمدًا: لا
+    مفتاح عند العميل، والنموذج يقرّره الخادم.
+    """
+
+    info = ProviderInfo(
+        name="maeen_managed", label_ar="معين المُدار (بلا مفتاح)",
+        is_local=False,
+        privacy_note="⚠ يُرسل نص التفريغ — ولقطات الشاشة إن فُعّل الوضع "
+                     "المرئي — إلى خادم معين ثم إلى Claude. الفيديو والصوت "
+                     "لا يُرسلان، ولا يحفظ الخادم المحتوى.")
+
+    def __init__(self, *args, **kwargs) -> None:
+        from licensing.client import server_url
+
+        super().__init__(base_url="https://invalid.local")
+        # الأصل يستبدل العنوان الفارغ بعنوان Anthropic — وهذا هنا تسريبٌ
+        # للكود. فنضبطه بعد الإنشاء، وبلا خادم مضبوط لا مفتاح ولا إرسال.
+        self.base_url = server_url()
+        self.model = ""                    # يقرّره الخادم
+
+    @property
+    def workspace_id(self) -> str:         # لا معنى له عند الخادم المُدار
+        return ""
+
+    @property
+    def api_key(self) -> Optional[str]:
+        from licensing import app_gate
+
+        if not self.base_url:
+            return None
+        return app_gate.current_code()
+
+    def _missing_key_message(self) -> str:
+        return ("لا يوجد كود فعّال من باقة «مُدار». فعّل الكود من نافذة "
+                "التفعيل، أو اختر «Claude API» واستخدم مفتاحك.")
+
+    def _extra_headers(self) -> dict:
+        from licensing import app_gate
+
+        return {"x-device": app_gate.device_id()}
+
+    def _on_response_headers(self, headers) -> None:
+        """يلتقط الرصيد المتبقي الذي يرسله الخادم مع كل ردّ."""
+        try:
+            minutes = float(headers.get("x-maeen-credit-minutes"))
+        except (TypeError, ValueError):
+            return
+        _managed_credit.update(minutes=minutes, at=time.time())
+        logger.info(f"الرصيد المتبقي: {minutes:g} دقيقة")
+
+    def _translate_http_error(self, code: int, detail: str):
+        # رسائل الخادم عربية ومفهومة (نفد الرصيد، الجهاز، الإلغاء…).
+        # 400 يبقى للمعالجة العامة. الرصيد (402) لا يُعاد بلا شحن.
+        if code == 400:
+            return None
+        if code >= 400:
+            return RewriteUnavailableError(
+                _friendly_error(detail),
+                retryable=code == 429 or code >= 500)
+        return None
 
 
 def provider_from_settings(settings) -> "LLMProvider":

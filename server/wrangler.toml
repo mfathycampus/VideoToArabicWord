@@ -10,3 +10,23 @@ id = "fe773c38217040b4819df0397bca38a1"
 # الأسرار تُضبط بالأمر لا في هذا الملف:
 #   wrangler secret put LICENSE_PRIVATE_KEY
 #   wrangler secret put ADMIN_TOKEN
+
+# ── الخدمة المُدارة (معين المُدار) ───────────────────────────────────
+# محفظة لكل كود: خصم ذرّي من الرصيد. يُنشأ الصنف تلقائيًّا عند النشر.
+[[durable_objects.bindings]]
+name = "WALLET"
+class_name = "Wallet"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Wallet"]
+
+[vars]
+MANAGED_MODEL = "claude-sonnet-5"   # النموذج مفروض من الخادم لا من التطبيق
+UNITS_PER_MINUTE = "8000"           # «نقطة» لكل دقيقة — تُعايَر بعد القياس
+MAX_OUTPUT_TOKENS = "16000"         # سقف الخرج للنداء الواحد
+MAX_CONCURRENT = "3"                # نداءات متزامنة لكل كود
+
+# أسرار الخدمة المُدارة (تُضبط بالأمر):
+#   wrangler secret put ANTHROPIC_API_KEY
+#   wrangler secret put ANTHROPIC_WORKSPACE_ID   # فقط لمفتاح مرتبط بهوية

@@ -71,6 +71,33 @@ def _post(path: str, payload: dict, timeout: int = DEFAULT_TIMEOUT) -> dict:
     return body
 
 
+def managed_balance(code: str, device: str,
+                    timeout: int = DEFAULT_TIMEOUT) -> dict:
+    """رصيد كودٍ من باقة «مُدار» (دقائق) دون استهلاك. للعرض في الواجهة."""
+    base = server_url()
+    if not base:
+        raise ActivationError("لا خادم مضبوط في هذه النسخة.")
+    request = urllib.request.Request(
+        f"{base}/managed/balance",
+        headers={"x-api-key": code.strip().upper(), "x-device": device,
+                 "user-agent": "VideoToArabicWord/balance",
+                 "accept": "application/json"}, method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        message = ""
+        try:
+            payload = json.loads(exc.read().decode("utf-8"))
+            error = payload.get("error")
+            message = error.get("message") if isinstance(error, dict) else str(error or "")
+        except Exception:                              # noqa: BLE001
+            pass
+        raise ActivationError(message or f"رفض الخادم الطلب ({exc.code}).") from exc
+    except Exception as exc:                           # noqa: BLE001
+        raise ActivationError(f"تعذّر الاتصال بالخادم: {exc}", offline=True) from exc
+
+
 def activate(code: str, device: str, app_version: str = "") -> str:
     """يُفعّل كودًا ويعيد نصّ العقد الموقَّع."""
     return _post("/activate", {"code": code.strip().upper(), "device": device,

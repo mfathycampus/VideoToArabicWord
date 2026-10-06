@@ -14,8 +14,12 @@ from PyQt6.QtWidgets import (
 )
 
 from ui.worker import (
+    BalanceWorker,
     ProviderTestWorker,
 )
+
+#: دقائق أقل من هذا تُنبّه المستخدم أن الرصيد يوشك على النفاد.
+LOW_CREDIT_MINUTES = 30
 
 
 class RewritePanelMixin:
@@ -88,7 +92,7 @@ class RewritePanelMixin:
         self.config.rewrite.api_key = text.strip()
 
     def _needs_key(self) -> bool:
-        return self.provider_combo.currentData() != "ollama"
+        return self.provider_combo.currentData() not in ("ollama", "maeen_managed")
 
     def test_and_save_key(self) -> None:
         """يختبر المفتاح باستدعاء حقيقي قصير ثم يحفظه.
@@ -165,6 +169,7 @@ class RewritePanelMixin:
         self.api_key_input.setEnabled(needs_key)
         self.test_button.setEnabled(True)
         name = self.provider_combo.currentData()
+        available = False
         try:
             from ai.providers import build_provider
             provider = build_provider(
@@ -178,6 +183,9 @@ class RewritePanelMixin:
             if not available:
                 if name == "ollama":
                     hint = "\nثبّت Ollama ثم:  ollama pull qwen2.5:7b-instruct"
+                elif name == "maeen_managed":
+                    hint = ("\nفعّل كودًا من باقة «مُدار» من نافذة التفعيل، "
+                            "ثم أعد فتح هذه اللوحة.")
                 else:
                     hint = ("\nألصق المفتاح في الحقل أعلاه ثم اضغط "
                             "«اختبار وحفظ».")
@@ -185,6 +193,85 @@ class RewritePanelMixin:
             model_line = f"  النموذج: {model}" if model else ""
         except Exception as exc:
             status, note, hint, model_line = f"خطأ: {exc}", "", "", ""
+        self._sync_credit(name, available)
         self.rewrite_note.setText(
-            f"{status} · {note}{model_line}{hint}\n"
+            f"{status} · {note}{model_line}{hint}{self._credit_line()}\n"
             "النص الخام يُحفظ دائمًا، ويمكن توليد المستند منه لاحقًا.")
+
+    # ------------------------------------------------------------------
+    # الرصيد المتبقي (باقة «مُدار») — يُقرأ دون استهلاك، خارج خيط الواجهة.
+    def _credit_line(self) -> str:
+        text = getattr(self, "_credit_text", "")
+        return f"\n{text}" if text else ""
+
+    def _sync_credit(self, provider_name: str, available: bool) -> None:
+        """يبدأ تتبّع الرصيد حين يُختار المزوّد المُدار، ويوقفه عند تركه."""
+        if provider_name != "maeen_managed" or not available:
+            self._credit_text = ""
+            self._credit_for = None
+            return
+        if getattr(self, "_credit_timer", None) is None:
+            from PyQt6.QtCore import QTimer
+
+            self._credit_timer = QTimer(self)
+            self._credit_timer.setInterval(4000)
+            self._credit_timer.timeout.connect(self._credit_tick)
+            self._credit_timer.start()
+            self._credit_ticks = 0
+            self._credit_seen = 0.0
+        if getattr(self, "_credit_for", None) != provider_name:
+            self._credit_for = provider_name
+            self._fetch_credit()
+
+    def _credit_tick(self) -> None:
+        """كل 4 ثوانٍ: آخر رصيد التقطه المزوّد بعد نداء، وكل دقيقة قراءة من الخادم."""
+        from ai.providers import managed_credit_state
+
+        if (not self.rewrite_check.isChecked()
+                or self.provider_combo.currentData() != "maeen_managed"):
+            return
+        state = managed_credit_state()
+        if state and state.get("at") != self._credit_seen:
+            self._credit_seen = state["at"]
+            self._set_credit(state["minutes"])
+        self._credit_ticks += 1
+        if self._credit_ticks % 15 == 0:
+            self._fetch_credit()
+
+    def _fetch_credit(self) -> None:
+        if getattr(self, "_credit_busy", False):
+            return
+        self._credit_busy = True
+        thread = QThread(self)
+        worker = BalanceWorker()
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.succeeded.connect(self._set_credit)
+        worker.failed.connect(self._credit_failed)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._credit_done)
+        self._credit_thread = thread
+        thread.start()
+
+    def _credit_done(self) -> None:
+        self._credit_busy = False
+
+    def _set_credit(self, minutes: float) -> None:
+        if minutes <= 0:
+            text = "الرصيد المتبقي: نفد ✗ — اطلب شحن الرصيد من المزوّد."
+        elif minutes < LOW_CREDIT_MINUTES:
+            text = f"الرصيد المتبقي: {minutes:g} دقيقة ⚠ يوشك على النفاد."
+        else:
+            text = f"الرصيد المتبقي: {minutes:g} دقيقة"
+        self._apply_credit_text(text)
+
+    def _credit_failed(self, error: str) -> None:
+        self._apply_credit_text(f"تعذّرت قراءة الرصيد: {error[:90]}")
+
+    def _apply_credit_text(self, text: str) -> None:
+        if getattr(self, "_credit_text", "") == text:
+            return
+        self._credit_text = text
+        self._update_rewrite_note()

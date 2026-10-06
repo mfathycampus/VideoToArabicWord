@@ -50,6 +50,18 @@ def check(app_version: str = "", now: Optional[float] = None) -> Verdict:
     return verdict
 
 
+def current_code() -> Optional[str]:
+    """كود التفعيل من العقد المحفوظ، أو ``None`` إن لم يُفعَّل شيء.
+
+    يستعمله المزوّد المُدار بدل مفتاح Claude. لا شبكة هنا ولا رمي.
+    """
+    try:
+        lease = verify(store().read().get("lease") or "")
+    except Exception:                                  # noqa: BLE001
+        return None
+    return lease.code or None
+
+
 def refresh_online(app_version: str = "") -> Verdict:
     """يجدّد العقد من الخادم. يُستدعى عند ``NEEDS_RECHECK`` أو بطلب المستخدم."""
     state = store().read()
