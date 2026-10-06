@@ -101,6 +101,30 @@ class ProviderTestWorker(QObject):
             self.finished.emit()
 
 
+class BalanceWorker(QObject):
+    """يقرأ الرصيد المتبقي (باقة «مُدار») خارج خيط الواجهة. لا يستهلك شيئًا."""
+
+    succeeded = pyqtSignal(float)
+    failed = pyqtSignal(str)
+    finished = pyqtSignal()
+
+    @pyqtSlot()
+    def run(self) -> None:
+        try:
+            from licensing import app_gate, client
+
+            code = app_gate.current_code()
+            if not code:
+                raise client.ActivationError(
+                    "لا كود مُدار مفعّل — فعّل الكود من نافذة التفعيل.")
+            info = client.managed_balance(code, app_gate.device_id())
+            self.succeeded.emit(float(info.get("credit_minutes") or 0))
+        except Exception as exc:                       # noqa: BLE001
+            self.failed.emit(str(exc))
+        finally:
+            self.finished.emit()
+
+
 class UpdateCheckWorker(QObject):
     """فحص وجود إصدار أحدث خارج خيط الواجهة.
 

@@ -17,6 +17,12 @@
  *   POST /recheck        {code, device}  → {lease}
  *   POST /admin/codes    {code, days, ...}            (Bearer ADMIN_TOKEN)
  *   POST /admin/revoke   {code}                       (Bearer ADMIN_TOKEN)
+ *   POST /admin/reset-device {code}                   (Bearer ADMIN_TOKEN)
+ *   POST /admin/topup    {code, minutes}              (Bearer ADMIN_TOKEN)
+ *   POST /admin/config   {units_per_minute, price_in, price_out, usd_sar}
+ *   POST /admin/managed-switch {enabled}              (Bearer ADMIN_TOKEN)
+ *   POST /v1/messages    (x-api-key = الكود، x-device)  ← الخدمة المُدارة
+ *   GET  /managed/balance (x-api-key = الكود، x-device)  ← الرصيد بلا استهلاك
  *   GET  /admin/codes                                  (Bearer ADMIN_TOKEN)
  */
 
@@ -91,6 +97,23 @@ code{font-family:ui-monospace,Consolas,monospace;font-size:14px}
         <option value="date">حتى تاريخ…</option>
       </select>
     </div>
+    <div>
+      <label for="tier">الباقة</label>
+      <select id="tier" onchange="tierChanged()">
+        <option value="trial|1">تجربة</option>
+        <option value="solo|2" selected>مفتاحك – فرد</option>
+        <option value="team|5">مفتاحك – فريق</option>
+        <option value="managed|1">مُدار – فرد (رصيد دقائق)</option>
+      </select>
+    </div>
+    <div>
+      <label for="devices">عدد الأجهزة</label>
+      <input id="devices" type="number" min="1" max="50" value="2">
+    </div>
+    <div id="creditBox" style="display:none">
+      <label for="credit">الرصيد المبدئي (دقائق)</label>
+      <input id="credit" type="number" min="0" value="300">
+    </div>
     <div id="daysBox" style="display:none">
       <label for="days">عدد الأيام</label>
       <input id="days" type="number" min="1" value="14">
@@ -115,10 +138,29 @@ code{font-family:ui-monospace,Consolas,monospace;font-size:14px}
   <div class="out" id="out"></div>
 </div>
 
+<div class="card" id="costCard" style="display:none">
+  <div class="msg" id="costSummary" style="margin:0 0 12px"></div>
+  <div class="row">
+    <div><label for="cfgUpm">نقطة لكل دقيقة</label>
+      <input id="cfgUpm" type="number" min="1"></div>
+    <div><label for="cfgIn">سعر الدخل ($ لكل مليون رمز)</label>
+      <input id="cfgIn" type="number" step="0.01" min="0.01"></div>
+    <div><label for="cfgOut">سعر الخرج ($ لكل مليون رمز)</label>
+      <input id="cfgOut" type="number" step="0.01" min="0.01"></div>
+    <div><label for="cfgFx">الدولار بالريال</label>
+      <input id="cfgFx" type="number" step="0.01" min="0.01"></div>
+  </div>
+  <div style="margin-top:12px">
+    <button onclick="saveConfig()">حفظ التسعير</button>
+  </div>
+  <div class="msg" id="cfgMsg"></div>
+</div>
+
 <div class="card" id="listCard" style="display:none">
+  <div class="msg" id="managedBar" style="margin:0 0 10px"></div>
   <table id="table"><thead><tr>
     <th>الكود</th><th>الخطة</th><th>المدّة</th><th>الحالة</th>
-    <th>فُعِّل في</th><th>ينتهي</th><th>ملاحظة</th><th></th>
+    <th>الأجهزة</th><th>الرصيد</th><th>الاستهلاك</th><th>فُعِّل في</th><th>ينتهي</th><th>ملاحظة</th><th></th>
   </tr></thead><tbody id="rows"></tbody></table>
   <div class="msg" id="listMsg"></div>
 </div>
@@ -144,6 +186,21 @@ async function api(path, payload) {
 function saveToken() {
   localStorage.setItem("vtaw_admin", document.getElementById("token").value.trim());
   loadCodes();
+}
+
+function tierChanged() {
+  const [kind, devices] = document.getElementById("tier").value.split("|");
+  document.getElementById("devices").value = devices;
+  document.getElementById("creditBox").style.display = kind === "managed" ? "" : "none";
+  if (kind === "managed") {            // الرصيد هو الحدّ، فالكود طويل الصلاحية
+    document.getElementById("plan").value = "365";
+    planChanged();
+  }
+}
+
+function tierName() {
+  const select = document.getElementById("tier");
+  return select.options[select.selectedIndex].text;
 }
 
 function planChanged() {
@@ -181,7 +238,11 @@ async function createCodes() {
     button.disabled = true; button.textContent = "جارٍ الإصدار…";
     const data = await api("/admin/codes", {
       days, max_days: days, count: +document.getElementById("count").value || 1,
-      plan: planLabel(days), note: document.getElementById("note").value.trim(),
+      plan: tierName() + " · " + planLabel(days),
+      max_devices: Math.max(1, +document.getElementById("devices").value || 1),
+      managed: document.getElementById("tier").value.startsWith("managed"),
+      credit_minutes: +document.getElementById("credit").value || 0,
+      note: document.getElementById("note").value.trim(),
     });
     out.style.display = "block";
     out.textContent = data.codes.join("\\n");
@@ -219,15 +280,46 @@ async function loadCodes() {
         <td>\${row.plan || "—"}</td>
         <td>\${row.days} يومًا</td>
         <td><span class="pill \${css}">\${label}</span></td>
+        <td>\${deviceList(row).length}/\${row.max_devices || 1}</td>
+        <td>\${row.managed ? ((row.credit_minutes ?? "؟") + " د") : "—"}</td>
+        <td>\${row.managed ? ((row.calls || 0) + " نداء · " + (row.cost_sar || 0) + " ر.س") : "—"}</td>
         <td>\${fmt(row.activated_at)}</td>
         <td>\${ends}</td>
         <td>\${row.note || ""}</td>
         <td>
           <button class="ghost" onclick="copyCode('\${row.code}')">نسخ</button>
+          \${row.managed ?
+            \`<button class="ghost" onclick="topup('\${row.code}')">شحن</button>
+             <button class="ghost" onclick="calibrate('\${row.code}', \${row.units_used || 0}, \${row.cost_sar || 0})">معايرة</button>\` : ""}
+          \${deviceList(row).length ?
+            \`<button class="ghost" onclick="resetDevice('\${row.code}')">تصفير الجهاز</button>\` : ""}
           \${row.revoked ? "" :
             \`<button class="danger" onclick="revoke('\${row.code}')">إلغاء</button>\`}
         </td></tr>\`;
     }).join("");
+    document.getElementById("costCard").style.display = data.managed_ready ? "" : "none";
+    if (data.config) {
+      const totals = data.totals || {};
+      const perMinute = totals.minutes_used > 0
+        ? (totals.cost_sar / totals.minutes_used).toFixed(3) : null;
+      document.getElementById("costSummary").textContent =
+        "المستهلك: " + (totals.calls || 0) + " نداء · " + (totals.in_tokens || 0) +
+        " رمز دخل · " + (totals.out_tokens || 0) + " رمز خرج ≈ تكلفة " +
+        (totals.cost_sar || 0) + " ر.س" +
+        (perMinute ? " · التكلفة لكل دقيقة مستهلكة ≈ " + perMinute + " ر.س" : "") +
+        " · أرصدة العملاء المتبقية: " + (totals.balance_minutes || 0) + " دقيقة";
+      const fields = {cfgUpm: "units_per_minute", cfgIn: "price_in",
+                      cfgOut: "price_out", cfgFx: "usd_sar"};
+      for (const id in fields) {
+        const input = document.getElementById(id);
+        if (document.activeElement !== input) input.value = data.config[fields[id]];
+      }
+    }
+    document.getElementById("managedBar").innerHTML = data.managed_ready
+      ? ("الخدمة المُدارة: " + (data.managed_enabled ? "تعمل" : "متوقفة") +
+         ' <button class="ghost" onclick="switchManaged(' + (!data.managed_enabled) + ')">' +
+         (data.managed_enabled ? "إيقاف طارئ" : "تشغيل") + "</button>")
+      : "الخدمة المُدارة: غير مهيّأة بعد (ينقصها مفتاح Claude أو المحفظة).";
     document.getElementById("listMsg").textContent =
       rows.length ? "" : "لا أكواد بعد.";
   } catch (err) {
@@ -236,6 +328,62 @@ async function loadCodes() {
       ? err.message
       : "اكتب رمز الإدارة ثم اضغط دخول.";
   }
+}
+
+async function saveConfig() {
+  const message = document.getElementById("cfgMsg");
+  try {
+    await api("/admin/config", {
+      units_per_minute: +document.getElementById("cfgUpm").value,
+      price_in: +document.getElementById("cfgIn").value,
+      price_out: +document.getElementById("cfgOut").value,
+      usd_sar: +document.getElementById("cfgFx").value,
+    });
+    message.textContent = "حُفظ التسعير.";
+  } catch (err) { message.textContent = err.message; }
+  loadCodes();
+}
+
+async function calibrate(code, unitsUsed, cost) {
+  if (!unitsUsed) {
+    alert("لا استهلاك على هذا الكود بعد. عالج به فيديو معروف المدّة أولًا.");
+    return;
+  }
+  const minutes = +prompt("كم دقيقة فيديو عولجت بهذا الكود؟");
+  if (!minutes || minutes <= 0) return;
+  const upm = Math.ceil(unitsUsed / minutes);
+  if (!confirm("استُهلك " + unitsUsed + " نقطة لـ" + minutes + " دقيقة، أي " + upm +
+               " نقطة للدقيقة.\\nتكلفتك الفعلية ≈ " + (cost / minutes).toFixed(3) +
+               " ر.س لكل دقيقة فيديو.\\nتطبيق " + upm + " نقطة للدقيقة؟ " +
+               "(عايِر قبل البيع: أرصدة العملاء الحالية ستُعرض بالوحدة الجديدة)")) return;
+  try { await api("/admin/config", {units_per_minute: upm}); }
+  catch (err) { alert(err.message); }
+  loadCodes();
+}
+
+async function topup(code) {
+  const text = prompt("كم دقيقة تُضاف إلى " + code + "؟ (سالب للخصم)", "300");
+  if (!text) return;
+  try { await api("/admin/topup", {code, minutes: +text}); }
+  catch (err) { alert(err.message); }
+  loadCodes();
+}
+
+async function switchManaged(on) {
+  if (!on && !confirm("إيقاف الخدمة المُدارة لكل العملاء فورًا؟")) return;
+  try { await api("/admin/managed-switch", {enabled: on}); }
+  catch (err) { alert(err.message); }
+  loadCodes();
+}
+
+const deviceList = (row) => row.devices || (row.device ? [row.device] : []);
+
+async function resetDevice(code) {
+  if (!confirm("تصفير أجهزة " + code + "؟ يستطيع العميل تفعيله على جهاز جديد، " +
+               "والمدّة لا تبدأ من جديد.")) return;
+  try { await api("/admin/reset-device", {code}); }
+  catch (err) { alert(err.message); }
+  loadCodes();
 }
 
 async function copyCode(code) {
@@ -343,6 +491,10 @@ const isAdmin = (request, env) => {
   return header.replace(/^Bearer\s+/i, "").trim() === secret;
 };
 
+const deviceListOf = (stored) =>
+  Array.isArray(stored.devices) ? [...stored.devices]
+    : (stored.device ? [stored.device] : []);
+
 async function activate(request, env, renew) {
   const { code, device } = await request.json();
   if (!code || !device) return json({ error: "طلبٌ ناقص." }, 400);
@@ -351,11 +503,25 @@ async function activate(request, env, renew) {
   if (!stored) return json({ error: "كود التفعيل غير معروف." }, 404);
   if (stored.revoked) return json({ error: "أُلغي هذا الكود. راجع المزوّد." }, 403);
 
-  // الربط بالجهاز: أول تفعيل يملك الكود، وما بعده يُرفض.
-  if (stored.device && stored.device !== device) {
-    return json({ error: "هذا الكود مُفعَّل على جهاز آخر." }, 403);
+  // الربط بالأجهزة: الأجهزة الأولى حتى ``max_devices`` تملك الكود، وما
+  // بعدها يُرفض. السجلات القديمة تحمل ``device`` واحدًا فتُعامَل كقائمة.
+  const devices = deviceListOf(stored);
+  const maxDevices = Math.max(1, stored.max_devices || 1);
+  const known = devices.includes(device);
+  if (!known && devices.length >= maxDevices) {
+    return json({
+      error: maxDevices === 1
+        ? "هذا الكود مُفعَّل على جهاز آخر. اطلب من المزوّد تصفير الجهاز."
+        : `بلغ هذا الكود حدّ الأجهزة (${maxDevices}). اطلب من المزوّد تصفير الأجهزة.`,
+    }, 403);
   }
-  if (!stored.device && renew) {
+  if (!known && renew) {
+    // بعد التصفير: الجهاز القديم يُرفض برسالة واضحة، لا «لم يُفعَّل بعد».
+    if (devices.length || stored.resets) {
+      return json({
+        error: "أُعيد ضبط أجهزة هذا الكود. فعِّله من جديد على هذا الجهاز.",
+      }, 403);
+    }
     return json({ error: "كودٌ لم يُفعَّل بعد." }, 409);
   }
 
@@ -365,10 +531,12 @@ async function activate(request, env, renew) {
   const expires = started + (stored.days || 7) * 86400;
   if (now > expires) return json({ error: "انتهت مدّة هذا الكود." }, 403);
 
-  if (!stored.device) {
-    stored.device = device;
-    stored.activated_at = started;
+  if (!known) {
+    devices.push(device);
   }
+  stored.devices = devices;
+  stored.device = devices[0];          // توافقٌ مع ما يقرؤه سواك
+  stored.activated_at = started;
   stored.last_seen = now;
   await env.LICENSES.put(code, JSON.stringify(stored));
 
@@ -383,6 +551,320 @@ async function activate(request, env, renew) {
   });
 }
 
+// ── الخدمة المُدارة ───────────────────────────────────────────────────
+// العميل بلا مفتاح Claude: التطبيق يرسل طلبه إلى /v1/messages بكود
+// التفعيل بدل المفتاح، والخادم يمرّره بمفتاحنا ويخصم من رصيد الكود.
+//
+// الرصيد يُخزَّن في Durable Object لكل كود (محفظة): الخصم ذرّي فلا
+// يُخصم نداءان متزامنان من الرصيد نفسه، وهو ما لا يضمنه KV.
+// الوحدة الداخلية «نقطة» = رموز الدخل + 5×رموز الخرج (نسبة سعر الخرج
+// إلى الدخل). و«الدقيقة» وحدة تسويقية = UNITS_PER_MINUTE نقطة، وتُعايَر
+// من الاستهلاك الفعلي بعد القياس.
+
+const MANAGED_KEYS = ["system", "messages", "temperature", "top_p", "top_k",
+                      "stop_sequences"];
+const MAX_BODY_BYTES = 25 * 1024 * 1024;
+const OUTPUT_WEIGHT = 5;
+
+const num = (value, fallback) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+// الإعداد الحي: يُحفظ من صفحة الإدارة في المحفظة العامة ويتقدّم على
+// متغيّرات البيئة (القيم الافتراضية). الأسعار بالدولار لكل مليون رمز.
+function resolveConfig(env, stored) {
+  const saved = stored || {};
+  return {
+    units_per_minute: num(saved.units_per_minute, num(env.UNITS_PER_MINUTE, 8000)),
+    price_in: num(saved.price_in, num(env.PRICE_IN_USD_PER_MTOK, 3)),
+    price_out: num(saved.price_out, num(env.PRICE_OUT_USD_PER_MTOK, 15)),
+    usd_sar: num(saved.usd_sar, num(env.USD_SAR, 3.75)),
+  };
+}
+const toMinutes = (units, upm) => Math.round((units / upm) * 10) / 10;
+const costSar = (inTokens, outTokens, cfg) =>
+  Math.round(((inTokens * cfg.price_in + outTokens * cfg.price_out) / 1e6)
+             * cfg.usd_sar * 100) / 100;
+
+// بالشكل الذي يفهمه التطبيق (نفس بنية أخطاء Anthropic).
+const managedError = (status, type, message, headers = {}) =>
+  new Response(JSON.stringify({ type: "error", error: { type, message } }), {
+    status,
+    headers: { "content-type": "application/json; charset=utf-8", ...headers },
+  });
+
+export class Wallet {
+  constructor(state) {
+    this.state = state;
+  }
+
+  async fetch(request) {
+    const body = await request.json();
+    const store = this.state.storage;
+    const now = Date.now();
+    let result;
+
+    if (body.op === "get") {
+      const values = await store.get(["units", "calls", "in", "out"]);
+      result = {
+        units: values.get("units") || 0, calls: values.get("calls") || 0,
+        in_tokens: values.get("in") || 0, out_tokens: values.get("out") || 0,
+      };
+    } else if (body.op === "add") {
+      const units = Math.round(((await store.get("units")) || 0) + body.units);
+      await store.put("units", units);
+      result = { units };
+    } else if (body.op === "reserve") {
+      // يحجز من الرصيد قبل النداء: يحدّ التجاوز حين تتزامن نداءات كثيرة.
+      const values = await store.get(["units", "inflight"]);
+      let units = values.get("units") || 0;
+      const inflight = values.get("inflight") || {};
+      for (const [id, started] of Object.entries(inflight)) {
+        if (now - started > 600000) delete inflight[id];     // نداءٌ عالق
+      }
+      if (Object.keys(inflight).length >= (body.max_concurrent || 3)) {
+        result = { ok: false, reason: "busy" };
+      } else if (units <= 0) {
+        result = { ok: false, reason: "empty", units };
+      } else {
+        const take = Math.min(Math.max(1, Math.ceil(body.want)), units);
+        const id = crypto.randomUUID();
+        units -= take;
+        inflight[id] = now;
+        await store.put({ units, inflight });
+        result = { ok: true, id, take, units };
+      }
+    } else if (body.op === "settle") {
+      // يردّ الفرق بين المحجوز والمستهلك فعلًا. ``actual`` = 0 عند الفشل.
+      const values = await store.get(["units", "inflight", "calls", "in", "out"]);
+      const inflight = values.get("inflight") || {};
+      delete inflight[body.id];
+      const units = Math.round((values.get("units") || 0)
+                               + (body.take || 0) - (body.actual || 0));
+      await store.put({
+        units, inflight,
+        calls: (values.get("calls") || 0) + (body.counted ? 1 : 0),
+        in: (values.get("in") || 0) + (body.in_tokens || 0),
+        out: (values.get("out") || 0) + (body.out_tokens || 0),
+      });
+      result = { units };
+    } else if (body.op === "get_flag") {
+      result = {
+        enabled: (await store.get("enabled")) !== false,
+        config: (await store.get("config")) || {},
+      };
+    } else if (body.op === "set_config") {
+      const next = { ...((await store.get("config")) || {}), ...body.config };
+      await store.put("config", next);
+      result = { config: next };
+    } else if (body.op === "set_flag") {
+      await store.put("enabled", Boolean(body.enabled));
+      result = { enabled: Boolean(body.enabled) };
+    } else {
+      result = { error: "عملية غير معروفة." };
+    }
+    return new Response(JSON.stringify(result),
+      { headers: { "content-type": "application/json" } });
+  }
+}
+
+async function wallet(env, name, payload) {
+  const stub = env.WALLET.get(env.WALLET.idFromName(name));
+  const response = await stub.fetch("https://wallet/", {
+    method: "POST", body: JSON.stringify(payload),
+  });
+  return response.json();
+}
+
+async function globalConfig(env) {
+  const state = await wallet(env, "__global__", { op: "get_flag" });
+  return { enabled: state.enabled, ...resolveConfig(env, state.config) };
+}
+
+function estimateUnits(body, maxTokens) {
+  // تقدير متحفّظ للحجز فقط — الخصم النهائي من usage الفعلي.
+  let inputTokens = 0;
+  const addText = (text) => { inputTokens += Math.ceil(String(text || "").length / 2); };
+  if (typeof body.system === "string") addText(body.system);
+  else if (Array.isArray(body.system)) body.system.forEach((b) => addText(b && b.text));
+  for (const message of body.messages) {
+    const content = message && message.content;
+    if (typeof content === "string") addText(content);
+    else if (Array.isArray(content)) {
+      for (const part of content) {
+        if (part && part.type === "image") inputTokens += 1600;
+        else addText(part && part.text);
+      }
+    }
+  }
+  return inputTokens + OUTPUT_WEIGHT * maxTokens;
+}
+
+async function managedAuth(request, env) {
+  // كود + جهاز + حالة الكود. يعيد ``{ error }`` أو ``{ code, stored }``.
+  const fail = (status, type, message) =>
+    ({ error: managedError(status, type, message) });
+  const code = (request.headers.get("x-api-key") || "").trim().toUpperCase();
+  const device = (request.headers.get("x-device") || "").trim();
+  if (!code || !device) {
+    return fail(401, "authentication_error",
+      "كود التفعيل أو معرّف الجهاز ناقص.");
+  }
+  const stored = await env.LICENSES.get(code, "json");
+  if (!stored) {
+    return fail(401, "authentication_error", "كود التفعيل غير معروف.");
+  }
+  if (stored.revoked) {
+    return fail(403, "permission_error", "أُلغي هذا الكود. راجع المزوّد.");
+  }
+  if (!stored.managed) {
+    return fail(403, "permission_error",
+      "هذا الكود ليس من باقة «مُدار». استخدم مفتاحك الخاص أو اطلب باقة مُدار.");
+  }
+  if (!stored.activated_at) {
+    return fail(403, "permission_error", "فعّل الكود أولًا من نافذة التفعيل.");
+  }
+  const now = Math.floor(Date.now() / 1000);
+  if (now > stored.activated_at + (stored.days || 7) * 86400) {
+    return fail(403, "permission_error", "انتهت مدّة هذا الكود.");
+  }
+  if (!deviceListOf(stored).includes(device)) {
+    return fail(403, "permission_error", "هذا الجهاز غير مرتبط بالكود.");
+  }
+  return { code, stored };
+}
+
+// رصيد الكود دون استهلاك: يستعمله التطبيق ليعرضه للمستخدم.
+async function managedBalance(request, env) {
+  if (!env.WALLET) {
+    return managedError(500, "api_error",
+      "الخدمة المُدارة غير مهيّأة على الخادم بعد.");
+  }
+  const auth = await managedAuth(request, env);
+  if (auth.error) return auth.error;
+  const cfg = await globalConfig(env);
+  const info = await wallet(env, auth.code, { op: "get" });
+  return json({
+    credit_minutes: Math.max(0, toMinutes(info.units, cfg.units_per_minute)),
+    enabled: cfg.enabled,
+    expires_at: auth.stored.activated_at + (auth.stored.days || 7) * 86400,
+  });
+}
+
+async function managedMessages(request, env) {
+  if (!env.WALLET || !env.ANTHROPIC_API_KEY) {
+    return managedError(500, "api_error",
+      "الخدمة المُدارة غير مهيّأة على الخادم بعد.");
+  }
+  const flag = await globalConfig(env);
+  if (!flag.enabled) {
+    return managedError(503, "overloaded_error",
+      "الخدمة المُدارة متوقفة مؤقتًا. حاول لاحقًا.");
+  }
+
+  const auth = await managedAuth(request, env);
+  if (auth.error) return auth.error;
+  const { code } = auth;
+
+  const length = Number(request.headers.get("content-length") || 0);
+  if (length > MAX_BODY_BYTES) {
+    return managedError(413, "request_too_large", "الطلب أكبر من الحد المسموح.");
+  }
+  const raw = await request.text();
+  if (raw.length > MAX_BODY_BYTES) {
+    return managedError(413, "request_too_large", "الطلب أكبر من الحد المسموح.");
+  }
+  let input;
+  try {
+    input = JSON.parse(raw);
+  } catch (err) {
+    return managedError(400, "invalid_request_error", "طلب غير صالح.");
+  }
+  if (input.stream) {
+    return managedError(400, "invalid_request_error", "البثّ غير مدعوم في الخدمة المُدارة.");
+  }
+  if (!Array.isArray(input.messages) || !input.messages.length) {
+    return managedError(400, "invalid_request_error", "الرسائل ناقصة.");
+  }
+  // قائمة بيضاء: لا أدوات ولا ميزات أخرى تُستهلك على حسابنا، والنموذج مفروض.
+  const outgoing = { model: env.MANAGED_MODEL || "claude-sonnet-5" };
+  for (const key of MANAGED_KEYS) {
+    if (key in input) outgoing[key] = input[key];
+  }
+  outgoing.max_tokens = Math.min(
+    num(env.MAX_OUTPUT_TOKENS, 16000),
+    Math.max(1, Math.floor(Number(input.max_tokens) || 1024)));
+
+  const hold = await wallet(env, code, {
+    op: "reserve", want: estimateUnits(outgoing, outgoing.max_tokens),
+    max_concurrent: num(env.MAX_CONCURRENT, 3),
+  });
+  if (!hold.ok) {
+    return hold.reason === "busy"
+      ? managedError(429, "rate_limit_error",
+          "طلبات متزامنة كثيرة لهذا الكود. أعد المحاولة بعد لحظات.",
+          { "retry-after": "5" })
+      : managedError(402, "billing_error",
+          "نفد رصيد الدقائق. اشحن رصيدك ثم أعد المحاولة.");
+  }
+  const settle = (extra) =>
+    wallet(env, code, { op: "settle", id: hold.id, take: hold.take, ...extra });
+
+  const headers = {
+    "content-type": "application/json",
+    "x-api-key": env.ANTHROPIC_API_KEY.trim(),
+    "anthropic-version": request.headers.get("anthropic-version") || "2023-06-01",
+  };
+  if (env.ANTHROPIC_WORKSPACE_ID) {
+    headers["anthropic-workspace-id"] = env.ANTHROPIC_WORKSPACE_ID.trim();
+  }
+
+  let upstream, text;
+  try {
+    upstream = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST", headers, body: JSON.stringify(outgoing),
+      signal: AbortSignal.timeout(290000),
+    });
+    text = await upstream.text();
+  } catch (err) {
+    await settle({ actual: 0 });                  // لم يُستهلك شيء: يُردّ كله
+    return managedError(502, "api_error", "تعذّر الوصول إلى Claude. أعد المحاولة.");
+  }
+
+  if (!upstream.ok) {
+    await settle({ actual: 0 });
+    // خطأ في مفتاحنا لا في عميل: لا يُنقل إليه نصّه الذي يوحي له بتغيير مفتاحه.
+    const ours = upstream.status === 401 || upstream.status === 403 ||
+      (upstream.status === 400 && /workspace/i.test(text));
+    if (ours) {
+      console.error("managed upstream rejected server key", upstream.status, text.slice(0, 300));
+      return managedError(502, "api_error", "عطل في إعداد الخدمة المُدارة. أخبر المزوّد.");
+    }
+    return new Response(text, { status: upstream.status, headers: {
+      "content-type": "application/json; charset=utf-8",
+      ...(upstream.headers.get("retry-after")
+          ? { "retry-after": upstream.headers.get("retry-after") } : {}),
+    } });
+  }
+
+  let usage = null;
+  try {
+    usage = JSON.parse(text).usage || null;
+  } catch (err) { /* ردٌّ سليم الحالة بلا usage مفهوم: نخصم المحجوز */ }
+  const inTokens = usage
+    ? (usage.input_tokens || 0) + (usage.cache_creation_input_tokens || 0)
+      + (usage.cache_read_input_tokens || 0) : 0;
+  const outTokens = usage ? usage.output_tokens || 0 : 0;
+  const after = await settle({
+    actual: usage ? inTokens + OUTPUT_WEIGHT * outTokens : hold.take,
+    in_tokens: inTokens, out_tokens: outTokens, counted: true,
+  });
+  return new Response(text, { status: 200, headers: {
+    "content-type": "application/json; charset=utf-8",
+    "x-maeen-credit-minutes": String(Math.max(0, toMinutes(after.units, flag.units_per_minute))),
+  } });
+}
+
 async function route(request, env) {
     const url = new URL(request.url);
     const path = url.pathname.replace(/\/+$/, "") || "/";
@@ -392,6 +874,13 @@ async function route(request, env) {
     }
     if (request.method === "POST" && path === "/recheck") {
       return activate(request, env, true);
+    }
+
+    if (request.method === "POST" && path === "/v1/messages") {
+      return managedMessages(request, env);
+    }
+    if (request.method === "GET" && path === "/managed/balance") {
+      return managedBalance(request, env);
     }
 
     // صفحة الإدارة: تُخدَم بلا رمز (لا تحوي شيئًا)، والرمز يُطلب داخلها
@@ -408,6 +897,11 @@ async function route(request, env) {
         admin_token_set: Boolean((env.ADMIN_TOKEN || "").trim()),
         signing_key_set: Boolean(env.LICENSE_PRIVATE_KEY),
         kv_bound: Boolean(env.LICENSES),
+        wallet_bound: Boolean(env.WALLET),
+        anthropic_key_set: Boolean(env.ANTHROPIC_API_KEY),
+        managed_model: env.MANAGED_MODEL || "claude-sonnet-5",
+        units_per_minute: (env.WALLET ? await globalConfig(env)
+                                      : resolveConfig(env)).units_per_minute,
       });
     }
 
@@ -422,16 +916,28 @@ async function route(request, env) {
 
       if (request.method === "POST" && path === "/admin/codes") {
         const body = await request.json();
+        if (body.managed && !env.WALLET) {
+          return json({ error: "المحفظة غير مربوطة بعد — انشر الخادم بالإعداد الجديد." }, 500);
+        }
         const count = Math.min(50, Math.max(1, body.count || 1));
         const codes = body.code ? [body.code] : newCodes(count);
         const record = {
           days: body.days || 7, max_days: body.max_days || body.days || 7,
           recheck_days: body.recheck_days ?? 7, grace_days: body.grace_days ?? 3,
           plan: body.plan || "", note: body.note || "",
+          max_devices: Math.min(50, Math.max(1, body.max_devices || 1)),
+          ...(body.managed ? { managed: true } : {}),
           created_at: Math.floor(Date.now() / 1000),
         };
         for (const code of codes) {
           await env.LICENSES.put(code, JSON.stringify(record));
+          const credit = Number(body.credit_minutes) || 0;
+          if (body.managed && credit > 0) {
+            await wallet(env, code, {
+              op: "add",
+              units: Math.round(credit * (await globalConfig(env)).units_per_minute),
+            });
+          }
         }
         return json({ ok: true, codes });
       }
@@ -440,6 +946,64 @@ async function route(request, env) {
         const { code } = await request.json();
         await env.LICENSES.delete(code);
         return json({ ok: true });
+      }
+
+      // التسعير: نقاط الدقيقة وأسعار Claude وسعر الدولار — بلا إعادة نشر.
+      if (request.method === "POST" && path === "/admin/config") {
+        if (!env.WALLET) return json({ error: "المحفظة غير مربوطة." }, 500);
+        const body = await request.json();
+        const patch = {};
+        for (const key of ["units_per_minute", "price_in", "price_out", "usd_sar"]) {
+          if (!(key in body)) continue;
+          const value = Number(body[key]);
+          if (!Number.isFinite(value) || value <= 0 || value > 1e9) {
+            return json({ error: `قيمة غير صالحة: ${key}` }, 400);
+          }
+          patch[key] = value;
+        }
+        await wallet(env, "__global__", { op: "set_config", config: patch });
+        const { enabled, ...config } = await globalConfig(env);
+        return json({ ok: true, config });
+      }
+
+      // شحن الرصيد بعد تأكيد التحويل. ``minutes`` سالبة للتصحيح.
+      if (request.method === "POST" && path === "/admin/topup") {
+        if (!env.WALLET) return json({ error: "المحفظة غير مربوطة." }, 500);
+        const { code, minutes } = await request.json();
+        const stored = await env.LICENSES.get(code, "json");
+        if (!stored) return json({ error: "كود غير معروف." }, 404);
+        if (!stored.managed) return json({ error: "هذا الكود ليس من باقة مُدار." }, 400);
+        const amount = Number(minutes);
+        if (!Number.isFinite(amount) || amount === 0 || Math.abs(amount) > 100000) {
+          return json({ error: "عدد دقائق غير صالح." }, 400);
+        }
+        const upm = (await globalConfig(env)).units_per_minute;
+        const result = await wallet(env, code, {
+          op: "add", units: Math.round(amount * upm),
+        });
+        return json({ ok: true, credit_minutes: toMinutes(result.units, upm) });
+      }
+
+      // إيقاف طارئ للخدمة المُدارة كلها (أو إعادتها).
+      if (request.method === "POST" && path === "/admin/managed-switch") {
+        if (!env.WALLET) return json({ error: "المحفظة غير مربوطة." }, 500);
+        const { enabled } = await request.json();
+        return json({ ok: true, ...(await wallet(env, "__global__", {
+          op: "set_flag", enabled: Boolean(enabled) })) });
+      }
+
+      // تصفير الأجهزة: يفكّ الربط فقط. ``activated_at`` يبقى، فلا تتجدّد
+      // المدّة، ويُحصى عدد المرّات ليظهر من يكرّر الطلب.
+      if (request.method === "POST" && path === "/admin/reset-device") {
+        const { code } = await request.json();
+        const stored = await env.LICENSES.get(code, "json");
+        if (!stored) return json({ error: "كود غير معروف." }, 404);
+        stored.devices = [];
+        delete stored.device;
+        stored.resets = (stored.resets || 0) + 1;
+        stored.last_reset = Math.floor(Date.now() / 1000);
+        await env.LICENSES.put(code, JSON.stringify(stored));
+        return json({ ok: true, resets: stored.resets });
       }
 
       if (request.method === "POST" && path === "/admin/revoke") {
@@ -457,7 +1021,42 @@ async function route(request, env) {
         for (const key of list.keys) {
           rows.push({ code: key.name, ...(await env.LICENSES.get(key.name, "json")) });
         }
-        return json({ codes: rows });
+        let cfg = { enabled: true, ...resolveConfig(env) };
+        const totals = { calls: 0, in_tokens: 0, out_tokens: 0, units_used: 0,
+                         cost_sar: 0, minutes_used: 0, balance_minutes: 0 };
+        if (env.WALLET) {
+          cfg = await globalConfig(env);
+          await Promise.all(rows.filter((row) => row.managed).map(async (row) => {
+            try {
+              const info = await wallet(env, row.code, { op: "get" });
+              row.credit_minutes = toMinutes(info.units, cfg.units_per_minute);
+              row.calls = info.calls;
+              row.in_tokens = info.in_tokens;
+              row.out_tokens = info.out_tokens;
+              row.units_used = info.in_tokens + OUTPUT_WEIGHT * info.out_tokens;
+              row.cost_sar = costSar(info.in_tokens, info.out_tokens, cfg);
+            } catch (err) {
+              row.credit_minutes = null;
+            }
+          }));
+          for (const row of rows) {
+            if (!row.managed || row.credit_minutes === null) continue;
+            totals.calls += row.calls || 0;
+            totals.in_tokens += row.in_tokens || 0;
+            totals.out_tokens += row.out_tokens || 0;
+            totals.units_used += row.units_used || 0;
+            totals.balance_minutes += row.credit_minutes || 0;
+          }
+          totals.cost_sar = costSar(totals.in_tokens, totals.out_tokens, cfg);
+          totals.minutes_used = toMinutes(totals.units_used, cfg.units_per_minute);
+          totals.balance_minutes = Math.round(totals.balance_minutes * 10) / 10;
+        }
+        const { enabled, ...config } = cfg;
+        return json({
+          codes: rows, managed_enabled: enabled, config, totals,
+          managed_ready: Boolean(env.WALLET && env.ANTHROPIC_API_KEY),
+          units_per_minute: cfg.units_per_minute,
+        });
       }
     }
 

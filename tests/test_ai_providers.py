@@ -19,6 +19,8 @@ RECEIVED = {}
 class Handler(BaseHTTPRequestHandler):
     status = 200
     body = {"content": [{"type": "text", "text": '{"title":"عنوان"}'}]}
+    headers_out: dict = {}
+    get_body: dict = {}
 
     def do_POST(self):
         length = int(self.headers.get("content-length", 0))
@@ -27,8 +29,18 @@ class Handler(BaseHTTPRequestHandler):
         RECEIVED["body"] = json.loads(self.rfile.read(length))
         self.send_response(Handler.status)
         self.send_header("content-type", "application/json")
+        for name, value in Handler.headers_out.items():
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(json.dumps(Handler.body).encode())
+
+    def do_GET(self):
+        RECEIVED["path"] = self.path
+        RECEIVED["headers"] = dict(self.headers)
+        self.send_response(Handler.status)
+        self.send_header("content-type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps(Handler.get_body).encode())
 
     def log_message(self, *args):
         pass
@@ -260,3 +272,171 @@ def test_deprecated_param_is_dropped_and_retried(monkeypatch):
         assert "temperature" not in calls["bodies"][1]
     finally:
         httpd.shutdown()
+
+
+# ---------------- «معين المُدار» ----------------
+@pytest.fixture
+def managed(server, monkeypatch):
+    """مزوّد مُدار يتجه إلى الخادم الوهمي بكودٍ وجهازٍ معروفين."""
+    from licensing import app_gate
+
+    monkeypatch.setenv("VTAW_LICENSE_SERVER", server)
+    monkeypatch.setattr(app_gate, "current_code", lambda: "VTAW-AAAA-BBBB")
+    monkeypatch.setattr(app_gate, "device_id", lambda: "DEVICE-1")
+    RECEIVED.clear()
+    Handler.status = 200
+    Handler.body = {"content": [{"type": "text", "text": "ok"}]}
+    yield build_provider("maeen_managed")
+    Handler.status = 200
+    Handler.body = {"content": [{"type": "text", "text": '{"title":"عنوان"}'}]}
+
+
+def test_managed_is_registered_and_cloud():
+    from utils.audit import CLOUD_PROVIDERS
+
+    assert "maeen_managed" in [name for name, _ in PROVIDER_CHOICES]
+    provider = build_provider("maeen_managed")
+    assert provider.info.is_local is False
+    assert provider.info.name in CLOUD_PROVIDERS
+
+
+def test_managed_sends_code_and_device_not_a_key(managed):
+    assert managed.complete("sys", "user") == "ok"
+    assert RECEIVED["path"] == "/v1/messages"
+    sent = {k.lower(): v for k, v in RECEIVED["headers"].items()}
+    assert sent["x-api-key"] == "VTAW-AAAA-BBBB"
+    assert sent["x-device"] == "DEVICE-1"
+    assert "anthropic-workspace-id" not in sent
+
+
+def test_managed_ignores_local_key_and_workspace(server, monkeypatch):
+    """مفتاح Anthropic المحلي لا يُرسل إلى خادم المزوّد أبدًا."""
+    from licensing import app_gate
+
+    monkeypatch.setenv("VTAW_LICENSE_SERVER", server)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-SECRET")
+    monkeypatch.setenv("ANTHROPIC_WORKSPACE_ID", "wrkspc_x")
+    monkeypatch.setattr(app_gate, "current_code", lambda: "VTAW-CODE")
+    monkeypatch.setattr(app_gate, "device_id", lambda: "D")
+    RECEIVED.clear()
+    build_provider("maeen_managed").complete("s", "u")
+    sent = json.dumps(RECEIVED["headers"])
+    assert "sk-ant-SECRET" not in sent and "wrkspc_x" not in sent
+
+
+def test_managed_unavailable_without_code(monkeypatch, server):
+    from licensing import app_gate
+
+    monkeypatch.setenv("VTAW_LICENSE_SERVER", server)
+    monkeypatch.setattr(app_gate, "current_code", lambda: None)
+    provider = build_provider("maeen_managed")
+    assert provider.is_available() is False
+    with pytest.raises(RewriteUnavailableError, match="مُدار"):
+        provider.complete("s", "u")
+
+
+def test_managed_never_falls_back_to_anthropic_host(monkeypatch):
+    """بلا خادم تفعيل مضبوط لا يُرسل الكود إلى api.anthropic.com."""
+    import licensing.keys as keys
+    from licensing import app_gate
+
+    monkeypatch.delenv("VTAW_LICENSE_SERVER", raising=False)
+    monkeypatch.setattr(keys, "SERVER_URL", "")
+    monkeypatch.setattr(app_gate, "current_code", lambda: "VTAW-CODE")
+    provider = build_provider("maeen_managed")
+    assert provider.base_url == ""
+    assert provider.is_available() is False
+
+
+def test_managed_insufficient_balance_shows_server_message(managed):
+    Handler.status = 402
+    Handler.body = {"type": "error", "error": {
+        "type": "billing_error", "message": "نفد رصيد الدقائق. اشحن رصيدك"}}
+    with pytest.raises(RewriteUnavailableError, match="نفد رصيد") as info:
+        managed.complete("s", "u")
+    assert info.value.retryable is False
+
+
+def test_managed_busy_is_retryable(managed):
+    Handler.status = 429
+    Handler.body = {"type": "error", "error": {
+        "type": "rate_limit_error", "message": "طلبات متزامنة كثيرة"}}
+    with pytest.raises(RewriteUnavailableError) as info:
+        managed.complete("s", "u")
+    assert info.value.retryable is True
+    assert "متزامنة" in str(info.value)
+
+
+def test_anthropic_provider_behaviour_unchanged(server, monkeypatch):
+    """الخطّافات الجديدة لا تغيّر مزوّد Claude الأصلي."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    RECEIVED.clear()
+    AnthropicProvider(base_url=server).complete("s", "u")
+    sent = {k.lower(): v for k, v in RECEIVED["headers"].items()}
+    assert sent["x-api-key"] == "sk-ant-test"
+    assert "x-device" not in sent
+
+
+# ---------------- عرض الرصيد المتبقي ----------------
+def test_managed_captures_credit_header(managed):
+    from ai.providers import managed_credit_state
+
+    Handler.headers_out = {"x-maeen-credit-minutes": "42.5"}
+    try:
+        managed.complete("s", "u")
+    finally:
+        Handler.headers_out = {}
+    state = managed_credit_state()
+    assert state["minutes"] == 42.5 and state["at"] > 0
+
+
+def test_managed_ignores_bad_credit_header(managed):
+    import ai.providers as providers
+
+    providers._managed_credit.clear()
+    Handler.headers_out = {"x-maeen-credit-minutes": "not-a-number"}
+    try:
+        managed.complete("s", "u")
+    finally:
+        Handler.headers_out = {}
+    assert providers.managed_credit_state() == {}
+
+
+def test_plain_anthropic_provider_never_records_credit(server, monkeypatch):
+    import ai.providers as providers
+
+    providers._managed_credit.clear()
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    Handler.headers_out = {"x-maeen-credit-minutes": "99"}
+    try:
+        AnthropicProvider(base_url=server).complete("s", "u")
+    finally:
+        Handler.headers_out = {}
+    assert providers.managed_credit_state() == {}
+
+
+def test_managed_balance_client(server, monkeypatch):
+    from licensing import client
+
+    monkeypatch.setenv("VTAW_LICENSE_SERVER", server)
+    Handler.get_body = {"credit_minutes": 17.5, "enabled": True}
+    RECEIVED.clear()
+    info = client.managed_balance("vtaw-aaaa", "DEV-9")
+    sent = {k.lower(): v for k, v in RECEIVED["headers"].items()}
+    assert info["credit_minutes"] == 17.5
+    assert RECEIVED["path"] == "/managed/balance"
+    assert sent["x-api-key"] == "VTAW-AAAA" and sent["x-device"] == "DEV-9"
+
+
+def test_managed_balance_client_shows_server_message(server, monkeypatch):
+    from licensing import client
+
+    monkeypatch.setenv("VTAW_LICENSE_SERVER", server)
+    Handler.status = 403
+    Handler.get_body = {"type": "error", "error": {
+        "type": "permission_error", "message": "هذا الجهاز غير مرتبط بالكود."}}
+    try:
+        with pytest.raises(client.ActivationError, match="غير مرتبط"):
+            client.managed_balance("VTAW-X", "D")
+    finally:
+        Handler.status = 200

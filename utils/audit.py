@@ -39,7 +39,8 @@ AUDIT_FILENAME = "audit.jsonl"
 #: مزوّدات تُخرج النصّ من الجهاز. ``ollama`` ليس منها — محلّي بالكامل.
 #: القائمة صريحة لا مشتقّة من ``is_local``: حقلٌ يقرأه مدقّق امتثال لا
 #: يجوز أن يعتمد على صفةٍ قد يغيّرها تعديلٌ في وحدة أخرى بلا انتباه.
-CLOUD_PROVIDERS = {"anthropic", "openai", "openai_compatible", "cohere"}
+CLOUD_PROVIDERS = {"anthropic", "maeen_managed", "openai",
+                   "openai_compatible", "cohere"}
 
 
 def default_audit_dir() -> Path:
