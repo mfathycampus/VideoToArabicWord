@@ -88,7 +88,7 @@ code{font-family:ui-monospace,Consolas,monospace;font-size:14px}
   <div class="row">
     <div>
       <label for="plan">الخطة</label>
-      <select id="plan" onchange="planChanged()">
+      <select id="plan" onchange="planTouched = true; planChanged()">
         <option value="7">تجربة أسبوع</option>
         <option value="30">شهر</option>
         <option value="90">ثلاثة أشهر</option>
@@ -188,11 +188,15 @@ function saveToken() {
   loadCodes();
 }
 
+let planTouched = false;
+
 function tierChanged() {
   const [kind, devices] = document.getElementById("tier").value.split("|");
   document.getElementById("devices").value = devices;
   document.getElementById("creditBox").style.display = kind === "managed" ? "" : "none";
-  if (kind === "managed") {            // الرصيد هو الحدّ، فالكود طويل الصلاحية
+  // الرصيد هو الحدّ، فالكود المُدار طويل الصلاحية افتراضيًا — لكن إن اختار
+  // المشرف مدةً بنفسه (تجربة أسبوع مثلًا) فلا نُغيّرها عليه.
+  if (kind === "managed" && !planTouched) {
     document.getElementById("plan").value = "365";
     planChanged();
   }
