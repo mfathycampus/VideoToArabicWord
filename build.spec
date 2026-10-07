@@ -70,9 +70,11 @@ icon_icns = PROJECT / "assets" / "logo.icns"
 # بالحرف إن faster-whisper «يحمّل موارد بالاسم وقت التشغيل» — عرفنا
 # القاعدة وشحنّا الوحدات وحدها.
 datas += collect_data_files("faster_whisper")
+# شرائح العرض: قالب python-pptx الافتراضي ملفٌّ يُحمَّل بالاسم وقت التشغيل.
+datas += collect_data_files("pptx")
 
 # tokenizers الخاص بـ faster-whisper يحمّل موارد بالاسم وقت التشغيل
-hiddenimports = collect_submodules("faster_whisper") + [
+hiddenimports = collect_submodules("faster_whisper") + collect_submodules("pptx") + [
     "cryptography.hazmat.bindings._rust",   # التحقّق من الترخيص
     "ctranslate2",
     "tokenizers",

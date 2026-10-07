@@ -673,6 +673,13 @@ class AnthropicProvider(LLMProvider):
 
     # ------------------------------------------------------------------
     def _post(self, body: dict, headers: dict, timeout: int) -> dict:
+        # بلا ترويسة User-Agent يرسل urllib «Python-urllib/3.x»، وحمايةُ Cloudflare
+        # على الخادم تردّ حينها بـ«error code: 1010» (توقيع متصفّح محظور) على
+        # بعض الشبكات وحدها — رُصد على جهاز مدرسة يعمل عليه التفعيل ولا تعمل الصياغة.
+        if not any(k.lower() == "user-agent" for k in headers):
+            from version import APP_VERSION
+
+            headers = {**headers, "user-agent": f"VideoToArabicWord/{APP_VERSION}"}
         request = urllib.request.Request(
             f"{self.base_url}/v1/messages",
             data=json.dumps(body).encode("utf-8"), headers=headers)
@@ -791,6 +798,12 @@ class MaeenManagedProvider(AnthropicProvider):
             return None
         if code == 402:
             return CreditExhaustedError(_friendly_error(detail))
+        blocked = re.search(r"error code:\s*(1\d{3})", detail or "")
+        if blocked:
+            return FatalProviderError(
+                f"حجبت حمايةُ الشبكة الطلب (رمز {blocked.group(1)}) قبل أن يصل إلى "
+                "خدمة معين. جرّب شبكة أخرى (مثل هاتفك كنقطة اتصال)، وإن تكرّر "
+                "فأخبر المزوّد.\n(لم يُستهلك شيء من رصيدك.)")
         if code in (401, 403, 404) or "غير مهيّأة" in detail:
             return FatalProviderError(
                 _friendly_error(detail) + "\n(لم يُستهلك شيء من رصيدك.)")
