@@ -166,6 +166,9 @@ class DocumentGenerator:
         # هذا يمنع بقاء DOCX ناقص بعد انقطاع الكهرباء/العملية.
         from document.rtl_utils import finalize_bidi_alignment
         finalize_bidi_alignment(document)
+        # باقة «تجربة»: علامة مائية على كل مستند (ومنه PDF).
+        from document.trial_mark import mark_docx_object
+        mark_docx_object(document)
 
         fd, tmp_name = tempfile.mkstemp(
             dir=str(output_path.parent), suffix=".docx.tmp")

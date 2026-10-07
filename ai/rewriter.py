@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from typing import Callable, List, Optional
 
 from ai.providers import (
+    CreditExhaustedError,
     LLMProvider,
     ResponseTruncatedError,
     RewriteUnavailableError,
@@ -415,6 +416,8 @@ class TranscriptRewriter:
             parsed = self._ask(
                 f"{context}التفريغ الخام (يبدأ عند {start}):\n\n{source}{note}",
                 start)
+        except CreditExhaustedError:
+            raise                       # سياسة الانقطاع: توقّف لا نصّ خام
         except Exception as exc:
             # الفشل معزول عند حدود الدفعة. النسخة السابقة كانت تُعيد رفع
             # ``RewriteUnavailableError`` فتنتشر إلى الـ pipeline: تحديدُ
@@ -449,6 +452,8 @@ class TranscriptRewriter:
                     parsed = retry
                     paragraphs = [p.strip() for p in retry.get("paragraphs", [])
                                   if isinstance(p, str) and p.strip()]
+            except CreditExhaustedError:
+                raise
             except Exception as exc:
                 logger.warning(f"دفعة {start}: فشلت المحاولة الثانية: {exc}")
 

@@ -62,6 +62,28 @@ def current_code() -> Optional[str]:
     return lease.code or None
 
 
+def current_tier() -> str:
+    """طبقة الترخيص من العقد الموقَّع: ``trial`` أو ``solo`` أو ``team`` أو ``managed``.
+
+    العقود القديمة بلا حقل ``tier`` تُستنتج من اسم الخطة (تبدأ بـ«تجربة»).
+    فارغة إن لم يُفعَّل شيء أو في نسخة التطوير. لا شبكة ولا رمي.
+    """
+    if not licensing_enabled():
+        return ""
+    try:
+        lease = verify(store().read().get("lease") or "")
+    except Exception:                                  # noqa: BLE001
+        return ""
+    tier = str((lease.extra or {}).get("tier") or "")
+    if not tier and (lease.plan or "").startswith("تجربة"):
+        tier = "trial"
+    return tier
+
+
+def is_trial() -> bool:
+    return current_tier() == "trial"
+
+
 def refresh_online(app_version: str = "") -> Verdict:
     """يجدّد العقد من الخادم. يُستدعى عند ``NEEDS_RECHECK`` أو بطلب المستخدم."""
     state = store().read()

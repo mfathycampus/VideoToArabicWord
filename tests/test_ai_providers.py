@@ -355,6 +355,33 @@ def test_managed_insufficient_balance_shows_server_message(managed):
     with pytest.raises(RewriteUnavailableError, match="نفد رصيد") as info:
         managed.complete("s", "u")
     assert info.value.retryable is False
+    from ai.providers import CreditExhaustedError
+
+    assert isinstance(info.value, CreditExhaustedError)
+    assert info.value.error_code == "E5402"
+    assert "التفريغ محفوظ" in str(info.value)
+
+
+def test_credit_exhaustion_stops_rewriter_not_raw_fallback():
+    """نفاد الرصيد يوقف الصياغة بدل إخراج نصّ خام بصمت."""
+    from ai.providers import CreditExhaustedError
+    from ai.rewriter import RewriteConfig, TranscriptRewriter
+    from config.schemas import AudioSegment
+
+    class Broke:
+        info = type("I", (), {"name": "maeen_managed", "is_local": False,
+                              "supports_images": False})()
+
+        def is_available(self):
+            return True
+
+        def complete(self, *a, **k):
+            raise CreditExhaustedError("نفد")
+
+    rewriter = TranscriptRewriter(Broke(), RewriteConfig(enabled=True))
+    segment = AudioSegment(id=1, start=0, end=5, text_raw="نص تجريبي", text_clean="نص تجريبي")
+    with pytest.raises(CreditExhaustedError):
+        rewriter._rewrite_batch([segment])
 
 
 def test_managed_busy_is_retryable(managed):

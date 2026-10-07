@@ -119,6 +119,9 @@ def write_exports(ctx: ExportContext,
             logger.warning(f"تعذّر إخراج «{name}»: {exc}")
             continue
         if path is not None:
+            from document.trial_mark import mark_file
+
+            mark_file(Path(path))          # باقة «تجربة» فقط؛ لا شيء لغيرها
             written.append(Path(path))
     if written:
         logger.info("مخرجات إضافية: " + "، ".join(p.name for p in written))

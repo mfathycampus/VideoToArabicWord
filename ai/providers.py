@@ -36,6 +36,25 @@ class RewriteUnavailableError(AppBaseException):
         self.retryable = retryable
 
 
+class CreditExhaustedError(RewriteUnavailableError):
+    """نفد رصيد الباقة المُدارة (أو انتهى اشتراكها) أثناء المعالجة.
+
+    سياسة الانقطاع: لا نُكمل بنص خام صامتًا ولا نهدر دفعات مدفوعة؛ تتوقّف
+    المهمة فورًا برسالة واضحة، وما اكتمل من مراحل (التفريغ خصوصًا) يبقى
+    محفوظًا، فتُستأنف بعد الشحن دون إعادة التفريغ.
+    """
+
+    error_code = "E5402"
+    category = "NETWORK_ERROR"
+
+    def __init__(self, detail: str = "") -> None:
+        message = ("نفد رصيد باقتك أثناء المعالجة. التفريغ محفوظ — اشحن "
+                   "الرصيد ثم أعد المعالجة لتكمل من حيث توقّفت.")
+        if detail:
+            message += f"\n({detail})"
+        super().__init__(message, retryable=False)
+
+
 class ResponseTruncatedError(RewriteUnavailableError):
     """الردّ قُطع عند سقف الرموز (``max_tokens``) قبل أن يكتمل.
 
@@ -755,6 +774,8 @@ class MaeenManagedProvider(AnthropicProvider):
         # 400 يبقى للمعالجة العامة. الرصيد (402) لا يُعاد بلا شحن.
         if code == 400:
             return None
+        if code == 402:
+            return CreditExhaustedError(_friendly_error(detail))
         if code >= 400:
             return RewriteUnavailableError(
                 _friendly_error(detail),
