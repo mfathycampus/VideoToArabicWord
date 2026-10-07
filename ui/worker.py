@@ -125,6 +125,60 @@ class BalanceWorker(QObject):
             self.finished.emit()
 
 
+class ManagedCheckWorker(QObject):
+    """يفحص الباقة المُدارة خطوةً خطوة ويعيد تقريرًا نصيًّا بمكان العطل.
+
+    الغرض: جهازٌ يعمل عليه كل شيء وآخر يخرج منه مستندٌ خام بلا تفسير. هنا
+    يظهر في ثوانٍ أيّ حلقة تنقطع: الكود، الوصول للخادم، ارتباط الجهاز،
+    أم نداء Claude نفسه. لا يطبع عنوان الخادم.
+    """
+
+    report = pyqtSignal(str)
+    finished = pyqtSignal()
+
+    @pyqtSlot()
+    def run(self) -> None:
+        import re
+
+        lines = []
+        try:
+            from ai.providers import MaeenManagedProvider
+            from licensing import app_gate, client
+
+            code = app_gate.current_code()
+            device = app_gate.device_id()
+            if not code:
+                lines.append("✗ لا كود مفعّل على هذا الجهاز — فعّل الكود من نافذة التفعيل.")
+            else:
+                lines.append(f"✓ الكود: {code[:9]}…  ·  الجهاز: {device[:8]}…")
+                try:
+                    info = client.managed_balance(code, device)
+                    lines.append(
+                        f"✓ الخادم يردّ والجهاز مرتبط — الرصيد "
+                        f"{float(info.get('credit_minutes') or 0):g} دقيقة")
+                except Exception as exc:                   # noqa: BLE001
+                    lines.append(f"✗ الرصيد/الجهاز: {exc}")
+                    raise _Stop() from exc
+                try:
+                    reply = MaeenManagedProvider().complete(
+                        "أجب بكلمة واحدة فقط.", "قل: جاهز", max_tokens=16, timeout=40)
+                    lines.append(f"✓ نداء Claude يعمل — ردّ: {(reply or '').strip()[:30]}")
+                except Exception as exc:                   # noqa: BLE001
+                    lines.append(f"✗ نداء Claude: {type(exc).__name__}: {exc}")
+        except _Stop:
+            pass
+        except Exception as exc:                           # noqa: BLE001
+            lines.append(f"✗ خطأ غير متوقّع: {type(exc).__name__}: {exc}")
+        finally:
+            text = "\n".join(lines)
+            self.report.emit(re.sub(r"https?://\S+", "[الخادم]", text))
+            self.finished.emit()
+
+
+class _Stop(Exception):
+    pass
+
+
 class UsageWorker(QObject):
     """يقرأ سجل استهلاك الكود المُدار (آخر العمليات) خارج خيط الواجهة."""
 

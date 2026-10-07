@@ -312,6 +312,12 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
         self.usage_button = QPushButton("سجل الاستهلاك")
         self.usage_button.clicked.connect(self.show_usage_dialog)
         provider_row.addWidget(self.usage_button)
+        self.check_button = QPushButton("فحص الاتصال")
+        self.check_button.setToolTip(
+            "يفحص الكود والخادم وارتباط الجهاز ونداء Claude خطوةً خطوة\n"
+            "(يستهلك أقل من دقيقة رصيد) — لتشخيص جهازٍ لا تعمل عليه الصياغة.")
+        self.check_button.clicked.connect(self.check_managed_connection)
+        provider_row.addWidget(self.check_button)
         self.provider_row = QWidget()
         self.provider_row.setLayout(provider_row)
         rewrite_layout.addWidget(self.provider_row)
