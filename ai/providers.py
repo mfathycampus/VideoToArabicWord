@@ -37,7 +37,19 @@ class RewriteUnavailableError(AppBaseException):
         self.retryable = retryable
 
 
-class CreditExhaustedError(RewriteUnavailableError):
+class FatalProviderError(RewriteUnavailableError):
+    """رفضٌ **منهجي** من المزوّد: كل دفعة تالية ستُرفض بالسبب نفسه.
+
+    (كود غير معروف، جهاز غير مرتبط، خدمة غير مهيّأة، رصيد نافد…) لا يُعزل
+    عند حدود الدفعة كبقية الأخطاء: عزله كان يُخرج مستندًا خامًا كاملًا
+    موسومًا ``ai:`` وكأن الصياغة نجحت، والمستخدم لا يعرف السبب.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, retryable=False)
+
+
+class CreditExhaustedError(FatalProviderError):
     """نفد رصيد الباقة المُدارة (أو انتهى اشتراكها) أثناء المعالجة.
 
     سياسة الانقطاع: لا نُكمل بنص خام صامتًا ولا نهدر دفعات مدفوعة؛ تتوقّف
@@ -53,7 +65,7 @@ class CreditExhaustedError(RewriteUnavailableError):
                    "الرصيد ثم أعد المعالجة لتكمل من حيث توقّفت.")
         if detail:
             message += f"\n({detail})"
-        super().__init__(message, retryable=False)
+        super().__init__(message)
 
 
 class ResponseTruncatedError(RewriteUnavailableError):
@@ -779,6 +791,9 @@ class MaeenManagedProvider(AnthropicProvider):
             return None
         if code == 402:
             return CreditExhaustedError(_friendly_error(detail))
+        if code in (401, 403, 404) or "غير مهيّأة" in detail:
+            return FatalProviderError(
+                _friendly_error(detail) + "\n(لم يُستهلك شيء من رصيدك.)")
         if code >= 400:
             return RewriteUnavailableError(
                 _friendly_error(detail),

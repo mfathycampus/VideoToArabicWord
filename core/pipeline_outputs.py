@@ -313,7 +313,7 @@ class OutputsMixin:
         except Exception:                                   # noqa: BLE001
             pass
 
-        from ai.providers import CreditExhaustedError
+        from ai.providers import FatalProviderError
 
         if settings.enabled:
             provider = None
@@ -369,7 +369,7 @@ class OutputsMixin:
                         logger.info(f"كُتب المستند مرئيًّا عبر {plan.generated_by} "
                                     f"({author.images_sent} لقطة أُرسلت)")
                         return plan
-                    except CreditExhaustedError:
+                    except FatalProviderError:
                         raise               # لا نُكمل بنصّ خام بعد نفاد الرصيد
                     except Exception as exc:
                         reason = str(exc).strip() or type(exc).__name__
@@ -409,7 +409,7 @@ class OutputsMixin:
                             f"لأن ردّ النموذج لم يُستعمل ({rewriter.last_failure[:120]}) "
                             "— الردود محفوظة في ai_debug")
                     return plan
-                except CreditExhaustedError:
+                except FatalProviderError:
                     raise
                 except Exception as exc:
                     # السبب يُعرض في الواجهة لا في السجلّ وحده: المستخدم

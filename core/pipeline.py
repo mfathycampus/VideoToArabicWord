@@ -579,7 +579,15 @@ class VideoToDocPipeline(MediaStagesMixin, OutputsMixin):
                     and job.has_artifact("plan", plan_fp))
         if reusable:
             stored = DocumentPlan(**job.load_artifact("plan"))
-            if self._plan_matches(stored.generated_by, expected):
+            failed_ai = any(
+                str(w).startswith(("ai_raw_batches", "ai_unavailable"))
+                for w in (stored.quality_warnings or []))
+            if failed_ai:
+                # خطة موسومة ``ai:`` لكن نصّها خام لأن النداءات فشلت: لا تُعاد
+                # استعمالها، وإلا خرج الملف نفسه بلا تعديل كلما أُعيد التشغيل.
+                logger.info("الخطة المحفوظة سقطت فيها الصياغة — إعادة البناء.")
+                reusable = False
+            elif self._plan_matches(stored.generated_by, expected):
                 plan = stored
             else:
                 logger.info(
@@ -603,6 +611,9 @@ class VideoToDocPipeline(MediaStagesMixin, OutputsMixin):
             # لم يُصلَح. انظر ``document/quality.assert_quality_gate``.
             assert_quality_gate(quality)
             notes = list(getattr(self, "_plan_notes", []) or [])
+            #: يقرؤها العامل بعد الانتهاء فتصل المستخدم — كانت تمرّ شريط حالةٍ
+            #: عابرًا ثم يُستبدل بـ«اكتملت»، فيخرج مستندٌ خام بلا أيّ تفسير.
+            self.last_notes = list(notes)
             plan.quality_score = quality.overall
             plan.quality_warnings = list(quality.warnings) + notes
             job.save_artifact("plan", "plan.json", plan.model_dump_json(indent=2),

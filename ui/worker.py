@@ -172,6 +172,7 @@ class UpdateCheckWorker(QObject):
 
 class PipelineWorker(QObject):
     progress = pyqtSignal(float, str)
+    warned = pyqtSignal(list)            # تنبيهات لا تُفشل المهمة (الصياغة سقطت…)
     completed = pyqtSignal(str)
     failed = pyqtSignal(str)
     cancelled = pyqtSignal()
@@ -202,6 +203,9 @@ class PipelineWorker(QObject):
                 allow_audio_only=self.allow_audio_only,
                 clip=self.clip,
                 transcript_only=self.transcript_only)
+            notes = list(getattr(self.pipeline, "last_notes", []) or [])
+            if notes:
+                self.warned.emit(notes)
             self.completed.emit(str(result))
         except PipelineCancelledError:
             self.cancelled.emit()
