@@ -16,13 +16,105 @@ from PyQt6.QtWidgets import (
 from ui.worker import (
     BalanceWorker,
     ProviderTestWorker,
+    UsageWorker,
 )
 
 #: دقائق أقل من هذا تُنبّه المستخدم أن الرصيد يوشك على النفاد.
 LOW_CREDIT_MINUTES = 30
 
 
+def format_usage_rows(info: dict) -> str:
+    """نصّ سجل الاستهلاك للعرض: الرصيد ثم آخر العمليات (الأحدث أولًا)."""
+    from datetime import datetime
+
+    lines = [f"الرصيد المتبقي: {float(info.get('credit_minutes') or 0):g} دقيقة"]
+    calls = list(info.get("calls") or [])
+    total = sum(float(c.get("minutes") or 0) for c in calls)
+    lines.append(f"عدد العمليات المسجّلة: {len(calls)} · "
+                 f"مجموعها: {total:.2f} دقيقة\n")
+    for call in reversed(calls[-60:]):
+        stamp = datetime.fromtimestamp(int(call.get("at") or 0)).strftime(
+            "%Y-%m-%d %H:%M")
+        lines.append(f"{stamp}   {float(call.get('minutes') or 0):.2f} دقيقة")
+    return "\n".join(lines)
+
+
 class RewritePanelMixin:
+    # ------------------------------------------------------------------
+    # موافقة الخصوصية للباقة المُدارة: مرّة واحدة قبل أول إرسال.
+    def _managed_consent_given(self) -> bool:
+        from PyQt6.QtCore import QSettings
+
+        return QSettings("VideoToArabicWord", "app").value(
+            "managed_consent_v1", False, type=bool)
+
+    def ensure_managed_consent(self) -> bool:
+        """يعرض ما يُرسَل وما لا يُرسَل ويطلب الموافقة. يعيد False عند الرفض."""
+        if (not self.rewrite_check.isChecked()
+                or self.provider_combo.currentData() != "maeen_managed"
+                or self._managed_consent_given()):
+            return True
+        from PyQt6.QtCore import QSettings
+
+        box = QMessageBox(self)
+        box.setWindowTitle("الباقة المُدارة — الخصوصية")
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setText(
+            "لإعادة الصياغة تُرسَل إلى خادم «معين» ثم إلى Claude:\n"
+            "• نصّ التفريغ، ولقطات الشاشة إن فُعّل الوضع المرئي.\n\n"
+            "لا يُرسَل الفيديو ولا الصوت، ولا يحفظ الخادم المحتوى؛ يسجّل "
+            "فقط وقت العملية وحجمها لخصم الرصيد.\n\n"
+            "إن كانت المادة سرّية فاختر النموذج المحلي (Ollama) فلا يغادر "
+            "النصّ جهازك.\n\n"
+            "سياسة الخصوصية والشروط في صفحتي /privacy و/terms على الخادم "
+            "(تصلك من مزوّد الخدمة).")
+        agree = box.addButton("أوافق وأتابع", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("إلغاء", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if box.clickedButton() is not agree:
+            return False
+        QSettings("VideoToArabicWord", "app").setValue("managed_consent_v1", True)
+        return True
+
+    # ------------------------------------------------------------------
+    # استهلاك المهمة الواحدة: الفرق بين الرصيد قبلها وبعدها.
+    def mark_job_credit_start(self) -> None:
+        self._job_credit_start = getattr(self, "_credit_minutes", None)
+
+    def report_job_usage(self) -> None:
+        if getattr(self, "_job_credit_start", None) is None:
+            return
+        self._job_report_pending = True
+        self._credit_busy = False
+        self._fetch_credit()
+
+    def _emit_job_usage(self, minutes: float) -> None:
+        start = getattr(self, "_job_credit_start", None)
+        if start is None or not getattr(self, "_job_report_pending", False):
+            return
+        self._job_report_pending = False
+        self._job_credit_start = None
+        used = max(0.0, start - minutes)
+        self.append_log(f"استهلكت هذه المهمة نحو {used:.1f} دقيقة من رصيدك "
+                        f"(المتبقي {minutes:g}).")
+
+    def show_usage_dialog(self) -> None:
+        thread = QThread(self)
+        worker = UsageWorker()
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.succeeded.connect(self._display_usage)
+        worker.failed.connect(
+            lambda msg: QMessageBox.warning(self, "سجل الاستهلاك", msg))
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        self._usage_thread = thread
+        thread.start()
+
+    def _display_usage(self, info: dict) -> None:
+        QMessageBox.information(self, "سجل الاستهلاك", format_usage_rows(info))
+
     def _build_study_row(self):
         """تفعيل الحزمة التعليمية واختيار مزوّدها.
 
@@ -302,6 +394,7 @@ class RewritePanelMixin:
 
     def _set_credit(self, minutes: float) -> None:
         self._credit_minutes = minutes
+        self._emit_job_usage(minutes)
         self._refresh_header_credit()
         if minutes <= 0:
             text = "الرصيد المتبقي: نفد ✗ — اطلب شحن الرصيد من المزوّد."
