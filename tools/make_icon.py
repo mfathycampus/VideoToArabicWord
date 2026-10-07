@@ -90,6 +90,12 @@ def main() -> int:
                  append_images=[frames[size].resize((size, size), Image.LANCZOS)
                                 for size, _ in ICON_SIZES])
 
+    if "--icns" in sys.argv:
+        # ماك: ‎.icns من أكبر إطار (Pillow تشتقّ الأحجام الأصغر).
+        icns = TARGET.with_suffix(".icns")
+        largest.resize((512, 512), Image.LANCZOS).save(icns, format="ICNS")
+        print(icns)
+
     written = sorted(Image.open(TARGET).info.get("sizes", []))
     print(f"{TARGET}  —  {len(written)} حجمًا: {written}")
     if any(w != h for w, h in written):
