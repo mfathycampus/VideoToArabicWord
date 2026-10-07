@@ -125,58 +125,118 @@ class BalanceWorker(QObject):
             self.finished.emit()
 
 
-class ManagedCheckWorker(QObject):
-    """يفحص الباقة المُدارة خطوةً خطوة ويعيد تقريرًا نصيًّا بمكان العطل.
+def _run_with_timeout(fn, seconds: float):
+    """ينفّذ ``fn`` في خيط جانبي ويعيد ``(ok, value_or_error)`` أو ``(None, "timeout")``.
 
-    الغرض: جهازٌ يعمل عليه كل شيء وآخر يخرج منه مستندٌ خام بلا تفسير. هنا
-    يظهر في ثوانٍ أيّ حلقة تنقطع: الكود، الوصول للخادم، ارتباط الجهاز،
-    أم نداء Claude نفسه. لا يطبع عنوان الخادم.
+    ``urlopen(timeout=…)`` لا يغطي حلّ الأسماء (DNS) ولا خادمًا وسيطًا يقطّر
+    البيانات؛ فالفحص الذي يعلّق دقائق بلا تقرير هو بالضبط ما يُراد كشفه.
+    """
+    import threading
+
+    box: dict = {}
+
+    def target() -> None:
+        try:
+            box["value"] = fn()
+            box["ok"] = True
+        except Exception as exc:                           # noqa: BLE001
+            box["value"] = f"{type(exc).__name__}: {exc}"
+            box["ok"] = False
+
+    thread = threading.Thread(target=target, daemon=True)
+    thread.start()
+    thread.join(seconds)
+    if thread.is_alive():
+        return None, "timeout"
+    return box.get("ok"), box.get("value")
+
+
+class ManagedCheckWorker(QObject):
+    """يفحص الباقة المُدارة خطوةً خطوة ويُظهر كل خطوة فور انتهائها.
+
+    الغرض: جهازٌ يعمل عليه كل شيء وآخر يخرج منه مستندٌ خام بلا تفسير. لكل
+    خطوة مهلة صارمة، فلا يعلّق الفحص بلا تقرير، وتُكتب النتائج في السجل
+    أيضًا. لا يطبع عنوان الخادم.
     """
 
+    line = pyqtSignal(str)            # يصل فور انتهاء كل خطوة
     report = pyqtSignal(str)
     finished = pyqtSignal()
 
+    def _emit(self, lines: list, text: str) -> None:
+        import re
+        import time as _time
+
+        text = re.sub(r"https?://\S+", "[الخادم]", text)
+        lines.append(text)
+        logger.info(f"فحص الباقة المُدارة: {text}")
+        self.line.emit(text)
+        _time.sleep(0)
+
     @pyqtSlot()
     def run(self) -> None:
-        import re
+        import socket
+        import time as _time
+        from urllib.parse import urlparse
 
-        lines = []
+        lines: list = []
         try:
             from ai.providers import MaeenManagedProvider
             from licensing import app_gate, client
 
+            def timed(label, fn, seconds):
+                start = _time.time()
+                ok, value = _run_with_timeout(fn, seconds)
+                took = _time.time() - start
+                if ok is None:
+                    self._emit(lines, f"✗ {label}: لا ردّ خلال {seconds:.0f} ثانية "
+                                      "(انقطاع/حجب في الشبكة على هذا الجهاز؟)")
+                    return None, False
+                if not ok:
+                    self._emit(lines, f"✗ {label}: {value}")
+                    return None, False
+                return (value, took), True
+
+            res, ok = timed("بصمة الجهاز", app_gate.device_id, 20)
+            if not ok:
+                return
+            device = res[0]
+            self._emit(lines, f"✓ بصمة الجهاز {device[:8]}… ({res[1]:.1f} ث)")
+
             code = app_gate.current_code()
-            device = app_gate.device_id()
             if not code:
-                lines.append("✗ لا كود مفعّل على هذا الجهاز — فعّل الكود من نافذة التفعيل.")
-            else:
-                lines.append(f"✓ الكود: {code[:9]}…  ·  الجهاز: {device[:8]}…")
-                try:
-                    info = client.managed_balance(code, device)
-                    lines.append(
-                        f"✓ الخادم يردّ والجهاز مرتبط — الرصيد "
-                        f"{float(info.get('credit_minutes') or 0):g} دقيقة")
-                except Exception as exc:                   # noqa: BLE001
-                    lines.append(f"✗ الرصيد/الجهاز: {exc}")
-                    raise _Stop() from exc
-                try:
-                    reply = MaeenManagedProvider().complete(
-                        "أجب بكلمة واحدة فقط.", "قل: جاهز", max_tokens=16, timeout=40)
-                    lines.append(f"✓ نداء Claude يعمل — ردّ: {(reply or '').strip()[:30]}")
-                except Exception as exc:                   # noqa: BLE001
-                    lines.append(f"✗ نداء Claude: {type(exc).__name__}: {exc}")
-        except _Stop:
-            pass
+                self._emit(lines, "✗ لا كود مفعّل على هذا الجهاز — فعّل الكود من نافذة التفعيل.")
+                return
+            self._emit(lines, f"✓ الكود {code[:9]}…")
+
+            host = urlparse(client.server_url()).hostname or ""
+            res, ok = timed("حلّ اسم الخادم (DNS)",
+                            lambda: socket.getaddrinfo(host, 443), 12)
+            if not ok:
+                return
+            self._emit(lines, f"✓ DNS يعمل ({res[1]:.1f} ث)")
+
+            res, ok = timed("الاتصال بالخادم/ارتباط الجهاز",
+                            lambda: client.managed_balance(code, device), 25)
+            if not ok:
+                return
+            info = res[0]
+            self._emit(lines, f"✓ الخادم يردّ والجهاز مرتبط — الرصيد "
+                              f"{float(info.get('credit_minutes') or 0):g} دقيقة "
+                              f"({res[1]:.1f} ث)")
+
+            res, ok = timed(
+                "نداء Claude",
+                lambda: MaeenManagedProvider().complete(
+                    "أجب بكلمة واحدة فقط.", "قل: جاهز", max_tokens=16, timeout=40), 60)
+            if ok:
+                self._emit(lines, f"✓ نداء Claude يعمل — ردّ: {str(res[0]).strip()[:30]} "
+                                  f"({res[1]:.1f} ث)")
         except Exception as exc:                           # noqa: BLE001
-            lines.append(f"✗ خطأ غير متوقّع: {type(exc).__name__}: {exc}")
+            self._emit(lines, f"✗ خطأ غير متوقّع: {type(exc).__name__}: {exc}")
         finally:
-            text = "\n".join(lines)
-            self.report.emit(re.sub(r"https?://\S+", "[الخادم]", text))
+            self.report.emit("\n".join(lines))
             self.finished.emit()
-
-
-class _Stop(Exception):
-    pass
 
 
 class UsageWorker(QObject):

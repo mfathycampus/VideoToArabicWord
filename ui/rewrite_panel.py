@@ -119,6 +119,7 @@ class RewritePanelMixin:
         worker = ManagedCheckWorker()
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
+        worker.line.connect(self._managed_check_line)
         worker.report.connect(self._show_managed_report)
         worker.finished.connect(thread.quit)
         worker.finished.connect(worker.deleteLater)
@@ -131,9 +132,11 @@ class RewritePanelMixin:
         self.check_button.setEnabled(True)
         self.check_button.setText("فحص الاتصال")
 
+    def _managed_check_line(self, text: str) -> None:
+        self.append_log("فحص: " + text)          # تظهر الخطوات فور حدوثها
+
     def _show_managed_report(self, text: str) -> None:
-        self.append_log("فحص الباقة المُدارة:\n" + text)
-        QMessageBox.information(self, "فحص الباقة المُدارة", text)
+        QMessageBox.information(self, "فحص الباقة المُدارة", text or "لا نتيجة.")
 
     def _usage_failed(self, message: str) -> None:
         # دالة مرتبطة بالنافذة لا lambda: الـlambda تُنفَّذ في خيط العامل
