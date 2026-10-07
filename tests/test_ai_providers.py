@@ -56,9 +56,9 @@ def server():
 
 
 # ---------------- التسجيل ----------------
-def test_claude_is_offered_first():
-    """المستخدم لديه مفتاح Claude — يجب أن يكون الخيار الأول."""
-    assert PROVIDER_CHOICES[0][0] == "anthropic"
+def test_managed_is_offered_first_then_claude():
+    """المُدار أول الخيارات (لا يحتاج مفتاحًا)، ثم Claude بمفتاح المستخدم."""
+    assert [k for k, _ in PROVIDER_CHOICES[:2]] == ["maeen_managed", "anthropic"]
 
 
 def test_all_registered_providers_build():

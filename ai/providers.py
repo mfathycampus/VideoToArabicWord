@@ -437,8 +437,8 @@ class OpenAICompatibleProvider(LLMProvider):
 
 # المزوّدون المتاحون بالترتيب المعروض في الواجهة
 PROVIDER_CHOICES = (
-    ("anthropic", "Claude API — أدق صياغة عربية"),
     ("maeen_managed", "معين المُدار — بلا مفتاح (رصيد دقائق)"),
+    ("anthropic", "Claude API — أدق صياغة عربية"),
     ("ollama", "Ollama — نموذج محلي على جهازك"),
     ("openai_compatible", "خدمة أخرى بواجهة OpenAI"),
 )
