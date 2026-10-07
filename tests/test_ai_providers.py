@@ -467,3 +467,35 @@ def test_managed_balance_client_shows_server_message(server, monkeypatch):
             client.managed_balance("VTAW-X", "D")
     finally:
         Handler.status = 200
+
+
+def test_managed_rejection_is_fatal_not_swallowed_per_batch(managed):
+    """403 (جهاز/كود) يوقف الصياغة بسببها، لا مستند خام موسوم ai:."""
+    from ai.providers import FatalProviderError
+
+    Handler.status = 403
+    Handler.body = {"type": "error", "error": {
+        "type": "permission_error", "message": "هذا الجهاز غير مرتبط بالكود."}}
+    with pytest.raises(FatalProviderError, match="غير مرتبط"):
+        managed.complete("s", "u")
+
+
+def test_fatal_error_stops_rewriter_batch():
+    from ai.providers import FatalProviderError
+    from ai.rewriter import RewriteConfig, TranscriptRewriter
+    from config.schemas import AudioSegment
+
+    class Rejected:
+        info = type("I", (), {"name": "maeen_managed", "is_local": False,
+                              "supports_images": False})()
+
+        def is_available(self):
+            return True
+
+        def complete(self, *a, **k):
+            raise FatalProviderError("الخدمة المُدارة غير مهيّأة")
+
+    rewriter = TranscriptRewriter(Rejected(), RewriteConfig(enabled=True))
+    segment = AudioSegment(id=1, start=0, end=5, text_raw="نص", text_clean="نص")
+    with pytest.raises(FatalProviderError):
+        rewriter._rewrite_batch([segment])

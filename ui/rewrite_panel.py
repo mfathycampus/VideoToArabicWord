@@ -104,13 +104,18 @@ class RewritePanelMixin:
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.succeeded.connect(self._display_usage)
-        worker.failed.connect(
-            lambda msg: QMessageBox.warning(self, "سجل الاستهلاك", msg))
+        worker.failed.connect(self._usage_failed)
         worker.finished.connect(thread.quit)
         worker.finished.connect(worker.deleteLater)
         thread.finished.connect(thread.deleteLater)
         self._usage_thread = thread
         thread.start()
+
+    def _usage_failed(self, message: str) -> None:
+        # دالة مرتبطة بالنافذة لا lambda: الـlambda تُنفَّذ في خيط العامل
+        # فتُنشأ نافذة خارج خيط الواجهة ولا تظهر شيئًا (رُصد: الزرّ صامت).
+        QMessageBox.warning(self, "سجل الاستهلاك",
+                            message or "تعذّرت قراءة سجل الاستهلاك.")
 
     def _display_usage(self, info: dict) -> None:
         QMessageBox.information(self, "سجل الاستهلاك", format_usage_rows(info))

@@ -1288,6 +1288,8 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
 
         self.thread.started.connect(self.worker.run)
         self.worker.progress.connect(self.on_progress)
+        self._job_warnings = []
+        self.worker.warned.connect(self.on_warned)
         self.worker.completed.connect(self.on_completed)
         self.worker.failed.connect(self.on_failed)
         self.worker.cancelled.connect(self.on_cancelled)
@@ -1342,6 +1344,11 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
         self.progress.setValue(int(percent))
         self.status_label.setText(message)
 
+    def on_warned(self, notes: list) -> None:
+        self._job_warnings = [str(n).split(": ", 1)[-1] for n in notes]
+        for text in self._job_warnings:
+            self.append_log(f"⚠ {text}")
+
     def on_completed(self, path: str) -> None:
         self.result_path = Path(path)
         self.progress.setValue(100)
@@ -1349,8 +1356,16 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
         self.open_button.setEnabled(True)
         self.append_log(f"تم إنشاء المستند: {path}")
         self.report_job_usage()
-        QMessageBox.information(self, "اكتملت المعالجة",
-                                f"تم إنشاء المستند:\n{path}")
+        warnings = getattr(self, "_job_warnings", [])
+        if warnings:
+            QMessageBox.warning(
+                self, "اكتملت المعالجة — مع تنبيه",
+                f"تم إنشاء المستند:\n{path}\n\n"
+                "لكن بعض خطوات الذكاء الاصطناعي لم تتم:\n• "
+                + "\n• ".join(warnings))
+        else:
+            QMessageBox.information(self, "اكتملت المعالجة",
+                                    f"تم إنشاء المستند:\n{path}")
 
     def on_failed(self, error: str) -> None:
         self.status_label.setText("فشلت المعالجة.")
