@@ -125,6 +125,28 @@ class BalanceWorker(QObject):
             self.finished.emit()
 
 
+class UsageWorker(QObject):
+    """يقرأ سجل استهلاك الكود المُدار (آخر العمليات) خارج خيط الواجهة."""
+
+    succeeded = pyqtSignal(dict)
+    failed = pyqtSignal(str)
+    finished = pyqtSignal()
+
+    @pyqtSlot()
+    def run(self) -> None:
+        try:
+            from licensing import app_gate, client
+
+            code = app_gate.current_code()
+            if not code:
+                raise client.ActivationError("لا كود مُدار مفعّل.")
+            self.succeeded.emit(client.managed_usage(code, app_gate.device_id()))
+        except Exception as exc:                       # noqa: BLE001
+            self.failed.emit(str(exc))
+        finally:
+            self.finished.emit()
+
+
 class UpdateCheckWorker(QObject):
     """فحص وجود إصدار أحدث خارج خيط الواجهة.
 
