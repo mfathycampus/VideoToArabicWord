@@ -117,6 +117,6 @@ def test_tier_from_lease(monkeypatch):
         (Lease(code="C", plan="مُدار – فرد · تجربة أسبوع"), ""),
         (Lease(code="C", plan="x", extra={"tier": "managed"}), "managed"),
     ):
-        monkeypatch.setattr(app_gate, "verify", lambda text, l=lease: l)
+        monkeypatch.setattr(app_gate, "verify", lambda text, current=lease: current)
         assert app_gate.current_tier() == expected
         assert app_gate.is_trial() == (expected == "trial")
