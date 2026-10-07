@@ -150,8 +150,19 @@ code{font-family:ui-monospace,Consolas,monospace;font-size:14px}
     <div><label for="cfgFx">الدولار بالريال</label>
       <input id="cfgFx" type="number" step="0.01" min="0.01"></div>
   </div>
+  <div class="row" style="margin-top:10px">
+    <div><label for="cfgCap">سقف الإنفاق الشهري ($، 0 = بلا سقف)</label>
+      <input id="cfgCap" type="number" step="1" min="0"></div>
+    <div><label for="cfgAlert">نبّهني حين يبلغ رصيد Anthropic ($)</label>
+      <input id="cfgAlert" type="number" step="0.5" min="0"></div>
+    <div><label for="cfgBal">رصيد Anthropic الآن ($) — حدّثه عند الشحن</label>
+      <input id="cfgBal" type="number" step="0.01" min="0" placeholder="اتركه فارغًا لعدم التتبّع"></div>
+    <div><label for="cfgAnom">استهلاك شاذّ (دقائق/ساعة لكود)</label>
+      <input id="cfgAnom" type="number" step="1" min="0"></div>
+  </div>
   <div style="margin-top:12px">
-    <button onclick="saveConfig()">حفظ التسعير</button>
+    <button onclick="saveConfig()">حفظ</button>
+    <button class="ghost" onclick="testAlert()">اختبار التنبيه</button>
   </div>
   <div class="msg" id="cfgMsg"></div>
 </div>
@@ -245,6 +256,7 @@ async function createCodes() {
       plan: tierName() + " · " + planLabel(days),
       max_devices: Math.max(1, +document.getElementById("devices").value || 1),
       managed: document.getElementById("tier").value.startsWith("managed"),
+      tier: document.getElementById("tier").value.split("|")[0],
       credit_minutes: +document.getElementById("credit").value || 0,
       note: document.getElementById("note").value.trim(),
     });
@@ -312,8 +324,21 @@ async function loadCodes() {
         (totals.cost_sar || 0) + " ر.س" +
         (perMinute ? " · التكلفة لكل دقيقة مستهلكة ≈ " + perMinute + " ر.س" : "") +
         " · أرصدة العملاء المتبقية: " + (totals.balance_minutes || 0) + " دقيقة";
+      const spend = data.spend || {};
+      document.getElementById("costSummary").textContent +=
+        " · إنفاق هذا الشهر ≈ $" + (spend.month_usd || 0).toFixed(2) +
+        (spend.balance_usd === null || spend.balance_usd === undefined ? ""
+          : " · رصيد Anthropic المتبقي ≈ $" + spend.balance_usd.toFixed(2)) +
+        (data.alerts_configured ? " · التنبيهات: مفعّلة" : " · التنبيهات: غير مضبوطة");
+      const balInput = document.getElementById("cfgBal");
+      if (document.activeElement !== balInput) {
+        balInput.value = spend.balance_usd === null || spend.balance_usd === undefined
+          ? "" : spend.balance_usd.toFixed(2);
+      }
       const fields = {cfgUpm: "units_per_minute", cfgIn: "price_in",
-                      cfgOut: "price_out", cfgFx: "usd_sar"};
+                      cfgOut: "price_out", cfgFx: "usd_sar",
+                      cfgCap: "monthly_cap_usd", cfgAlert: "balance_alert_usd",
+                      cfgAnom: "anomaly_minutes_per_hour"};
       for (const id in fields) {
         const input = document.getElementById(id);
         if (document.activeElement !== input) input.value = data.config[fields[id]];
@@ -334,6 +359,12 @@ async function loadCodes() {
   }
 }
 
+async function testAlert() {
+  const message = document.getElementById("cfgMsg");
+  try { await api("/admin/test-alert", {}); message.textContent = "أُرسل تنبيه تجريبي إلى جوالك."; }
+  catch (err) { message.textContent = err.message; }
+}
+
 async function saveConfig() {
   const message = document.getElementById("cfgMsg");
   try {
@@ -342,8 +373,12 @@ async function saveConfig() {
       price_in: +document.getElementById("cfgIn").value,
       price_out: +document.getElementById("cfgOut").value,
       usd_sar: +document.getElementById("cfgFx").value,
+      monthly_cap_usd: +document.getElementById("cfgCap").value || 0,
+      balance_alert_usd: +document.getElementById("cfgAlert").value || 0,
+      anomaly_minutes_per_hour: +document.getElementById("cfgAnom").value || 0,
+      balance_usd: document.getElementById("cfgBal").value,
     });
-    message.textContent = "حُفظ التسعير.";
+    message.textContent = "حُفظت الإعدادات.";
   } catch (err) { message.textContent = err.message; }
   loadCodes();
 }
@@ -404,6 +439,64 @@ if (token()) loadCodes();
 </script></body></html>`;
 
 
+// صفحات للعميل: النص مسودّة عملية وتحتاج مراجعة قانونية قبل الاعتماد.
+const PAGE_STYLE = `body{font-family:system-ui,"Segoe UI",Tahoma,sans-serif;max-width:760px;
+margin:32px auto;padding:0 18px;line-height:1.9;color:#14231f;background:#fafaf7}
+h1{font-size:24px}h2{font-size:18px;margin-top:28px}li{margin:4px 0}
+.note{background:#eef5f2;border-radius:8px;padding:10px 14px}`;
+
+const PRIVACY_PAGE = `<!doctype html><html lang="ar" dir="rtl"><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>سياسة الخصوصية — معين</title><style>${PAGE_STYLE}</style><body>
+<h1>سياسة الخصوصية</h1>
+<p class="note">معين تطبيق يعمل على جهازك. التفريغ الصوتي واستخراج اللقطات وتوليد المستند
+تجري محليًّا. ما يلي يخصّ ما يغادر جهازك حين تختار مزوّد الصياغة «معين المُدار».</p>
+<h2>ما الذي يُرسَل</h2>
+<ul><li>نص التفريغ والتعليمات اللازمة لصياغته.</li>
+<li>اللقطات المختارة من الشاشة فقط إن فعّلتَ «الوضع المرئي»، بعد قصّ لوحة المشاركين
+وتمويه الأسماء التي يكتشفها التطبيق. الفيديو والصوت الأصليان لا يُرسَلان أبدًا.</li></ul>
+<h2>إلى أين يذهب</h2>
+<p>يمرّ الطلب عبر خادم معين (على بنية Cloudflare) ثم إلى مزوّد النموذج Anthropic لتوليد
+الصياغة، ويعود الناتج إلى جهازك. ولا نخزّن نصّك ولا لقطاتك ولا الناتج على خادمنا.
+يعالجها Anthropic بحسب سياساته وشروطه المنشورة، ومنها مدة احتفاظ محدودة لأغراض السلامة.</p>
+<h2>ما الذي نحتفظ به</h2>
+<ul><li>كود التفعيل ومعرّف الجهاز المرتبط به وتواريخ التفعيل.</li>
+<li>سجلّ استهلاك مختصر: وقت كل طلب ومقدار الرصيد المخصوم (بلا أي محتوى).</li></ul>
+<h2>خياراتك</h2>
+<ul><li>لا تريد إرسال شيء؟ اختر مزوّدًا محليًّا (Ollama) أو عطّل «إعادة الصياغة»؛ يبقى كل شيء على جهازك.</li>
+<li>يمكنك تعطيل إرسال اللقطات من إعدادات التطبيق، فيُرسل النص وحده.</li>
+<li>تجنّب معالجة تسجيلات فيها بيانات شخصية حساسة لأطراف لم توافق على ذلك.</li></ul>
+<h2>التواصل</h2>
+<p>لأي طلب يخصّ بياناتك راسلنا عبر القناة التي اشتريت منها الكود.\${CONTACT}</p>
+</body></html>`;
+
+const TERMS_PAGE = `<!doctype html><html lang="ar" dir="rtl"><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>شروط الاستخدام — معين</title><style>${PAGE_STYLE}</style><body>
+<h1>شروط الاستخدام</h1>
+<h2>الترخيص</h2>
+<ul><li>الكود شخصي ومرتبط بعدد محدد من الأجهزة بحسب باقتك، ولا يجوز مشاركته أو بيعه.</li>
+<li>باقة «تجربة» تضيف علامة مائية على المخرجات، أيًّا كانت مدّتها.</li></ul>
+<h2>رصيد «المُدار»</h2>
+<ul><li>يُخصم الرصيد بحسب الاستهلاك الفعلي، ويُعرض لك داخل التطبيق وفي سجلّ الاستهلاك.</li>
+<li>الطلب الفاشل لا يُخصم. ويُحفظ ما أُنجز من المعالجة لتكمله بعد شحن الرصيد.</li>
+<li>الرصيد صالح ما دام الكود ساريًا، ويُرحَّل مع تجديد الاشتراك، وينتهي بانتهائه.</li>
+<li>الرصيد المستهلك لا يُسترد. ولا يُصرف نقدًا.</li></ul>
+<h2>الاستخدام المقبول</h2>
+<p>التزم بسياسة الاستخدام المقبول لدى Anthropic، ولا تعالج محتوى غير قانوني أو تنتهك به
+خصوصية الآخرين. لك أن تتحقق من موافقة المشاركين في تسجيلاتك.</p>
+<h2>التوفّر والمسؤولية</h2>
+<p>نبذل جهدنا لاستمرار الخدمة لكنها تُقدَّم كما هي ودون ضمان دقة الصياغة؛ راجع
+المستند قبل اعتماده. قد تتوقف الخدمة المُدارة مؤقتًا للصيانة أو لحدود الإنفاق.</p>
+</body></html>`;
+
+function page(html, env) {
+  const contact = (env.CONTACT_INFO || "").trim();
+  return new Response(html.replace("\${CONTACT}", contact ? " " + contact : ""), {
+    headers: { "content-type": "text/html; charset=utf-8" },
+  });
+}
+
 const b64url = (bytes) =>
   btoa(String.fromCharCode(...new Uint8Array(bytes)))
     .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
@@ -457,9 +550,10 @@ async function makeLease(env, fields) {
     code: fields.code, device: fields.device, expires_at: fields.expires_at,
     grace_days: fields.grace_days, issued_at: fields.issued_at,
     max_days: fields.max_days, plan: fields.plan, recheck_at: fields.recheck_at,
+    ...(fields.tier ? { tier: fields.tier } : {}),
   }, Object.keys({
     code: 0, device: 0, expires_at: 0, grace_days: 0, issued_at: 0,
-    max_days: 0, plan: 0, recheck_at: 0,
+    max_days: 0, plan: 0, recheck_at: 0, tier: 0,
   }).sort());
   const bytes = new TextEncoder().encode(payload);
   const key = await signingKey(env);
@@ -551,6 +645,8 @@ async function activate(request, env, renew) {
       max_days: stored.max_days || stored.days || 7,
       recheck_at: Math.min(expires, now + recheckDays * 86400),
       grace_days: stored.grace_days ?? 3, plan: stored.plan || "",
+      // «تجربة» تحمل علامة مائية في التطبيق أيًّا كانت مدّتها.
+      tier: stored.tier || ((stored.plan || "").startsWith("تجربة") ? "trial" : ""),
     }),
   });
 }
@@ -574,6 +670,12 @@ const num = (value, fallback) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 };
+// يقبل الصفر (معناه «معطّل») بخلاف ``num``.
+const nonneg = (value, fallback) => {
+  if (value === null || value === undefined || value === "") return fallback;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+};
 // الإعداد الحي: يُحفظ من صفحة الإدارة في المحفظة العامة ويتقدّم على
 // متغيّرات البيئة (القيم الافتراضية). الأسعار بالدولار لكل مليون رمز.
 function resolveConfig(env, stored) {
@@ -583,8 +685,18 @@ function resolveConfig(env, stored) {
     price_in: num(saved.price_in, num(env.PRICE_IN_USD_PER_MTOK, 3)),
     price_out: num(saved.price_out, num(env.PRICE_OUT_USD_PER_MTOK, 15)),
     usd_sar: num(saved.usd_sar, num(env.USD_SAR, 3.75)),
+    // سقف الإنفاق الشهري العام بالدولار (0 = بلا سقف)، وحدّ تنبيه الرصيد،
+    // وحدّ الاستهلاك غير الطبيعي (دقائق في الساعة لكود واحد).
+    monthly_cap_usd: nonneg(saved.monthly_cap_usd, nonneg(env.MONTHLY_CAP_USD, 0)),
+    balance_alert_usd: nonneg(saved.balance_alert_usd, nonneg(env.BALANCE_ALERT_USD, 5)),
+    anomaly_minutes_per_hour: nonneg(saved.anomaly_minutes_per_hour,
+                                     nonneg(env.ANOMALY_MINUTES_PER_HOUR, 150)),
   };
 }
+const usdCost = (inTokens, outTokens, cfg) =>
+  (inTokens * cfg.price_in + outTokens * cfg.price_out) / 1e6;
+const monthKey = () => new Date().toISOString().slice(0, 7);
+const dayKey = () => new Date().toISOString().slice(0, 10);
 const toMinutes = (units, upm) => Math.round((units / upm) * 10) / 10;
 const costSar = (inTokens, outTokens, cfg) =>
   Math.round(((inTokens * cfg.price_in + outTokens * cfg.price_out) / 1e6)
@@ -640,18 +752,93 @@ export class Wallet {
       }
     } else if (body.op === "settle") {
       // يردّ الفرق بين المحجوز والمستهلك فعلًا. ``actual`` = 0 عند الفشل.
-      const values = await store.get(["units", "inflight", "calls", "in", "out"]);
+      const values = await store.get(
+        ["units", "inflight", "calls", "in", "out", "log", "hour"]);
       const inflight = values.get("inflight") || {};
       delete inflight[body.id];
       const units = Math.round((values.get("units") || 0)
                                + (body.take || 0) - (body.actual || 0));
+      // سجلّ استهلاك مختصر (بلا أي محتوى): وقت وعدد نقاط فقط، آخر 150 نداء.
+      const log = values.get("log") || [];
+      const hour = values.get("hour") || { start: now, units: 0 };
+      if (now - hour.start > 3600000) { hour.start = now; hour.units = 0; }
+      if (body.counted) {
+        log.push({ t: now, u: body.actual || 0 });
+        while (log.length > 150) log.shift();
+        hour.units += body.actual || 0;
+      }
       await store.put({
-        units, inflight,
+        units, inflight, log, hour,
         calls: (values.get("calls") || 0) + (body.counted ? 1 : 0),
         in: (values.get("in") || 0) + (body.in_tokens || 0),
         out: (values.get("out") || 0) + (body.out_tokens || 0),
       });
-      result = { units };
+      result = { units, hour_units: hour.units };
+    } else if (body.op === "get_log") {
+      result = { log: (await store.get("log")) || [],
+                 units: (await store.get("units")) || 0 };
+    } else if (body.op === "g_enter") {
+      // بوّابة عامة لكل الأكواد: تحمي حدود Claude حين يتزامن عملاء كثيرون.
+      const inflight = (await store.get("ginflight")) || {};
+      for (const [id, started] of Object.entries(inflight)) {
+        if (now - started > 600000) delete inflight[id];
+      }
+      const month = (await store.get("spend:" + body.month)) || 0;
+      const balance = await store.get("balance_usd");
+      if (Object.keys(inflight).length >= (body.max || 8)) {
+        result = { ok: false, month_usd: month, balance_usd: balance ?? null };
+      } else {
+        const id = crypto.randomUUID();
+        inflight[id] = now;
+        await store.put("ginflight", inflight);
+        result = { ok: true, id, month_usd: month, balance_usd: balance ?? null };
+      }
+    } else if (body.op === "g_exit") {
+      const inflight = (await store.get("ginflight")) || {};
+      delete inflight[body.id];
+      await store.put("ginflight", inflight);
+      result = { ok: true };
+    } else if (body.op === "g_record") {
+      // يسجّل الإنفاق ويقرّر التنبيهات (مرة في اليوم لكل نوع).
+      const cfg = (await store.get("config")) || {};
+      const key = "spend:" + body.month;
+      const month = Math.round((((await store.get(key)) || 0) + body.usd) * 1e6) / 1e6;
+      let balance = await store.get("balance_usd");
+      if (balance !== undefined && balance !== null) {
+        balance = Math.round((balance - body.usd) * 1e6) / 1e6;
+        await store.put("balance_usd", balance);
+      }
+      await store.put(key, month);
+      const sent = (await store.get("alerts_sent")) || {};
+      const alerts = [];
+      const mark = (kind, message) => {
+        if (sent[kind] !== body.day) { sent[kind] = body.day; alerts.push({ kind, message }); }
+      };
+      const alertAt = cfg.balance_alert_usd ?? body.balance_alert_usd;
+      if (balance !== undefined && balance !== null && balance <= alertAt) {
+        mark("balance", "رصيد Anthropic المتبقي ≈ $" + balance.toFixed(2)
+          + " (حدّ التنبيه $" + alertAt + "). اشحن الرصيد قبل أن تتوقف الخدمة المُدارة.");
+      }
+      const cap = cfg.monthly_cap_usd ?? body.monthly_cap_usd;
+      if (cap > 0 && month >= cap) {
+        mark("cap", "بلغ إنفاق هذا الشهر $" + month.toFixed(2) + " وهو سقفك الشهري ($" + cap
+          + "). أُوقفت الخدمة المُدارة تلقائيًا حتى الشهر القادم أو رفع السقف.");
+      } else if (cap > 0 && month >= cap * 0.8) {
+        mark("cap80", "إنفاق هذا الشهر $" + month.toFixed(2) + " (80٪ من السقف $" + cap + ").");
+      }
+      if (body.anomaly) {
+        mark("anomaly:" + body.code, "استهلاك غير طبيعي: الكود " + body.code + " استهلك نحو "
+          + body.anomaly + " دقيقة في ساعة واحدة.");
+      }
+      await store.put("alerts_sent", sent);
+      result = { month_usd: month, balance_usd: balance ?? null, alerts };
+    } else if (body.op === "g_state") {
+      result = { month_usd: (await store.get("spend:" + body.month)) || 0,
+                 balance_usd: (await store.get("balance_usd")) ?? null };
+    } else if (body.op === "g_set_balance") {
+      await store.put("balance_usd", body.balance_usd === null ? null : Number(body.balance_usd));
+      await store.delete("alerts_sent");
+      result = { balance_usd: body.balance_usd };
     } else if (body.op === "get_flag") {
       result = {
         enabled: (await store.get("enabled")) !== false,
@@ -678,6 +865,32 @@ async function wallet(env, name, payload) {
     method: "POST", body: JSON.stringify(payload),
   });
   return response.json();
+}
+
+// تنبيه فوري إلى جوالك: ntfy.sh بلا حساب (ثبّت تطبيق ntfy واشترك بموضوعك
+// السرّي ``ALERT_NTFY_TOPIC``)، أو أي رابط webhook في ``ALERT_WEBHOOK_URL``.
+async function notify(env, alerts) {
+  const topic = (env.ALERT_NTFY_TOPIC || "").trim();
+  const hook = (env.ALERT_WEBHOOK_URL || "").trim();
+  for (const alert of alerts || []) {
+    const text = "معين: " + alert.message;
+    try {
+      if (topic) {
+        await fetch("https://ntfy.sh/" + encodeURIComponent(topic), {
+          method: "POST", body: text,
+          headers: { Title: "Maeen alert", Priority: "high", Tags: "warning" },
+          signal: AbortSignal.timeout(4000),
+        });
+      }
+      if (hook) {
+        await fetch(hook, {
+          method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ text, kind: alert.kind }),
+          signal: AbortSignal.timeout(4000),
+        });
+      }
+    } catch (err) { /* التنبيه لا يُفشل نداء العميل */ }
+  }
 }
 
 async function globalConfig(env) {
@@ -755,7 +968,49 @@ async function managedBalance(request, env) {
   });
 }
 
-async function managedMessages(request, env) {
+// بوّابة عامة قبل أي نداء: سقف الإنفاق الشهري + حدّ التزامن العام.
+async function withGate(request, env, ctx, handler) {
+  if (!env.WALLET) return handler();
+  const cfg = await globalConfig(env);
+  const gate = await wallet(env, "__global__", {
+    op: "g_enter", month: monthKey(), max: num(env.MAX_GLOBAL_CONCURRENT, 8),
+  });
+  if (cfg.monthly_cap_usd > 0 && gate.month_usd >= cfg.monthly_cap_usd) {
+    if (gate.id) await wallet(env, "__global__", { op: "g_exit", id: gate.id });
+    return managedError(503, "overloaded_error",
+      "الخدمة المُدارة بلغت حدّها الشهري. حاول لاحقًا أو راسل المزوّد.");
+  }
+  if (!gate.ok) {
+    return managedError(429, "rate_limit_error",
+      "الخدمة مزدحمة الآن. أعد المحاولة بعد لحظات.", { "retry-after": "6" });
+  }
+  try {
+    return await handler();
+  } finally {
+    await wallet(env, "__global__", { op: "g_exit", id: gate.id });
+  }
+}
+
+async function managedUsage(request, env) {
+  if (!env.WALLET) {
+    return managedError(500, "api_error", "الخدمة المُدارة غير مهيّأة على الخادم بعد.");
+  }
+  const auth = await managedAuth(request, env);
+  if (auth.error) return auth.error;
+  const cfg = await globalConfig(env);
+  const info = await wallet(env, auth.code, { op: "get_log" });
+  const calls = (info.log || []).map((entry) => ({
+    at: Math.floor(entry.t / 1000),
+    minutes: Math.round((entry.u / cfg.units_per_minute) * 100) / 100,
+  }));
+  return json({
+    credit_minutes: Math.max(0, toMinutes(info.units, cfg.units_per_minute)),
+    expires_at: auth.stored.activated_at + (auth.stored.days || 7) * 86400,
+    calls,
+  });
+}
+
+async function managedMessages(request, env, ctx) {
   if (!env.WALLET || !env.ANTHROPIC_API_KEY) {
     return managedError(500, "api_error",
       "الخدمة المُدارة غير مهيّأة على الخادم بعد.");
@@ -825,11 +1080,18 @@ async function managedMessages(request, env) {
 
   let upstream, text;
   try {
-    upstream = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST", headers, body: JSON.stringify(outgoing),
-      signal: AbortSignal.timeout(290000),
-    });
-    text = await upstream.text();
+    const payload = JSON.stringify(outgoing);
+    for (let attempt = 0; ; attempt++) {
+      upstream = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST", headers, body: payload,
+        signal: AbortSignal.timeout(290000),
+      });
+      text = await upstream.text();
+      // ازدحام عند Claude: ننتظر ونعيد بدل أن يرى العميل خطأً عابرًا.
+      if (![429, 503, 529].includes(upstream.status) || attempt >= 3) break;
+      const wait = Math.min(15, Number(upstream.headers.get("retry-after")) || (2 ** attempt) * 2);
+      await new Promise((resolve) => setTimeout(resolve, wait * 1000));
+    }
   } catch (err) {
     await settle({ actual: 0 });                  // لم يُستهلك شيء: يُردّ كله
     return managedError(502, "api_error", "تعذّر الوصول إلى Claude. أعد المحاولة.");
@@ -863,13 +1125,26 @@ async function managedMessages(request, env) {
     actual: usage ? inTokens + OUTPUT_WEIGHT * outTokens : hold.take,
     in_tokens: inTokens, out_tokens: outTokens, counted: true,
   });
+  // إنفاق عام + تنبيهات (الرصيد، السقف، الاستهلاك الشاذّ). لا يؤخّر الردّ.
+  const spendTask = (async () => {
+    const hourMinutes = (after.hour_units || 0) / flag.units_per_minute;
+    const recorded = await wallet(env, "__global__", {
+      op: "g_record", usd: usdCost(inTokens, outTokens, flag),
+      month: monthKey(), day: dayKey(), code,
+      anomaly: flag.anomaly_minutes_per_hour > 0
+        && hourMinutes > flag.anomaly_minutes_per_hour ? Math.round(hourMinutes) : 0,
+      balance_alert_usd: flag.balance_alert_usd, monthly_cap_usd: flag.monthly_cap_usd,
+    });
+    await notify(env, recorded.alerts);
+  })().catch(() => {});
+  if (ctx && ctx.waitUntil) ctx.waitUntil(spendTask);
   return new Response(text, { status: 200, headers: {
     "content-type": "application/json; charset=utf-8",
     "x-maeen-credit-minutes": String(Math.max(0, toMinutes(after.units, flag.units_per_minute))),
   } });
 }
 
-async function route(request, env) {
+async function route(request, env, ctx) {
     const url = new URL(request.url);
     const path = url.pathname.replace(/\/+$/, "") || "/";
 
@@ -881,10 +1156,19 @@ async function route(request, env) {
     }
 
     if (request.method === "POST" && path === "/v1/messages") {
-      return managedMessages(request, env);
+      return withGate(request, env, ctx, () => managedMessages(request, env, ctx));
     }
     if (request.method === "GET" && path === "/managed/balance") {
       return managedBalance(request, env);
+    }
+    if (request.method === "GET" && path === "/managed/usage") {
+      return managedUsage(request, env);
+    }
+    if (request.method === "GET" && path === "/privacy") {
+      return page(PRIVACY_PAGE, env);
+    }
+    if (request.method === "GET" && path === "/terms") {
+      return page(TERMS_PAGE, env);
     }
 
     // صفحة الإدارة: تُخدَم بلا رمز (لا تحوي شيئًا)، والرمز يُطلب داخلها
@@ -904,6 +1188,7 @@ async function route(request, env) {
         wallet_bound: Boolean(env.WALLET),
         anthropic_key_set: Boolean(env.ANTHROPIC_API_KEY),
         managed_model: env.MANAGED_MODEL || "claude-sonnet-5",
+        alerts_configured: Boolean(env.ALERT_NTFY_TOPIC || env.ALERT_WEBHOOK_URL),
         units_per_minute: (env.WALLET ? await globalConfig(env)
                                       : resolveConfig(env)).units_per_minute,
       });
@@ -929,6 +1214,8 @@ async function route(request, env) {
           days: body.days || 7, max_days: body.max_days || body.days || 7,
           recheck_days: body.recheck_days ?? 7, grace_days: body.grace_days ?? 3,
           plan: body.plan || "", note: body.note || "",
+          ...(["trial", "solo", "team", "managed"].includes(body.tier)
+              ? { tier: body.tier } : {}),
           max_devices: Math.min(50, Math.max(1, body.max_devices || 1)),
           ...(body.managed ? { managed: true } : {}),
           created_at: Math.floor(Date.now() / 1000),
@@ -965,6 +1252,23 @@ async function route(request, env) {
           }
           patch[key] = value;
         }
+        for (const key of ["monthly_cap_usd", "balance_alert_usd",
+                           "anomaly_minutes_per_hour"]) {
+          if (!(key in body)) continue;
+          const value = Number(body[key]);
+          if (!Number.isFinite(value) || value < 0 || value > 1e9) {
+            return json({ error: `قيمة غير صالحة: ${key}` }, 400);
+          }
+          patch[key] = value;
+        }
+        if ("balance_usd" in body) {
+          const raw = body.balance_usd;
+          const value = raw === null || raw === "" ? null : Number(raw);
+          if (value !== null && (!Number.isFinite(value) || value < 0)) {
+            return json({ error: "رصيد غير صالح." }, 400);
+          }
+          await wallet(env, "__global__", { op: "g_set_balance", balance_usd: value });
+        }
         await wallet(env, "__global__", { op: "set_config", config: patch });
         const { enabled, ...config } = await globalConfig(env);
         return json({ ok: true, config });
@@ -986,6 +1290,15 @@ async function route(request, env) {
           op: "add", units: Math.round(amount * upm),
         });
         return json({ ok: true, credit_minutes: toMinutes(result.units, upm) });
+      }
+
+      // تجربة وصول التنبيهات إلى جوالك.
+      if (request.method === "POST" && path === "/admin/test-alert") {
+        if (!(env.ALERT_NTFY_TOPIC || env.ALERT_WEBHOOK_URL)) {
+          return json({ error: "لم يُضبط ALERT_NTFY_TOPIC ولا ALERT_WEBHOOK_URL بعد." }, 400);
+        }
+        await notify(env, [{ kind: "test", message: "هذا تنبيه تجريبي — الإشعارات تعمل." }]);
+        return json({ ok: true });
       }
 
       // إيقاف طارئ للخدمة المُدارة كلها (أو إعادتها).
@@ -1056,8 +1369,12 @@ async function route(request, env) {
           totals.balance_minutes = Math.round(totals.balance_minutes * 10) / 10;
         }
         const { enabled, ...config } = cfg;
+        const spend = env.WALLET
+          ? await wallet(env, "__global__", { op: "g_state", month: monthKey() })
+          : { month_usd: 0, balance_usd: null };
         return json({
-          codes: rows, managed_enabled: enabled, config, totals,
+          codes: rows, managed_enabled: enabled, config, totals, spend,
+          alerts_configured: Boolean(env.ALERT_NTFY_TOPIC || env.ALERT_WEBHOOK_URL),
           managed_ready: Boolean(env.WALLET && env.ANTHROPIC_API_KEY),
           units_per_minute: cfg.units_per_minute,
         });
@@ -1068,7 +1385,7 @@ async function route(request, env) {
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     // بلا هذا يعود الخطأ إلى المستخدم كـ«1101» فقط — رقمٌ لا يشخّص شيئًا.
     try {
       if (!env.LICENSES) {
@@ -1077,7 +1394,7 @@ export default {
       if (!env.LICENSE_PRIVATE_KEY) {
         return json({ error: "الخادم بلا مفتاح توقيع." }, 500);
       }
-      return await route(request, env);
+      return await route(request, env, ctx);
     } catch (err) {
       return json({ error: `عطل في الخادم: ${err && err.message}` }, 500);
     }
