@@ -915,6 +915,10 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
                 text = f"الترخيص: حتى {expiry} — {verdict.days_left} يومًا"
             else:
                 text = "الترخيص: فعّال"
+            credit = getattr(self, "_credit_minutes", None)
+            if credit is not None:
+                text += (f"  ·  الرصيد: {credit:g} دقيقة"
+                         + (" ⚠" if credit < 30 else ""))
             if urgent:
                 text = f"⚠ {text} (على وشك الانتهاء)"
             color = theme.ACCENT_LIGHT if urgent else theme.ON_INK_MUTED

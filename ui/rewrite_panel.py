@@ -243,6 +243,8 @@ class RewritePanelMixin:
         if provider_name != "maeen_managed" or not available:
             self._credit_text = ""
             self._credit_for = None
+            self._credit_minutes = None
+            self._refresh_header_credit()
             return
         if getattr(self, "_credit_timer", None) is None:
             from PyQt6.QtCore import QTimer
@@ -292,7 +294,15 @@ class RewritePanelMixin:
     def _credit_done(self) -> None:
         self._credit_busy = False
 
+    def _refresh_header_credit(self) -> None:
+        """يُعيد رسم شريط الترخيص أعلى النافذة ليشمل الرصيد المتبقي."""
+        refresh = getattr(self, "_refresh_license_badge", None)
+        if refresh:
+            refresh()
+
     def _set_credit(self, minutes: float) -> None:
+        self._credit_minutes = minutes
+        self._refresh_header_credit()
         if minutes <= 0:
             text = "الرصيد المتبقي: نفد ✗ — اطلب شحن الرصيد من المزوّد."
         elif minutes < LOW_CREDIT_MINUTES:
