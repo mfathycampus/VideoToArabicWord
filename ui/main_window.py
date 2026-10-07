@@ -309,6 +309,9 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
             self.provider_combo.setCurrentIndex(current)
         self.provider_combo.currentIndexChanged.connect(self._on_rewrite_toggled)
         provider_row.addWidget(self.provider_combo, 1)
+        self.usage_button = QPushButton("سجل الاستهلاك")
+        self.usage_button.clicked.connect(self.show_usage_dialog)
+        provider_row.addWidget(self.usage_button)
         self.provider_row = QWidget()
         self.provider_row.setLayout(provider_row)
         rewrite_layout.addWidget(self.provider_row)
@@ -1248,7 +1251,8 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
                     "ألصق مفتاح الوصول في حقل «مفتاح الوصول» أعلاه، "
                     "ثم اضغط «اختبار وحفظ».\n\n"
                     "ستتم المعالجة الآن بالنص الخام دون إعادة صياغة.")
-            elif not provider.info.is_local:
+            elif (not provider.info.is_local
+                  and self.config.rewrite.provider != "maeen_managed"):
                 answer = QMessageBox.question(
                     self, "تأكيد الإرسال إلى خدمة خارجية",
                     f"سيُرسل نص التفريغ كاملًا إلى "
@@ -1268,6 +1272,9 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
             QMessageBox.warning(self, "نطاق غير صالح", str(exc))
             return
 
+        if not self.ensure_managed_consent():
+            return
+        self.mark_job_credit_start()
         self.cancel_token = CancellationToken()
         pipeline = VideoToDocPipeline(
             self.config.application.output_dir, self.config)
@@ -1341,12 +1348,14 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
         self.status_label.setText("اكتملت المعالجة بنجاح.")
         self.open_button.setEnabled(True)
         self.append_log(f"تم إنشاء المستند: {path}")
+        self.report_job_usage()
         QMessageBox.information(self, "اكتملت المعالجة",
                                 f"تم إنشاء المستند:\n{path}")
 
     def on_failed(self, error: str) -> None:
         self.status_label.setText("فشلت المعالجة.")
         self.append_log(f"خطأ: {error}")
+        self.report_job_usage()
         QMessageBox.critical(self, "خطأ", error)
 
     def on_cancelled(self) -> None:

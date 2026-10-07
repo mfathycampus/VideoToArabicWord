@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.request
@@ -636,7 +637,9 @@ class AnthropicProvider(LLMProvider):
                 f"{_friendly_error(detail)}") from exc
         except urllib.error.URLError as exc:
             raise RewriteUnavailableError(
-                f"تعذر الاتصال بـ Anthropic: {exc}", retryable=True) from exc
+                "تعذر الاتصال بـ Anthropic: "
+                + re.sub(r"https?://\S+", "[الخادم]", str(exc)),
+                retryable=True) from exc
 
         return self._extract_text(data)
 
