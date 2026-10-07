@@ -499,3 +499,22 @@ def test_fatal_error_stops_rewriter_batch():
     segment = AudioSegment(id=1, start=0, end=5, text_raw="نص", text_clean="نص")
     with pytest.raises(FatalProviderError):
         rewriter._rewrite_batch([segment])
+
+
+def test_requests_carry_a_product_user_agent(server, monkeypatch):
+    """بلا User-Agent يحجب Cloudflare الطلب (error code: 1010) على بعض الشبكات."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    RECEIVED.clear()
+    AnthropicProvider(base_url=server).complete("s", "u")
+    sent = {k.lower(): v for k, v in RECEIVED["headers"].items()}
+    assert sent["user-agent"].startswith("VideoToArabicWord/")
+
+
+def test_cloudflare_block_is_explained_and_fatal(managed):
+    from ai.providers import FatalProviderError
+
+    Handler.status = 403
+    Handler.body = "error code: 1010"
+    with pytest.raises(FatalProviderError, match="حجبت حمايةُ الشبكة") as info:
+        managed.complete("s", "u")
+    assert "1010" in str(info.value) and "لم يُستهلك شيء" in str(info.value)
