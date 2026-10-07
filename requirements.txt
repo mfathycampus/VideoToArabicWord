@@ -22,6 +22,9 @@
 PyQt6>=6.5.0,<7
 faster-whisper>=1.0.0,<2
 ctranslate2>=4.0.0,<5
+# PyAV 19 أسقط المعامل ``metadata_errors`` الذي يمرّره faster-whisper
+# في ``decode_audio`` فيفشل التفريغ بـ E4001. آخر إصدار متوافق: 18.x.
+av>=11,<19
 opencv-python>=4.8.0
 Pillow>=10.0.0
 # ‏scikit-image أُسقطت: كان استعمالها الوحيد دالة SSIM في
