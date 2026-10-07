@@ -31,6 +31,39 @@ def _windows_machine_guid() -> str:
         return ""
 
 
+def _macos_platform_uuid() -> str:
+    """``IOPlatformUUID`` من ioreg — معرّف الجهاز الثابت على ماك."""
+    if sys.platform != "darwin":
+        return ""
+    try:
+        out = subprocess.run(
+            ["/usr/sbin/ioreg", "-rd1", "-c", "IOPlatformExpertDevice"],
+            capture_output=True, text=True, timeout=10)
+        return parse_ioreg_uuid(out.stdout or "")
+    except Exception:                                  # noqa: BLE001
+        return ""
+
+
+def parse_ioreg_uuid(text: str) -> str:
+    for line in text.splitlines():
+        if "IOPlatformUUID" in line and "=" in line:
+            return line.split("=", 1)[1].strip().strip('"')
+    return ""
+
+
+def _linux_machine_id() -> str:
+    if not sys.platform.startswith("linux"):
+        return ""
+    for name in ("/etc/machine-id", "/var/lib/dbus/machine-id"):
+        try:
+            value = open(name, encoding="utf-8").read().strip()
+        except OSError:
+            continue
+        if value:
+            return value
+    return ""
+
+
 def _windows_volume_serial() -> str:
     if not sys.platform.startswith("win"):
         return ""
@@ -52,6 +85,8 @@ def device_fingerprint() -> str:
     parts = [
         _windows_machine_guid(),
         _windows_volume_serial(),
+        _macos_platform_uuid(),
+        _linux_machine_id(),
         platform.node(),
         os.environ.get("USERNAME") or os.environ.get("USER") or "",
         platform.machine(),

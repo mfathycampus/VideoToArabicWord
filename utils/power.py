@@ -26,6 +26,31 @@ _ES_SYSTEM_REQUIRED = 0x00000001   # النظام مشغول: لا تنم
 
 
 @contextlib.contextmanager
+def _caffeinate(reason: str = ""):
+    """ماك: ``caffeinate -i -w <pid>`` يمنع نوم الخمول ما دامت العملية حيّة."""
+    import os
+    import subprocess
+
+    proc = None
+    try:
+        proc = subprocess.Popen(
+            ["/usr/bin/caffeinate", "-i", "-w", str(os.getpid())],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if reason:
+            logger.info(f"منع نوم النظام أثناء: {reason}")
+    except Exception as exc:                                # noqa: BLE001
+        logger.debug(f"تعذّر تشغيل caffeinate: {exc}")
+    try:
+        yield
+    finally:
+        if proc is not None:
+            try:
+                proc.terminate()
+            except Exception:                               # noqa: BLE001
+                pass
+
+
+@contextlib.contextmanager
 def keep_awake(reason: str = ""):
     """يمنع نوم النظام داخل الكتلة، ويعيد السياسة عند الخروج.
 
@@ -34,6 +59,11 @@ def keep_awake(reason: str = ""):
     ناجحة. ولذلك يُبتلع الاستثناء هنا مع تسجيله، وهو من المواضع القليلة
     التي يصحّ فيها ذلك.
     """
+    if sys.platform == "darwin":
+        with _caffeinate(reason):
+            yield
+        return
+
     if sys.platform != "win32":
         # ماك ولينكس لهما آليات أخرى (caffeinate، systemd-inhibit)،
         # وجمهور هذا البرنامج على ويندوز. لا نُضيف تبعية لمسار لا يُختبر.

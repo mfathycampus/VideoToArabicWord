@@ -33,6 +33,14 @@ WINDOWS_SOURCES = (
      "ffmpeg-master-latest-win64-gpl.zip"),
 )
 
+#: ماك (arm64): بناءان ساكنان (بلا dylib خارجية) — ``brew`` يثبّت ffmpeg
+#: مرتبطًا بمكتبات Homebrew فلا يصلح نسخه داخل حزمة.
+MACOS_SOURCES = (
+    ("martin-riedl.de (arm64 static)",
+     {"ffmpeg": "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip",
+      "ffprobe": "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffprobe.zip"}),
+)
+
 NEEDED = ("ffmpeg", "ffprobe")
 
 
@@ -123,6 +131,22 @@ def main() -> int:
             print(f"  ✓ {name}: {location}")
         print("لا حاجة للتنزيل. (استخدم --force لنسخهما إلى bin/ رغم ذلك.)")
         return 0
+
+    if platform.system() == "Darwin":
+        for label, urls in MACOS_SOURCES:
+            print(f"\nالمصدر: {label}")
+            try:
+                with tempfile.TemporaryDirectory() as tmp:
+                    for name, url in urls.items():
+                        archive = Path(tmp) / f"{name}.zip"
+                        _download(url, archive)
+                        _extract(archive, (name,))
+                if all((BIN / n).is_file() for n in NEEDED):
+                    return 0 if verify() else 1
+            except (urllib.error.URLError, zipfile.BadZipFile, OSError) as exc:
+                print(f"    فشل: {exc}")
+        print("تعذر التنزيل التلقائي على macOS.")
+        return 1
 
     if platform.system() != "Windows":
         print("\nالتنزيل التلقائي مُهيّأ لويندوز فقط.")

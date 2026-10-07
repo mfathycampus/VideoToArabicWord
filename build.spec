@@ -19,6 +19,7 @@
 
 قبل البناء: ``python tools/setup_ffmpeg.py`` لتعبئة ``bin/``.
 """
+import sys
 from pathlib import Path
 
 from PyInstaller.utils.hooks import (collect_data_files,
@@ -53,6 +54,8 @@ for name in ("logo.png", "logo_light.png", "logo_wordmark.png",
 # أول ما يراه المستخدم في قائمة ابدأ. تُولَّد بـ ``tools/make_icon.py``
 # ومستبعَدة من المستودع (مُشتقّة من الشعار).
 icon = PROJECT / "assets" / "logo.ico"
+# macOS: ``.icns`` (يُولَّد بـ ``tools/make_icon.py --icns`` على ماك).
+icon_icns = PROJECT / "assets" / "logo.icns"
 
 # نموذج VAD الذي يشحنه faster-whisper ملفُّ بيانات لا وحدةَ بايثون،
 # فلا يراه محلّل الاستيراد إطلاقًا. ``collect_submodules`` أدناه يجلب
@@ -112,7 +115,8 @@ exe = EXE(
     upx=False,                 # UPX يفسد بعض مكتبات ctranslate2
     console=False,             # تطبيق نافذة؛ السجلّ في app.log
     disable_windowed_traceback=False,
-    icon=str(icon) if icon.is_file() else None,
+    icon=(str(icon) if icon.is_file() else None)
+    if sys.platform != "darwin" else None,
 )
 
 coll = COLLECT(
@@ -123,3 +127,22 @@ coll = COLLECT(
     upx=False,
     name="VideoToArabicWord",
 )
+
+# macOS: حزمة ‎.app بجانب مجلد onedir (الأخير لفحص build_smoke).
+if sys.platform == "darwin":
+    from version import APP_VERSION
+
+    app = BUNDLE(
+        coll,
+        name="VideoToArabicWord.app",
+        icon=str(icon_icns) if icon_icns.is_file() else None,
+        bundle_identifier="com.mfathycampus.videotoarabicword",
+        info_plist={
+            "CFBundleName": "VideoToArabicWord",
+            "CFBundleDisplayName": "VideoToArabicWord",
+            "CFBundleShortVersionString": APP_VERSION,
+            "CFBundleVersion": APP_VERSION,
+            "NSHighResolutionCapable": True,
+            "LSMinimumSystemVersion": "12.0",
+        },
+    )

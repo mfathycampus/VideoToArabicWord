@@ -52,14 +52,24 @@ def _open(text: str, device: str) -> Optional[dict]:
 
 def config_state_path() -> Path:
     base = os.environ.get("APPDATA")
-    root = Path(base) if base else Path.home() / ".config"
+    if base:
+        root = Path(base)
+    elif sys.platform == "darwin":
+        root = Path.home() / "Library" / "Application Support"
+    else:
+        root = Path.home() / ".config"
     return root / "VideoToArabicWord" / "state.json"
 
 
 def shadow_state_path() -> Path:
     """موضعٌ ثانٍ خارج مجلد الإعدادات — يبقى بعد «حذف كل شيء»."""
     base = (os.environ.get("PROGRAMDATA") or os.environ.get("LOCALAPPDATA"))
-    root = Path(base) if base else Path.home() / ".local" / "share"
+    if base:
+        root = Path(base)
+    elif sys.platform == "darwin":
+        root = Path.home() / "Library" / "Application Support"
+    else:
+        root = Path.home() / ".local" / "share"
     return root / "VideoToArabicWord" / ".runtime"
 
 

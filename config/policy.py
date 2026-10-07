@@ -46,6 +46,9 @@ def policy_path() -> Optional[Path]:
     if sys.platform.startswith("win"):
         base = Path(os.environ.get("ProgramData", r"C:\ProgramData"))
         candidate = base / "VideoToArabicWord" / POLICY_FILENAME
+    elif sys.platform == "darwin":
+        candidate = (Path("/Library/Application Support/VideoToArabicWord")
+                     / POLICY_FILENAME)
     else:
         candidate = Path("/etc/videotoarabicword") / POLICY_FILENAME
     return candidate if candidate.is_file() else None
