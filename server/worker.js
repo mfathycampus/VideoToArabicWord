@@ -648,6 +648,10 @@ async function activate(request, env, renew) {
       // «تجربة» تحمل علامة مائية في التطبيق أيًّا كانت مدّتها.
       tier: stored.tier || ((stored.plan || "").startsWith("تجربة") ? "trial" : ""),
     }),
+    // عناوين الخادم الحالية (SERVER_ALIASES، مفصولة بفواصل): يحفظها التطبيق
+    // سرًّا وينتقل إليها إن تغيّر العنوان، دون أن يراها العميل.
+    servers: String(env.SERVER_ALIASES || "").split(",")
+      .map((x) => x.trim()).filter((x) => x.startsWith("https://")).slice(0, 4),
   });
 }
 
