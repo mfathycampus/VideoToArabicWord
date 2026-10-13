@@ -189,6 +189,10 @@ class ApplicationConfig(BaseModel):
     #: افتراضيًا: المعلّم الفرد لا يحتاجه، والمؤسسة تُلزمه بسياسة
     #: الجهاز (``require_audit_log``) فلا يستطيع المستخدم تعطيله.
     audit_log: bool = False
+    #: إرسال أعداد الاستخدام المجمّعة (لا أسماء ولا نصوص) لمسؤول الترخيص —
+    #: انظر ``core/stats.to_payload`` و``utils/stats_report``. يُعلَن في
+    #: صفحة الإعدادات، وتمنعه سياسة الجهاز ``allow_usage_stats: false``.
+    share_usage_stats: bool = True
 
 
 class TranscriptionConfig(BaseModel):

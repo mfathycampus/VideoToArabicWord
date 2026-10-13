@@ -26,3 +26,10 @@ def corpus_dir():
 def pytest_configure(config):
     config.addinivalue_line("markers", "slow: اختبارات بطيئة")
     config.addinivalue_line("markers", "asr: تحتاج نموذج تفريغ")
+
+
+@pytest.fixture(autouse=True)
+def _isolated_usage_stats(tmp_path_factory, monkeypatch):
+    """سجلّ الإحصاء في مجلد مؤقت: الاختبارات لا تكتب في إحصاءات المطوّر."""
+    monkeypatch.setenv("VTAD_STATS_DIR", str(tmp_path_factory.mktemp("stats")))
+    monkeypatch.setenv("VTAD_DISABLE_USAGE_REPORT", "1")

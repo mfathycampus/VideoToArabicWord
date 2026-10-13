@@ -77,6 +77,8 @@ class Policy:
     #: ``False`` يمنع تنزيل أداة التسجيل (OBS) من الإنترنت؛ تبقى النسخة
     #: المثبَّتة مركزيًّا (``recording.obs_path``) صالحة للاستعمال.
     allow_obs_download: Optional[bool] = None
+    #: ``False`` يمنع إرسال إحصاءات الاستخدام المجمّعة لمسؤول الترخيص.
+    allow_usage_stats: Optional[bool] = None
     #: نصّ يظهر في الواجهة يقول لمن يسأل: من فرض هذا ولماذا.
     notice: str = ""
 
@@ -121,6 +123,7 @@ def load(path: Optional[Path] = None) -> Policy:
         "allow_model_download": bool,
         "allow_meeting_recording": bool,
         "allow_obs_download": bool,
+        "allow_usage_stats": bool,
     }
     for key, caster in known.items():
         if key in data and data[key] is not None:
@@ -176,6 +179,9 @@ def apply(config, policy: Optional[Policy] = None) -> Policy:
             recording.enabled = False
         if policy.allow_obs_download is False:
             recording.allow_download = False
+
+    if policy.allow_usage_stats is False:
+        config.application.share_usage_stats = False
 
     if policy.require_audit_log is True:
         config.application.audit_log = True

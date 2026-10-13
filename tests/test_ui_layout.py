@@ -43,43 +43,56 @@ def window(app):
     win.close()
 
 
-def _top_level_boxes(win):
-    inner = win.centralWidget().widget()
+HOME, SETTINGS = 0, 1
+
+
+def _page(win, index) -> QScrollArea:
+    return win.pages.widget(index)
+
+
+def _top_level_boxes(win, index):
+    inner = _page(win, index).widget()
     boxes = [b for b in inner.findChildren(QGroupBox) if b.parent() is inner]
     return sorted(boxes, key=lambda b: b.y())
 
 
 @pytest.mark.parametrize("height", [480, 600, 760, 1000])
-def test_sections_never_overlap(app, window, height):
+@pytest.mark.parametrize("index,minimum", [(HOME, 2), (SETTINGS, 4)])
+def test_sections_never_overlap(app, window, height, index, minimum):
     """أسوأ حالة: كل الصفوف الاختيارية ظاهرة."""
     window.rewrite_check.setChecked(True)
     window.resize(900, height)
+    window.show_page(index)
     app.processEvents()
 
-    boxes = _top_level_boxes(window)
-    assert len(boxes) >= 4, "مجموعات الواجهة الرئيسية مفقودة"
+    boxes = _top_level_boxes(window, index)
+    assert len(boxes) >= minimum, "مجموعات الواجهة مفقودة"
     for upper, lower in zip(boxes, boxes[1:]):
         assert upper.y() + upper.height() <= lower.y(), (
             f"تراكب عند ارتفاع {height}: "
             f"«{upper.title()}» فوق «{lower.title()}»")
 
 
-def test_content_lives_in_a_scroll_area(window):
+def test_every_page_lives_in_a_scroll_area(window):
     """التمرير هو ما يجعل الانهيار مستحيلًا مهما أُضيف لاحقًا."""
-    assert isinstance(window.centralWidget(), QScrollArea)
-    assert window.centralWidget().widgetResizable() is True
+    assert window.pages.count() == 2
+    for index in (HOME, SETTINGS):
+        assert isinstance(_page(window, index), QScrollArea)
+        assert _page(window, index).widgetResizable() is True
 
 
 def test_scrollbar_appears_when_content_exceeds_the_window(app, window):
     window.rewrite_check.setChecked(True)
     window.resize(900, 480)
+    window.show_page(SETTINGS)
     app.processEvents()
-    bar = window.centralWidget().verticalScrollBar()
+    bar = _page(window, SETTINGS).verticalScrollBar()
     assert bar.maximum() > 0, "المحتوى أطول من النافذة بلا مدى تمرير"
 
 
 def test_optional_rows_are_hidden_not_just_disabled(app, window):
     """العنصر المعطّل يشغل ارتفاعه كاملًا ويدفع بقية الواجهة."""
+    window.show_page(SETTINGS)
     window.rewrite_check.setChecked(False)
     app.processEvents()
     assert window.provider_row.isVisible() is False
@@ -102,3 +115,34 @@ def test_decoding_choice_is_offered(window):
 
 def test_window_minimum_fits_a_small_screen(window):
     assert window.minimumHeight() <= 500, "حدّ أدنى يمنع الاستخدام على لابتوب"
+
+
+def test_home_holds_source_output_and_processing_settings_hold_the_rest(window):
+    """الرئيسية: المصدر ومجلد الحفظ والتشغيل والإحصاءات؛ والباقي في الإعدادات."""
+    home = _page(window, HOME).widget()
+    settings = _page(window, SETTINGS).widget()
+    titles = lambda w: {b.title() for b in w.findChildren(QGroupBox)}  # noqa: E731
+    assert {"المصدر ومجلد الحفظ", "المعالجة"} <= titles(home)
+    assert {"نموذج التفريغ", "صياغة النص (اختياري)", "خيارات متقدّمة",
+            "الخصوصية والإحصاءات"} <= titles(settings)
+    assert home.isAncestorOf(window.dashboard)
+    assert home.isAncestorOf(window.start_button)
+    assert settings.isAncestorOf(window.model_combo)
+    assert settings.isAncestorOf(window.api_key_input)
+
+
+def test_sidebar_switches_pages(app, window):
+    window.nav_buttons[SETTINGS].click()
+    app.processEvents()
+    assert window.pages.currentIndex() == SETTINGS
+    assert window.nav_buttons[SETTINGS].isChecked()
+    assert not window.nav_buttons[HOME].isChecked()
+    window.nav_buttons[HOME].click()
+    assert window.pages.currentIndex() == HOME
+
+
+def test_log_is_folded_until_asked_for(app, window):
+    assert window.log.isVisible() is False
+    window.log_toggle.click()
+    app.processEvents()
+    assert window.log.isVisible() is True

@@ -74,6 +74,7 @@ datas += collect_data_files("faster_whisper")
 # tokenizers الخاص بـ faster-whisper يحمّل موارد بالاسم وقت التشغيل
 hiddenimports = collect_submodules("faster_whisper") + [
     "recording.session",                    # تسجيل الاجتماعات (استيراد متأخر من الواجهة)
+    "ui.dashboard", "core.stats", "utils.stats_report",  # الإحصاءات (استيراد متأخر)
     "cryptography.hazmat.bindings._rust",   # التحقّق من الترخيص
     "ctranslate2",
     "tokenizers",

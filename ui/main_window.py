@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QScrollArea,
+    QStackedWidget,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -105,6 +106,10 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
         self._build_ui()
         self._refresh_profile_notice()
         self._warn_if_config_failed_to_load()
+        # إبلاغٌ دوريّ مقيَّد بالوقت (مرّة كل 6 ساعات على الأكثر) — انظر
+        # ``utils/stats_report``. لا شيء إن عطّله المستخدم أو السياسة.
+        from utils import stats_report
+        stats_report.report_in_background(self.config)
 
     # ------------------------------------------------------------------
     def _build_ui(self) -> None:
@@ -121,14 +126,22 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
         # الصفوف على بعضها ويصير النص غير مقروء. ومع نمو الواجهة
         # (خيارات متقدّمة، محرّكات، مفاتيح) صار المجموع يتجاوز شاشات
         # كثيرة. التمرير يجعل الانهيار مستحيلًا مهما أُضيف لاحقًا.
+        #
+        # صفحتان (1.15): «الرئيسية» فيها ما يتغيّر في كل مهمّة — المصدر
+        # ومجلد الحفظ والتشغيل — ثم إحصاءات المستخدم؛ و«الإعدادات» فيها
+        # كل ما يُضبط مرّة ويُنسى. ``layout`` هو الرئيسية و``settings_layout``
+        # الإعدادات، وأسماء العناصر لم تتغيّر.
         root = QWidget()
         layout = QVBoxLayout(root)
-        layout.addWidget(self._build_header())
         layout.setContentsMargins(18, 18, 18, 18)
         layout.setSpacing(12)
+        settings_root = QWidget()
+        settings_layout = QVBoxLayout(settings_root)
+        settings_layout.setContentsMargins(18, 18, 18, 18)
+        settings_layout.setSpacing(12)
 
         # --- اختيار الملف ---
-        file_box = QGroupBox("١ · المصدر ومجلد الحفظ")
+        file_box = QGroupBox("المصدر ومجلد الحفظ")
         file_box_layout = QVBoxLayout(file_box)
         file_row = QWidget()
         file_layout = QHBoxLayout(file_row)
@@ -185,7 +198,7 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
         layout.addWidget(file_box)
 
         # --- النموذج ---
-        model_box = QGroupBox("٢ · نموذج التفريغ")
+        model_box = QGroupBox("نموذج التفريغ")
         model_layout = QVBoxLayout(model_box)
 
         # محرّك التفريغ (ADR-017). لا تُعرض القائمة حين لا يوجد خيار
@@ -301,10 +314,10 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
         self.engine_note.setWordWrap(True)
         self.engine_note.setStyleSheet(f"color: {theme.MUTED}; font-size: 11px;")
         model_layout.addWidget(self.engine_note)
-        layout.addWidget(model_box)
+        settings_layout.addWidget(model_box)
 
         # --- صياغة النص ---
-        rewrite_box = QGroupBox("٣ · صياغة النص (اختياري)")
+        rewrite_box = QGroupBox("صياغة النص (اختياري)")
         rewrite_layout = QVBoxLayout(rewrite_box)
         self.rewrite_check = QCheckBox(
             "إعادة صياغة التفريغ إلى نص وثيقة احترافي بالذكاء الاصطناعي")
@@ -380,14 +393,14 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
         self.rewrite_note.setWordWrap(True)
         self.rewrite_note.setStyleSheet(f"color: {theme.MUTED}; font-size: 11px;")
         rewrite_layout.addWidget(self.rewrite_note)
-        layout.addWidget(rewrite_box)
+        settings_layout.addWidget(rewrite_box)
         self._update_rewrite_note()
         # كود «مُدار» مفعّل ولا مفتاح محفوظ؟ اختر المزوّد المُدار تلقائيًا.
         from PyQt6.QtCore import QTimer
         QTimer.singleShot(800, self._auto_pick_managed)
 
         # --- خيارات متقدّمة ---
-        advanced = QGroupBox("٤ · خيارات متقدّمة")
+        advanced = QGroupBox("خيارات متقدّمة")
         advanced_layout = QVBoxLayout(advanced)
 
         # نطاق المعالجة: أرخص طريقة لتجربة إعداد على محاضرة طويلة
@@ -498,10 +511,10 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
         advanced_layout.addWidget(QLabel("صيغ إضافية بجوار مستند Word:"))
         advanced_layout.addLayout(self._build_export_toggles())
         advanced_layout.addLayout(self._build_study_row())
-        layout.addWidget(advanced)
+        settings_layout.addWidget(advanced)
 
         # --- التشغيل ---
-        run_box = QGroupBox("٥ · المعالجة")
+        run_box = QGroupBox("المعالجة")
         run_layout = QVBoxLayout(run_box)
         buttons = QHBoxLayout()
         self.start_button = QPushButton("ابدأ المعالجة")
@@ -562,22 +575,55 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
         layout.addWidget(run_box)
 
         # --- السجل ---
+        # داخل مجموعة «المعالجة» ومطويّ افتراضيًّا: الصفحة الرئيسية
+        # للإحصاءات، والسجلّ تفصيلٌ يُفتح عند الحاجة (ويُفتح وحده عند الخطأ).
         self.log = QTextEdit()
         self.log.setReadOnly(True)
         # ارتفاع محدّد لا تمدّد: داخل منطقة تمرير، العنصر المتمدّد يدفع
         # المحتوى ويجعل شريط التمرير بلا معنى.
         self.log.setMinimumHeight(120)
         self.log.setMaximumHeight(200)
-        layout.addWidget(self.log)
-        layout.addStretch(0)
+        self.log_toggle = QPushButton("إظهار السجلّ")
+        self.log_toggle.setCheckable(True)
+        self.log_toggle.toggled.connect(self._set_log_visible)
+        tools_row.addWidget(self.log_toggle)
+        run_layout.addWidget(self.log)
+        self.log.setVisible(False)
 
-        scroll = QScrollArea()
-        scroll.setWidget(root)
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.setCentralWidget(scroll)
+        # --- الإحصاءات ---
+        from ui.dashboard import StatsDashboard
+        self.dashboard = StatsDashboard(self._collect_stats, self.show_jobs)
+        layout.addWidget(self.dashboard)
+        layout.addStretch(1)
+
+        # --- الخصوصية والإحصاءات (الإعدادات) ---
+        settings_layout.addWidget(self._build_privacy_box())
+        settings_layout.addStretch(1)
+
+        self.pages = QStackedWidget()
+        for page in (root, settings_root):
+            scroll = QScrollArea()
+            scroll.setWidget(page)
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QFrame.Shape.NoFrame)
+            scroll.setHorizontalScrollBarPolicy(
+                Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            self.pages.addWidget(scroll)
+
+        shell = QWidget()
+        shell_layout = QVBoxLayout(shell)
+        shell_layout.setContentsMargins(18, 14, 18, 0)
+        shell_layout.setSpacing(0)
+        shell_layout.addWidget(self._build_header())
+        body = QHBoxLayout()
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(0)
+        body.addWidget(self._build_sidebar())
+        body.addWidget(self.pages, 1)
+        shell_layout.addLayout(body, 1)
+        self.setCentralWidget(shell)
+        self.show_page(0)
+        self.dashboard.refresh()
 
         # Initialize UI state after all widgets are created
         self._on_engine_changed()
@@ -806,6 +852,84 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
         self.scan_terms_status.setText(
             f"اقتُرح {len(terms)} مصطلحًا — احذف ما لا يُنطق في التسجيل.")
 
+    #: صفحات الشريط الجانبي بترتيب ``self.pages``.
+    PAGE_TITLES = ("الرئيسية", "الإعدادات")
+
+    def _build_sidebar(self) -> QWidget:
+        bar = QWidget()
+        bar.setFixedWidth(150)
+        column = QVBoxLayout(bar)
+        column.setContentsMargins(0, 18, 0, 18)
+        column.setSpacing(6)
+        self.nav_buttons = []
+        for index, title in enumerate(self.PAGE_TITLES):
+            button = QPushButton(title)
+            button.setCheckable(True)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.setStyleSheet(
+                f"QPushButton {{ text-align: right; padding: 9px 14px;"
+                f" border: none; border-radius: 8px; background: transparent;"
+                f" font-size: 14px; }}"
+                f"QPushButton:hover {{ background: {theme.BORDER_SOFT}; }}"
+                f"QPushButton:checked {{ background: {theme.SURFACE};"
+                f" color: {theme.ACCENT}; font-weight: 700;"
+                f" border: 1px solid {theme.BORDER_SOFT}; }}")
+            button.clicked.connect(lambda _=False, i=index: self.show_page(i))
+            column.addWidget(button)
+            self.nav_buttons.append(button)
+        column.addStretch(1)
+        return bar
+
+    def show_page(self, index: int) -> None:
+        self.pages.setCurrentIndex(index)
+        for i, button in enumerate(self.nav_buttons):
+            button.setChecked(i == index)
+        if index == 0 and hasattr(self, "dashboard"):
+            self.dashboard.refresh()
+
+    def _set_log_visible(self, visible: bool) -> None:
+        self.log.setVisible(visible)
+        self.log_toggle.setChecked(visible)
+        self.log_toggle.setText("إخفاء السجلّ" if visible else "إظهار السجلّ")
+
+    def _after_job(self) -> None:
+        """بعد كل مهمّة: تحديث الإحصاءات، وإبلاغ المسؤول إن كان مسموحًا."""
+        self.dashboard.refresh()
+        from utils import stats_report
+        stats_report.report_in_background(self.config, force=True)
+
+    def _collect_stats(self):
+        from core import stats
+        return stats.collect(self.config)
+
+    def _build_privacy_box(self) -> QGroupBox:
+        """إعلان إحصاءات الاستخدام: ما يُرسل، ولمن، وكيف يُوقف."""
+        box = QGroupBox("الخصوصية والإحصاءات")
+        column = QVBoxLayout(box)
+        self.share_stats_check = QCheckBox(
+            "مشاركة إحصاءات استخدام مجمّعة مع مسؤول الترخيص")
+        self.share_stats_check.setChecked(
+            bool(self.config.application.share_usage_stats))
+        self.share_stats_check.toggled.connect(self._on_share_stats_toggled)
+        reason = self._policy_reason("allow_usage_stats")
+        if reason:
+            self.share_stats_check.setEnabled(False)
+            self.share_stats_check.setToolTip(reason)
+        column.addWidget(self.share_stats_check)
+        note = QLabel(
+            "يُرسل أعدادًا فقط مع كود التفعيل: عدد المهام والمكتمل منها، ودقائق "
+            "الفيديو، ومتوسط الجودة، والصيغ والميزات المستعملة. لا تُرسل أسماء "
+            "ملفات ولا نصوص ولا صور ولا تسجيلات — المعالجة نفسها على جهازك "
+            "بالكامل. الإحصاءات في الصفحة الرئيسية تُحسب على جهازك دائمًا.")
+        note.setWordWrap(True)
+        note.setStyleSheet(f"color: {theme.MUTED}; font-size: 11px;")
+        column.addWidget(note)
+        return box
+
+    def _on_share_stats_toggled(self, checked: bool) -> None:
+        self.config.application.share_usage_stats = bool(checked)
+        self._save_config()
+
     def _build_header(self) -> QWidget:
         """شريط علوي يحمل شعار البرنامج واسمه.
 
@@ -845,7 +969,7 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
         name = QLabel("معين")
         name.setStyleSheet(
             f"color: {theme.ON_INK}; font-size: 15px; font-weight: 600;")
-        note = QLabel("يعمل على جهازك بالكامل — بلا إنترنت")
+        note = QLabel("المعالجة على جهازك بالكامل")
         note.setStyleSheet(f"color: {theme.ON_INK_MUTED}; font-size: 11px;")
         name.setVisible(not has_wordmark)
         titles.addWidget(name)
@@ -1385,6 +1509,7 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
         self.open_button.setEnabled(True)
         self.append_log(f"تم إنشاء المستند: {path}")
         self.report_job_usage()
+        self._after_job()
         warnings = getattr(self, "_job_warnings", [])
         if warnings:
             QMessageBox.warning(
@@ -1400,11 +1525,14 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
         self.status_label.setText("فشلت المعالجة.")
         self.append_log(f"خطأ: {error}")
         self.report_job_usage()
+        self._set_log_visible(True)
+        self._after_job()
         QMessageBox.critical(self, "خطأ", error)
 
     def on_cancelled(self) -> None:
         self.status_label.setText("أُلغيت المعالجة. يمكن استئنافها لاحقًا.")
         self.append_log("أُلغيت المعالجة — المراحل المكتملة محفوظة.")
+        self._after_job()
 
 
     def _warn_if_config_failed_to_load(self) -> None:
