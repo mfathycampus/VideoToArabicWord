@@ -149,10 +149,24 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
             "يعالج كل ملفات الوسائط في مجلد، واحدًا تلو الآخر.\n"
             "فشل ملف لا يوقف البقية.")
         browse_folder.clicked.connect(self.choose_folder)
+        # تسجيل الشاشة (شرح أو Teams/Zoom/Meet…) عبر OBS المحمول؛ الأداة تُنزَّل
+        # بإذن المستخدم عند أول استعمال. السياسة قد تعطّله فيظهر مع سببه.
+        self.record_button = QPushButton("تسجيل الشاشة…")
+        self.record_button.setToolTip(
+            "يسجّل شاشتك وصوت الجهاز والميكروفون أثناء أي شرح أو اجتماع "
+            "(Teams أو Zoom أو Meet أو بدونها)، ثم يعالج التسجيل كأي فيديو.\n"
+            "يشترط إقرارك بعلم المشاركين وموافقتهم.")
+        self.record_button.clicked.connect(self.record_meeting)
+        if not self.config.recording.enabled:
+            self.record_button.setEnabled(False)
+            self.record_button.setToolTip(
+                self._policy_reason("allow_meeting_recording")
+                or "تسجيل الشاشة معطّل.")
         file_layout.addWidget(self.file_label, 1)
         file_layout.addWidget(browse)
         file_layout.addWidget(browse_audio)
         file_layout.addWidget(browse_folder)
+        file_layout.addWidget(self.record_button)
         file_box_layout.addWidget(file_row)
 
         # مجلد الحفظ صفٌّ داخل نفس المجموعة لا مجموعة مستقلة: مجموعة
@@ -1127,7 +1141,22 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
             self, title, str(Path.home()), file_filter)
         if not path:
             return
-        self.video_path = Path(path)
+        self._set_source(Path(path), audio_only)
+
+    def record_meeting(self) -> None:
+        """يفتح نافذة التسجيل؛ الناتج يصير مصدر المعالجة."""
+        if not self._license_allows_processing():
+            return
+        from ui.recording_dialog import RecordingDialog
+
+        dialog = RecordingDialog(self.config, self)
+        dialog.log_event.connect(self.append_log)
+        dialog.exec()
+        if dialog.result_path is not None:
+            self._set_source(dialog.result_path, audio_only=False)
+
+    def _set_source(self, path: Path, audio_only: bool) -> None:
+        self.video_path = path
         self.audio_only = audio_only
         kind = "صوت" if audio_only else "فيديو"
         self.file_label.setText(f"{self.video_path.name}   ({kind})")
