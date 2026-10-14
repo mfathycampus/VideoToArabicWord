@@ -94,7 +94,8 @@ def _network_error(exc) -> str:
     return "تعذّر الاتصال بخادم التفعيل — تحقّق من الإنترنت ثم أعد المحاولة."
 
 
-def _post(path: str, payload: dict, timeout: int = DEFAULT_TIMEOUT) -> dict:
+def _post(path: str, payload: dict, timeout: int = DEFAULT_TIMEOUT,
+          expect: str = "lease") -> dict:
     bases = server_urls()
     if not bases:
         raise ActivationError(
@@ -102,7 +103,7 @@ def _post(path: str, payload: dict, timeout: int = DEFAULT_TIMEOUT) -> dict:
     last: ActivationError = ActivationError("تعذّر الاتصال بخادم التفعيل.", offline=True)
     for base in bases:
         try:
-            body = _post_one(base, path, payload, timeout)
+            body = _post_one(base, path, payload, timeout, expect)
         except ActivationError as exc:
             if not exc.offline:
                 raise                       # رفضٌ مفهوم من الخادم: لا فائدة من بديل
@@ -113,7 +114,8 @@ def _post(path: str, payload: dict, timeout: int = DEFAULT_TIMEOUT) -> dict:
     raise last
 
 
-def _post_one(base: str, path: str, payload: dict, timeout: int) -> dict:
+def _post_one(base: str, path: str, payload: dict, timeout: int,
+              expect: str = "lease") -> dict:
     request = urllib.request.Request(
         f"{base}{path}",
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
@@ -144,7 +146,7 @@ def _post_one(base: str, path: str, payload: dict, timeout: int) -> dict:
         raise ActivationError(_scrub(detail or f"رفض الخادم الطلب ({exc.code}).")) from exc
     except Exception as exc:                           # noqa: BLE001 — شبكة
         raise ActivationError(_network_error(exc), offline=True) from exc
-    if not body.get("lease"):
+    if not body.get(expect):
         raise ActivationError(_scrub(body.get("error") or "ردٌّ غير مفهوم من الخادم."))
     return body
 
@@ -200,3 +202,11 @@ def recheck(code: str, device: str, app_version: str = "") -> str:
     """يجدّد عقدًا قائمًا — يفشل إن أُلغي الكود."""
     return _post("/recheck", {"code": code.strip().upper(), "device": device,
                               "app_version": app_version})["lease"]
+
+
+def report_usage(code: str, device: str, stats: dict, app_version: str = "",
+                 timeout: int = 8) -> None:
+    """يرسل أعداد الاستخدام المجمّعة (``core.stats.to_payload``) لمسؤول الترخيص."""
+    _post("/stats", {"code": code.strip().upper(), "device": device,
+                     "app_version": app_version, "stats": stats},
+          timeout=timeout, expect="ok")

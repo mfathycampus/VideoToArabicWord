@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import time
 from pathlib import Path
 from typing import Callable, List, Optional
 
@@ -378,15 +379,29 @@ class VideoToDocPipeline(MediaStagesMixin, OutputsMixin):
         # سجلّ التدقيق يلفّ المهمّة كلّها من هنا: ``finally`` بداخله
         # يكتب السطر مهما كانت النهاية — نجاحًا أو إلغاءً أو سقوطًا.
         # سجلٌّ لا يحوي إلا النجاحات لا يصلح للتدقيق أصلًا.
+        from core import stats as usage_stats
         from utils import audit as audit_module
 
-        with audit_module.record_job(
-                self.config, video_path, job_dir,
-                enabled=bool(getattr(self.config.application,
-                                     "audit_log", False))) as audit:
-            return self._run_guarded(job, video_path, cancel_token, emit,
-                                     allow_model_download, allow_audio_only,
-                                     clip, transcript_only, audit)
+        # إحصاء الصفحة الرئيسية: سطرٌ لكل مهمّة مهما كانت نهايتها (core/stats).
+        started = time.monotonic()
+        outcome = "failed"
+        try:
+            with audit_module.record_job(
+                    self.config, video_path, job_dir,
+                    enabled=bool(getattr(self.config.application,
+                                         "audit_log", False))) as audit:
+                result = self._run_guarded(job, video_path, cancel_token, emit,
+                                           allow_model_download, allow_audio_only,
+                                           clip, transcript_only, audit)
+            outcome = "completed"
+            return result
+        except BaseException as exc:
+            if type(exc).__name__ == "PipelineCancelledError":
+                outcome = "cancelled"
+            raise
+        finally:
+            usage_stats.record_job(self.config, job_dir, outcome,
+                                   time.monotonic() - started, allow_audio_only)
 
     def _run_guarded(self, job, video_path, cancel_token, emit,
                      allow_model_download, allow_audio_only, clip,

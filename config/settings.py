@@ -189,6 +189,10 @@ class ApplicationConfig(BaseModel):
     #: افتراضيًا: المعلّم الفرد لا يحتاجه، والمؤسسة تُلزمه بسياسة
     #: الجهاز (``require_audit_log``) فلا يستطيع المستخدم تعطيله.
     audit_log: bool = False
+    #: إرسال أعداد الاستخدام المجمّعة (لا أسماء ولا نصوص) لمسؤول الترخيص —
+    #: انظر ``core/stats.to_payload`` و``utils/stats_report``. يُعلَن في
+    #: صفحة الإعدادات، وتمنعه سياسة الجهاز ``allow_usage_stats: false``.
+    share_usage_stats: bool = True
 
 
 class TranscriptionConfig(BaseModel):
@@ -538,6 +542,33 @@ def default_config_path() -> Path:
     return Path.home() / ".config" / "video_ai_doc" / "config.yaml"
 
 
+class RecordingConfig(BaseModel):
+    """تسجيل الشاشة عبر OBS Studio المحمول (انظر ``recording/``).
+
+    كل الحقول افتراضها آمن: لا تنزيل ولا تسجيل يحدث بلا ضغطة صريحة
+    وإقرار موافقة المشاركين في الواجهة.
+    """
+    enabled: bool = True
+    #: ``False`` بسياسة الجهاز يمنع تنزيل OBS تلقائيًا؛ يبقى مسار يدوي.
+    allow_download: bool = True
+    #: مسار obs64.exe مثبَّت مسبقًا (أجهزة تديرها تقنية المعلومات).
+    #: فارغ = النسخة المحمولة التي ينزّلها البرنامج.
+    obs_path: str = ""
+    #: مجلد حفظ التسجيلات؛ ``None`` = ``~/Videos/Maeen Recordings``.
+    output_dir: Path | None = None
+    capture_system_audio: bool = True
+    capture_microphone: bool = True
+    #: عرض الفيديو المسجَّل. 1600 يُبقي نصّ الشاشة مقروءًا دون ضخامة الملف.
+    video_width: int = Field(1600, ge=640, le=3840)
+    #: 10 إطارات/ث تكفي لشرائح وشرح شاشة (يحلّل البرنامج بـ3 إطارات/ث).
+    video_fps: int = Field(10, ge=1, le=30)
+    #: أقل مساحة حرة (جيجابايت) في مجلد الحفظ لبدء التسجيل.
+    min_free_gb: float = Field(2.0, ge=0.1)
+
+    def resolved_output_dir(self) -> Path:
+        return self.output_dir or (Path.home() / "Videos" / "Maeen Recordings")
+
+
 class AppConfig(BaseModel):
     """الإعداد الجذر — يُحمَّل من YAML ويُحقن في الـ Pipeline."""
     application: ApplicationConfig = Field(default_factory=ApplicationConfig)
@@ -547,6 +578,7 @@ class AppConfig(BaseModel):
     document: DocumentConfig = Field(default_factory=DocumentConfig)
     rewrite: RewriteSettings = Field(default_factory=RewriteSettings)
     study: StudySettings = Field(default_factory=StudySettings)
+    recording: RecordingConfig = Field(default_factory=RecordingConfig)
 
     # آخر خطأ تحميل — تقرؤه الواجهة لتُعلم المستخدم بدل ابتلاعه
     load_error: str = ""

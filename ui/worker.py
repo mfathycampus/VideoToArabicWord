@@ -90,11 +90,18 @@ class ProviderTestWorker(QObject):
 
     @pyqtSlot()
     def run(self) -> None:
+        from ai.providers import ResponseTruncatedError
+
         try:
             reply = self.provider.complete(
                 "أجب بكلمة واحدة فقط.", "قل: جاهز",
-                max_tokens=16, timeout=30)
+                max_tokens=64, timeout=30)
             self.succeeded.emit((reply or "").strip()[:40])
+        except ResponseTruncatedError as exc:
+            # ردٌّ وصل ثم قُطع عند السقف = المفتاح والاتصال سليمان. كشف
+            # القطع (1.14.1) صُمّم لمستند يُكتب، لا لاختبار اتصال: هنا
+            # كانت «قُطع ردّ Claude عند سقف 16 رمزًا» تُرفض على مفتاحٍ صحيح.
+            self.succeeded.emit((exc.partial or "").strip()[:40])
         except Exception as exc:
             self.failed.emit(str(exc))
         finally:

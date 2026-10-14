@@ -89,3 +89,18 @@ class ArtifactMissingError(AppBaseException):
     error_code = "E9001"
     category = "STATE_ERROR"
     """حالة المهمة تشير إلى ناتج غير موجود — عطل استئناف."""
+
+
+class RecordingToolUnavailableError(EnvironmentError):
+    error_code = "E2002"
+    """أداة التسجيل (OBS) غير مثبّتة أو لا تعمل أو معطّلة بسياسة الجهاز."""
+
+
+class RecordingControlError(EnvironmentError):
+    error_code = "E2003"
+    """فشل التحكم في OBS عبر obs-websocket."""
+
+
+class RecordingToolDownloadError(NetworkError):
+    error_code = "E5001"
+    """تعذّر تنزيل أداة التسجيل أو فشل التحقق من سلامتها."""

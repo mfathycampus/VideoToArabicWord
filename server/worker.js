@@ -24,6 +24,7 @@
  *   POST /v1/messages    (x-api-key = الكود، x-device)  ← الخدمة المُدارة
  *   GET  /managed/balance (x-api-key = الكود، x-device)  ← الرصيد بلا استهلاك
  *   GET  /admin/codes                                  (Bearer ADMIN_TOKEN)
+ *   POST /stats        {code, device, stats}  ← أعداد استخدام مجمّعة من التطبيق
  */
 
 const PREFIX = "VTAW1";
@@ -57,6 +58,10 @@ button.ghost{background:#fff;color:var(--brand);border:1px solid var(--line)}
 button.danger{background:#fff;color:var(--bad);border:1px solid var(--line)}
 button:disabled{opacity:.5;cursor:default}
 table{width:100%;border-collapse:collapse;font-size:14px}
+.stats{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin-bottom:14px}
+.stat{border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+.stat b{display:block;font-size:20px;color:var(--brand)}
+.stat span{font-size:12px;color:var(--muted)}
 th,td{padding:8px 6px;border-bottom:1px solid var(--line);text-align:right}
 th{color:var(--muted);font-weight:600;font-size:13px}
 code{font-family:ui-monospace,Consolas,monospace;font-size:14px}
@@ -176,6 +181,18 @@ code{font-family:ui-monospace,Consolas,monospace;font-size:14px}
   <div class="msg" id="listMsg"></div>
 </div>
 
+<div class="card" id="usageCard" style="display:none">
+  <h2 style="font-size:17px;margin:0 0 6px">إحصاءات الاستخدام</h2>
+  <p class="sub" style="margin:0 0 12px">أعداد مجمّعة يرسلها التطبيق من كل جهاز —
+    بلا أسماء ملفات ولا نصوص. تظهر بعد أول مهمّة على الإصدار 1.15 أو أحدث.</p>
+  <div class="stats" id="usageTotals"></div>
+  <div style="overflow-x:auto"><table><thead><tr>
+    <th>المستخدم</th><th>الأجهزة</th><th>المهام</th><th>المكتملة</th><th>النجاح</th>
+    <th>ساعات الفيديو</th><th>متوسط الجودة</th><th>هذا الشهر</th><th>تسجيلات الشاشة</th>
+    <th>الصياغة/المرئي/التعليمية</th><th>آخر مهمة</th><th>آخر إبلاغ</th><th>الإصدار</th>
+  </tr></thead><tbody id="usageRows"></tbody></table></div>
+</div>
+
 <script>
 const fmt = (t) => t ? new Date(t * 1000).toLocaleDateString("ar-EG",
   {year:"numeric",month:"short",day:"numeric"}) : "—";
@@ -279,6 +296,62 @@ function statusOf(row) {
   return ["فعّال", "p-active"];
 }
 
+function usageOf(row) {
+  // يجمع ما أبلغت به أجهزة الكود كلها في سطر واحد.
+  const devices = Object.values(row.usage || {});
+  const sum = {devices: devices.length, jobs_total: 0, completed: 0, failed: 0,
+               video_minutes: 0, this_month_jobs: 0, recordings: 0,
+               q_sum: 0, q_n: 0, rewrite: 0, vision: 0, study: 0,
+               last_job_day: "", reported_at: 0, app_version: ""};
+  for (const d of devices) {
+    for (const k of ["jobs_total", "completed", "failed", "video_minutes",
+                     "this_month_jobs", "recordings"]) sum[k] += +d[k] || 0;
+    if (d.average_quality !== null && d.average_quality !== undefined && d.completed) {
+      sum.q_sum += d.average_quality * d.completed; sum.q_n += d.completed;
+    }
+    const f = d.features || {};
+    sum.rewrite += +f.rewrite || 0; sum.vision += +f.vision || 0; sum.study += +f.study || 0;
+    if ((d.last_job_day || "") > sum.last_job_day) sum.last_job_day = d.last_job_day;
+    if ((d.reported_at || 0) > sum.reported_at) {
+      sum.reported_at = d.reported_at; sum.app_version = d.app_version || "";
+    }
+  }
+  return sum;
+}
+
+function renderUsage(rows, totals) {
+  const card = document.getElementById("usageCard");
+  card.style.display = "";
+  const pct = (a, b) => b ? Math.round(100 * a / b) + "٪" : "—";
+  const tiles = [
+    [totals.users || 0, "مستخدمون أبلغوا"],
+    [totals.active_30d || 0, "نشطون آخر 30 يومًا"],
+    [totals.jobs_total || 0, "مهام"],
+    [totals.completed || 0, "مستندات مكتملة"],
+    [pct(totals.completed || 0, (totals.completed || 0) + (totals.failed || 0)), "نسبة النجاح"],
+    [((totals.video_minutes || 0) / 60).toFixed(1), "ساعات فيديو معالجة"],
+    [totals.average_quality ?? "—", "متوسط الجودة"],
+    [totals.this_month_jobs || 0, "مهام هذا الشهر"],
+    [totals.recordings || 0, "تسجيلات شاشة"],
+    [totals.questions || 0, "أسئلة مولّدة"],
+  ];
+  document.getElementById("usageTotals").innerHTML = tiles.map(([v, l]) =>
+    \`<div class="stat"><b>\${v}</b><span>\${l}</span></div>\`).join("");
+  const used = rows.map((row) => [row, usageOf(row)]).filter(([, u]) => u.devices)
+    .sort((a, b) => b[1].jobs_total - a[1].jobs_total);
+  document.getElementById("usageRows").innerHTML = used.length ? used.map(([row, u]) => \`<tr>
+      <td>\${row.note || "<code>" + row.code + "</code>"}</td>
+      <td>\${u.devices}</td><td>\${u.jobs_total}</td><td>\${u.completed}</td>
+      <td>\${pct(u.completed, u.completed + u.failed)}</td>
+      <td>\${(u.video_minutes / 60).toFixed(1)}</td>
+      <td>\${u.q_n ? (u.q_sum / u.q_n).toFixed(1) : "—"}</td>
+      <td>\${u.this_month_jobs}</td><td>\${u.recordings}</td>
+      <td>\${u.rewrite} / \${u.vision} / \${u.study}</td>
+      <td>\${u.last_job_day || "—"}</td><td>\${fmt(u.reported_at)}</td><td>\${u.app_version || "—"}</td>
+    </tr>\`).join("")
+    : '<tr><td colspan="13">لم يُبلغ أي جهاز بعد.</td></tr>';
+}
+
 async function loadCodes() {
   const auth = document.getElementById("auth");
   const message = document.getElementById("authMsg");
@@ -313,6 +386,7 @@ async function loadCodes() {
             \`<button class="danger" onclick="revoke('\${row.code}')">إلغاء</button>\`}
         </td></tr>\`;
     }).join("");
+    renderUsage(rows, data.usage_totals || {});
     document.getElementById("costCard").style.display = data.managed_ready ? "" : "none";
     if (data.config) {
       const totals = data.totals || {};
@@ -1148,6 +1222,92 @@ async function managedMessages(request, env, ctx) {
   } });
 }
 
+// ── إحصاءات الاستخدام ─────────────────────────────────────────────
+// التطبيق يرسل أعدادًا مجمّعة (core/stats.to_payload). تُقبل من جهازٍ
+// مربوطٍ بالكود فقط، وتُنقّى إلى قائمة حقولٍ رقمية معروفة: لا نصّ حرّ
+// يُخزَّن فيظهر في صفحة الإدارة.
+const USAGE_NUMBERS = ["jobs_total", "completed", "failed", "cancelled",
+  "video_minutes", "processing_minutes", "average_quality", "sections", "figures",
+  "questions", "this_month_jobs", "this_month_minutes", "recordings",
+  "recording_minutes"];
+
+function cleanCounts(value) {
+  const out = {};
+  if (!value || typeof value !== "object") return out;
+  for (const [k, v] of Object.entries(value).slice(0, 16)) {
+    if (/^[a-z0-9._]{1,24}$/.test(k) && Number.isFinite(+v)) {
+      out[k] = Math.max(0, Math.min(1e7, +v));
+    }
+  }
+  return out;
+}
+
+function cleanUsage(stats) {
+  const out = {};
+  for (const key of USAGE_NUMBERS) {
+    const v = stats ? stats[key] : undefined;
+    if (v === null || v === undefined || !Number.isFinite(+v)) {
+      out[key] = key === "average_quality" ? null : 0;
+    } else {
+      out[key] = Math.max(0, Math.min(1e7, Math.round(+v * 10) / 10));
+    }
+  }
+  out.formats = cleanCounts(stats && stats.formats);
+  out.features = cleanCounts(stats && stats.features);
+  const day = String((stats && stats.last_job_day) || "");
+  out.last_job_day = /^\d{4}-\d{2}-\d{2}$/.test(day) ? day : "";
+  return out;
+}
+
+async function reportStats(request, env) {
+  let body;
+  try { body = await request.json(); } catch (err) { return json({ error: "طلبٌ غير مفهوم." }, 400); }
+  const { code, device, stats } = body || {};
+  if (!code || !device || !stats) return json({ error: "طلبٌ ناقص." }, 400);
+  const stored = await env.LICENSES.get(code, "json");
+  if (!stored) return json({ error: "كود التفعيل غير معروف." }, 404);
+  if (!deviceListOf(stored).includes(device)) {
+    return json({ error: "هذا الجهاز غير مربوط بالكود." }, 403);
+  }
+  const now = Math.floor(Date.now() / 1000);
+  // المفتاح طرفٌ من بصمة الجهاز: يكفي للتمييز ولا يُظهر البصمة كاملة.
+  const usage = (stored.usage && typeof stored.usage === "object") ? stored.usage : {};
+  usage[String(device).slice(0, 12)] = {
+    ...cleanUsage(stats), reported_at: now,
+    app_version: String(body.app_version || "").slice(0, 20),
+  };
+  stored.usage = usage;
+  stored.last_seen = now;
+  await env.LICENSES.put(code, JSON.stringify(stored));
+  return json({ ok: true });
+}
+
+function usageTotals(rows) {
+  const now = Math.floor(Date.now() / 1000);
+  const t = { users: 0, active_30d: 0, jobs_total: 0, completed: 0, failed: 0,
+              video_minutes: 0, this_month_jobs: 0, recordings: 0, questions: 0,
+              average_quality: null };
+  let qSum = 0, qN = 0;
+  for (const row of rows) {
+    const devices = Object.values(row.usage || {});
+    if (!devices.length) continue;
+    t.users += 1;
+    if (devices.some((d) => now - (d.reported_at || 0) < 30 * 86400 && d.jobs_total)) {
+      t.active_30d += 1;
+    }
+    for (const d of devices) {
+      for (const k of ["jobs_total", "completed", "failed", "video_minutes",
+                       "this_month_jobs", "recordings", "questions"]) t[k] += +d[k] || 0;
+      if (d.average_quality !== null && d.average_quality !== undefined && d.completed) {
+        qSum += d.average_quality * d.completed; qN += d.completed;
+      }
+    }
+  }
+  t.video_minutes = Math.round(t.video_minutes * 10) / 10;
+  t.average_quality = qN ? Math.round(10 * qSum / qN) / 10 : null;
+  return t;
+}
+
 async function route(request, env, ctx) {
     const url = new URL(request.url);
     const path = url.pathname.replace(/\/+$/, "") || "/";
@@ -1157,6 +1317,9 @@ async function route(request, env, ctx) {
     }
     if (request.method === "POST" && path === "/recheck") {
       return activate(request, env, true);
+    }
+    if (request.method === "POST" && path === "/stats") {
+      return reportStats(request, env);
     }
 
     if (request.method === "POST" && path === "/v1/messages") {
@@ -1378,6 +1541,7 @@ async function route(request, env, ctx) {
           : { month_usd: 0, balance_usd: null };
         return json({
           codes: rows, managed_enabled: enabled, config, totals, spend,
+          usage_totals: usageTotals(rows),
           alerts_configured: Boolean(env.ALERT_NTFY_TOPIC || env.ALERT_WEBHOOK_URL),
           managed_ready: Boolean(env.WALLET && env.ANTHROPIC_API_KEY),
           units_per_minute: cfg.units_per_minute,

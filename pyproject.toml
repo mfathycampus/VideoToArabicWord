@@ -30,8 +30,8 @@ video-to-word-doctor = "tools.doctor:main"
 # ``version`` وحدةٌ في الجذر لا حزمة — ولولا إدراجها هنا لما وجدها
 # ``attr:`` أدناه ولا شُحنت مع التوزيعة.
 py-modules = ["version"]
-packages = ["ai", "audio", "config", "core", "document", "tools", "ui",
-            "utils", "video"]
+packages = ["ai", "audio", "config", "core", "document", "recording",
+            "tools", "ui", "utils", "video"]
 
 [tool.setuptools.dynamic]
 version = { attr = "version.APP_VERSION" }
