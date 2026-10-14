@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import (
 
 from ui.worker import (
     BalanceWorker,
+    ManagedCheckWorker,
     ProviderTestWorker,
     UsageWorker,
 )
@@ -110,6 +111,32 @@ class RewritePanelMixin:
         thread.finished.connect(thread.deleteLater)
         self._usage_thread = thread
         thread.start()
+
+    def check_managed_connection(self) -> None:
+        self.check_button.setEnabled(False)
+        self.check_button.setText("جارٍ الفحص…")
+        thread = QThread(self)
+        worker = ManagedCheckWorker()
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.line.connect(self._managed_check_line)
+        worker.report.connect(self._show_managed_report)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._reset_check_button)
+        self._check_thread = thread
+        thread.start()
+
+    def _reset_check_button(self) -> None:
+        self.check_button.setEnabled(True)
+        self.check_button.setText("فحص الاتصال")
+
+    def _managed_check_line(self, text: str) -> None:
+        self.append_log("فحص: " + text)          # تظهر الخطوات فور حدوثها
+
+    def _show_managed_report(self, text: str) -> None:
+        QMessageBox.information(self, "فحص الباقة المُدارة", text or "لا نتيجة.")
 
     def _usage_failed(self, message: str) -> None:
         # دالة مرتبطة بالنافذة لا lambda: الـlambda تُنفَّذ في خيط العامل
