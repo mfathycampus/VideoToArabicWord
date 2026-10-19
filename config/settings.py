@@ -360,7 +360,10 @@ class DocumentConfig(BaseModel):
     body_size_pt: float = 12.0
     heading_size_pt: float = 17.0
     enable_toc: bool = True
-    # شعار المستند: فارغ = assets/logo.png داخل المشروع إن وُجد
+    #: شعار المخرجات كلّها (Word وPDF وصفحة الويب والشرائح) — انظر
+    #: ``document/branding.py``: ‏app · wordmark · custom · none.
+    logo_choice: str = "app"
+    #: صورة الشعار المخصّص (نسخةٌ في مجلّد الإعداد) حين ``logo_choice=custom``.
     logo_path: Path | None = None
     logo_width_inches: float = 2.1
     show_timecodes: bool = True
@@ -409,6 +412,20 @@ class DocumentConfig(BaseModel):
     #: خارج المدى تعود إلى 70 بدل أن تُسقط تحميل الإعداد كلّه: إعدادٌ
     #: معطوب لا يجوز أن يمنع فتح البرنامج.
     scorm_mastery: int = 70
+
+    @field_validator("logo_choice", mode="before")
+    @classmethod
+    def _valid_logo_choice(cls, value):
+        from document.branding import CHOICES, DEFAULT_CHOICE
+
+        value = str(value or "").strip().lower()
+        return value if value in CHOICES else DEFAULT_CHOICE
+
+    def model_post_init(self, __context) -> None:
+        # إعدادٌ من إصدارٍ سابق فيه مسار شعار بلا «اختيار»: هو مخصّص.
+        if self.logo_path and self.logo_choice == "app" \
+                and "logo_choice" not in self.model_fields_set:
+            self.logo_choice = "custom"
 
     @field_validator("scorm_mastery", mode="before")
     @classmethod

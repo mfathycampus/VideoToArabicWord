@@ -366,6 +366,37 @@ def check_vad_asset() -> CheckResult:
         else f"{_pip_command()} install --force-reinstall faster-whisper")
 
 
+#: متّجه RFC 8032 الأوّل (رسالة فارغة) — فحصٌ حقيقي لمسار التحقّق.
+_RFC8032_PUBLIC = "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+_RFC8032_SIGNATURE = (
+    "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555f"
+    "b8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b")
+
+
+def check_license_verifier() -> CheckResult:
+    """هل يستطيع البرنامج التحقّق من كود التفعيل **فعلًا**؟
+
+    رُصد على جهاز نظيف: حزمةٌ رفضت كل كود تفعيل وطلبت من المعلّم
+    «pip install cryptography». ‏``find_spec`` كان سيقول «موجودة» —
+    الوجود لا يعني العمل. فالفحص هنا تحقّقٌ فعلي من متّجه RFC 8032،
+    يمرّ بـ cryptography إن تحمّلت وبالتنفيذ الخالص إن لم تتحمّل.
+    """
+    try:
+        from licensing import signing
+
+        ok = signing._verify_signature(bytes.fromhex(_RFC8032_PUBLIC),
+                                       bytes.fromhex(_RFC8032_SIGNATURE), b"")
+    except Exception as exc:                          # noqa: BLE001
+        return CheckResult("التحقّق من الترخيص", False, f"تعذّر: {exc}",
+                           _reinstall_hint() if is_frozen() else "")
+    backend = getattr(signing, "last_backend", "") or "?"
+    label = {"cryptography": "cryptography",
+             "pure": "تنفيذ بايثون خالص (cryptography لم تتحمّل)"}.get(backend, backend)
+    return CheckResult("التحقّق من الترخيص", ok,
+                       label if ok else "متّجه الاختبار رُفض",
+                       "" if ok else (_reinstall_hint() if is_frozen() else ""))
+
+
 def diagnose() -> Diagnosis:
     diagnosis = Diagnosis()
     diagnosis.results.append(check_python_version())
@@ -373,6 +404,7 @@ def diagnose() -> Diagnosis:
     diagnosis.results.append(check_docx_package())
     diagnosis.results.extend(r for r in check_imports() if r.name != "python-docx")
     diagnosis.results.append(check_vad_asset())
+    diagnosis.results.append(check_license_verifier())
     diagnosis.results.extend(check_binaries())
     diagnosis.results.append(check_ocr_binary())
     diagnosis.results.extend(check_export_extras())

@@ -49,9 +49,64 @@ def test_tiles_and_charts_show_the_numbers(window):
     assert board.tile_quality.value.text() == "82"
     assert board.tile_success.value.text() == "50٪"
     assert board.tile_speed.value.text() == "2.0×"
-    assert board.quality_chart.items == [("1", 82.0)]
+    # المحور تاريخ المستند لا رقمٌ ترتيبي (1.15.1)
+    assert board.quality_chart.items == [("2 أكتوبر", 82.0)]
     assert "&lt;b&gt;" in board.recent.text()       # الاسم مُهرَّب
     assert "82" in board.quality_chart.accessible_summary()
+
+
+def test_running_job_and_shared_denominator(window):
+    """1.15.1: الجارية «قيد المعالجة»، و«من N منتهية» = مقام نسبة النجاح."""
+    board = window.dashboard
+    facts = _facts() + [stats.JobFact("3", "2026-10-04T10:00:00", "running", "ج", 2400)]
+    board.show_stats(stats.compute(facts, busy=True))
+    assert "قيد المعالجة" in board.recent.text()
+    assert "لم تكتمل" not in board.recent.text() + board.tile_success.note.text()
+    assert board.tile_documents.note.text().startswith("من مهمّتين")
+    board.show_stats(stats.compute(facts, busy=False))
+    assert "توقّفت" in board.recent.text()
+
+
+def test_failed_job_shows_no_quality_score(window):
+    board = window.dashboard
+    facts = [stats.JobFact("9", "2026-10-15T10:00:00", "failed", "د", 2400,
+                           quality_score=72, outputs=[".docx"])]
+    board.show_stats(stats.compute(facts))
+    assert "جودة 72" not in board.recent.text()
+    assert "أُنشئ قبل الفشل" in board.recent.text()
+
+
+def test_logo_box_offers_the_choices(window, tmp_path, monkeypatch):
+    from PIL import Image
+
+    from document import branding
+
+    assert window.logo_combo.count() == len(branding.CHOICES)
+    window.logo_combo.setCurrentIndex(window.logo_combo.findData("none"))
+    assert window.config.document.logo_choice == "none"
+    assert window.logo_preview.text() == "بلا شعار"
+    source = tmp_path / "school.png"
+    Image.new("RGB", (400, 160), (10, 80, 160)).save(source)
+    monkeypatch.setattr(branding, "branding_dir", lambda: tmp_path / "branding")
+    from PyQt6.QtWidgets import QFileDialog
+    monkeypatch.setattr(QFileDialog, "getOpenFileName",
+                        staticmethod(lambda *a, **k: (str(source), "")))
+    assert window._choose_logo()
+    assert window.config.document.logo_choice == "custom"
+    assert window.config.document.logo_path.parent == tmp_path / "branding"
+    assert window.logo_combo.currentData() == "custom"
+
+
+def test_header_promise_matches_cloud_rewrite(window):
+    window.config.rewrite.enabled = False
+    window._refresh_privacy_header()
+    assert window.privacy_header.text() == "المعالجة على جهازك بالكامل"
+    window.config.rewrite.enabled = True
+    window.config.rewrite.provider = "anthropic"
+    window.config.rewrite.send_images = True
+    window._refresh_privacy_header()
+    assert "مزوّد سحابي" in window.privacy_header.text()
+    assert "محلي بالكامل" not in window.windowTitle()
 
 
 def test_refresh_collects_from_disk(app, window, tmp_path):

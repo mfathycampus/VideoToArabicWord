@@ -32,6 +32,15 @@ jobs:
           python -m pip install -r requirements-export.txt pyinstaller
       - name: تعبئة bin/ بـ ffmpeg و ffprobe
         run: python tools/setup_ffmpeg.py
+      - name: تجهيز Tesseract للشحن داخل الحزمة
+        # المعلّم لا يثبّت شيئًا: بلا Tesseract لا تمويه لأسماء الطلاب في
+        # اللقطات ولا قصّ لشريط المتصفّح. يُنسخ ما يلزم التشغيل وحده.
+        # فشل التنزيل لا يوقف الإصدار: الحزمة تعمل بلا OCR كما كانت.
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          choco install tesseract -y --no-progress
+          python tools/setup_tesseract.py --source "$env:ProgramFiles\Tesseract-OCR"
       - name: توليد أيقونة ويندوز
         # مُشتقّة من الشعار ومستبعَدة من المستودع. بلا هذه الخطوة يخرج
         # التطبيق بأيقونة Python الافتراضية في قائمة ابدأ.

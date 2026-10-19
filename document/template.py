@@ -21,7 +21,7 @@ from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_BREAK
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-from docx.shared import Inches, Pt, RGBColor
+from docx.shared import Inches, Mm, Pt, RGBColor
 
 from document.rtl_utils import (
     add_mixed_text,
@@ -74,12 +74,16 @@ class Theme:
     accent_hex: str = "0B2E2A"
     logo_path: Optional[Path] = None
     logo_width_inches: float = 2.1
+    #: ``False`` = «بلا شعار» صراحةً (``document/branding.py``).
+    logo_enabled: bool = True
 
     def resolved_logo(self) -> Optional[Path]:
         """يعيد مسار شعار موجود فعلًا، أو ``None``.
 
         غياب الشعار لا يُفشل التوليد — المستند يخرج بلا شعار فقط.
         """
+        if not self.logo_enabled:
+            return None
         candidate = self.logo_path or DEFAULT_LOGO
         return candidate if candidate and Path(candidate).is_file() else None
 
@@ -565,6 +569,11 @@ def configure_page(document: Document, theme: Theme) -> None:
     _modernize_compatibility(document)
     section = document.sections[0]
     set_section_rtl(section)
+    # A4 لا Letter: قالب python-docx الافتراضي أمريكيّ (8.5×11)، والمدارس
+    # هنا تطبع على A4 — فيخرج المستند بمقاس يطلب الطابعة ورقًا غير موجود
+    # أو يصغّر الصفحة. رُصد في PDF حقيقي: 612×792 نقطة.
+    section.page_width = Mm(210)
+    section.page_height = Mm(297)
     section.top_margin = Inches(0.9)
     section.bottom_margin = Inches(0.9)
     section.left_margin = Inches(0.85)

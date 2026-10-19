@@ -94,7 +94,8 @@ _AMBIGUOUS_SINGLE = {"asia", "dana", "hala", "nada", "amal", "jana", "mona",
 #: «Hanaa...»، «Mohame…». رُصد على تسجيل اجتماع حقيقي: 128 لقطة فيها
 #: لوحة مشاركين، والأسماء المقصوصة نجت من التمويه لأن الكاشف يشترط
 #: كلمتين كاملتين — وظهرت في تعليقات الصور («Mohame... Hesha»).
-_TRUNCATED_NAME = re.compile(r"^[A-Z][A-Za-z'\-]{1,14}(?:\.{2,}|…)$")
+_TRUNCATED_NAME = re.compile(
+    r"^(?:[A-Z][A-Za-z'\-]{1,14}(?:\.{2,}|…)|(?:\.{2,}|…)[A-Za-z'\-]{1,14})$")
 
 #: وسومٌ يليها اسم شخص في أنظمة المدارس والتقييم («Signed by Mohamad
 #: Ahmad on …»، «Current User» ثم الاسم في السطر التالي). الاسم هنا
@@ -148,6 +149,12 @@ def _name_run(tokens: List[str], start: int) -> int:
     return length
 
 
+def _name_like(token: str) -> bool:
+    """كلمةٌ لاتينية يمكن أن تكون جزءًا من اسمٍ ملاصقٍ لاسمٍ مكشوف."""
+    return bool((_NAME_WORD.match(token) or _LOWER_NAME_WORD.match(token))
+                and len(token) >= 3 and token.lower() not in _UI_WORDS)
+
+
 def _is_person(words: List[str]) -> bool:
     return any(w.lower() in _FIRST_NAMES
                or (_SURNAME.match(w) and w.lower() not in _NOT_SURNAME)
@@ -189,9 +196,19 @@ def find_name_boxes(words: Iterable[dict]) -> tuple[list[dict], list[str]]:
             for size in (4, 3, 2):
                 window = tokens[index:index + size]
                 if len(window) == size and _is_name_line(window):
-                    hide.extend(items[index:index + size])
-                    names.append(" ".join(window))
-                    index += size
+                    # الاسم الرباعي يُكشف بنافذة من أربع كلمات، فبقيت الكلمة
+                    # الخامسة — اللقب — ظاهرةً بجانب الجزء المموَّه. رُصد في
+                    # دليلٍ حقيقي: صفّ نتائج طالبٍ مموَّهٌ إلا «aljamal».
+                    stop = index + size
+                    while stop < len(tokens) and _name_like(tokens[stop]):
+                        stop += 1
+                    begin = index
+                    while begin > 0 and _name_like(tokens[begin - 1]) and \
+                            id(items[begin - 1]) not in {id(w) for w in hide}:
+                        begin -= 1
+                    hide.extend(items[begin:stop])
+                    names.append(" ".join(tokens[begin:stop]))
+                    index = stop
                     break
             else:
                 index += 1
@@ -291,6 +308,18 @@ def _same_column_rows(lines, hidden: list[dict]) -> list[dict]:
     every = [(w["left"], w["height"]) for w in hidden]
     listed = [(w["left"], w["height"]) for w in hidden
               if sum(1 for x in lefts if abs(x - w["left"]) <= COLUMN_TOLERANCE_PX) >= 2]
+    # الواجهة العربية تحاذي الأسماء **يمينًا**: «aljamal» و«meshal, Alawaad»
+    # في جدول نتائج PowerSchool يبدآن من موضعين مختلفين وينتهيان عند
+    # الحافة نفسها. المحاذاة باليسار وحدها تركت الصفّ الثاني ظاهرًا.
+    line_right: dict = {}
+    for items in lines.values():
+        if any(id(w) in {id(h) for h in hidden} for w in items):
+            edge = max(w["left"] + w["width"] for w in items)
+            line_right[id(items[0])] = (edge, items[-1]["height"])
+    rights = [edge for edge, _ in line_right.values()]
+    every_right = list(line_right.values())
+    listed_right = [(edge, height) for edge, height in every_right
+                    if sum(1 for x in rights if abs(x - edge) <= COLUMN_TOLERANCE_PX) >= 2]
     hidden_ids = {id(w) for w in hidden}
     extra: list[dict] = []
     for items in lines.values():
@@ -301,10 +330,17 @@ def _same_column_rows(lines, hidden: list[dict]) -> list[dict]:
             continue
         first = texts[0]
         cleaned = [w["text"].strip(".,:;()[]!|") for w in texts]
-        anchors = every if _is_person(cleaned) else listed
+        person = _is_person(cleaned)
+        anchors = every if person else listed
         in_column = any(abs(first["left"] - left) <= COLUMN_TOLERANCE_PX
                         and 0.6 <= first["height"] / max(1.0, height) <= 1.6
                         for left, height in anchors)
+        if not in_column:
+            edge = max(w["left"] + w["width"] for w in texts)
+            right_anchors = every_right if person else listed_right
+            in_column = any(abs(edge - right) <= COLUMN_TOLERANCE_PX
+                            and 0.6 <= texts[-1]["height"] / max(1.0, height) <= 1.6
+                            for right, height in right_anchors)
         if not in_column:
             continue
         # سطرٌ بلا كلمةٍ تشبه اسمًا (أزمنة، أرقام، كلمات واجهة) ليس اسمًا:
@@ -312,6 +348,8 @@ def _same_column_rows(lines, hidden: list[dict]) -> list[dict]:
         looks_named = any(
             (_NAME_WORD.match(t) and len(t) >= 3 and t.lower() not in _UI_WORDS)
             or re.search(r"[\u0600-\u06FF]{3,}", t)
+            # لقبٌ منفرد بحرفٍ صغير كما تعرضه PowerSchool («aljamal»)
+            or (person and _LOWER_NAME_WORD.match(t))
             for t in cleaned)
         if not looks_named:
             continue

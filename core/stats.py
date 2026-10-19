@@ -30,6 +30,11 @@ TREND_LENGTH = 12
 #: عدد الأشهر في مخطّط النشاط.
 MONTHS = 6
 FINAL_STATUSES = ("completed", "failed", "cancelled")
+#: حالةٌ تُعرض للمهمّة الجارية الآن (لا تُخزَّن في السجلّ).
+ACTIVE_STATUS = "active"
+#: مدّةٌ تُستنتج من ``job_state.json`` (إنشاء ← آخر تحديث) لا تُصدَّق فوق
+#: هذا: مهمّةٌ استؤنفت بعد أيام تعطي «سرعة» لا معنى لها.
+MAX_INFERRED_ELAPSED_SECONDS = 8 * 3600
 
 
 def default_stats_dir() -> Path:
@@ -98,9 +103,27 @@ def fact_from_job_dir(job_dir: Path, status: Optional[str] = None) -> Optional[J
         key=job_key(job_dir), at=when.isoformat(timespec="seconds"),
         status=status or summary.status, name=summary.name,
         duration_seconds=round(row.duration_seconds, 1),
+        elapsed_seconds=_inferred_elapsed(Path(job_dir)),
         quality_score=row.quality_score, sections=row.sections,
         figures=row.figures, questions=row.questions, glossary=row.glossary,
         outputs=list(row.outputs))
+
+
+def _inferred_elapsed(job_dir: Path) -> float:
+    """مدّة المعالجة من ``job_state.json`` للمهامّ التي سبقت السجلّ.
+
+    «سرعة المعالجة» ظهرت «—» مع خمس مستندات مكتملة: كلّها عولجت قبل
+    1.15 فلا مدّة لها في السجلّ. الإنشاء وآخر تحديث محفوظان في حالة
+    المهمّة منذ البداية — والفرق مدّتها ما لم تُستأنف بعد انقطاع طويل.
+    """
+    try:
+        state = json.loads((job_dir / "job_state.json").read_text(encoding="utf-8"))
+        start = datetime.fromisoformat(state["created_at"])
+        end = datetime.fromisoformat(state["updated_at"])
+        seconds = (end - start).total_seconds()
+    except Exception:                                 # noqa: BLE001
+        return 0.0
+    return round(seconds, 1) if 0 < seconds <= MAX_INFERRED_ELAPSED_SECONDS else 0.0
 
 
 def record_job(config, job_dir: Path, status: str, elapsed_seconds: float,
@@ -188,6 +211,8 @@ class UsageStats:
     failed: int = 0
     cancelled: int = 0
     unfinished: int = 0
+    #: مهمّة تعمل الآن — لا تُحسب «لم تكتمل» ولا تدخل نسبة النجاح.
+    running: int = 0
     video_seconds: float = 0.0
     processing_seconds: float = 0.0
     sections: int = 0
@@ -196,6 +221,8 @@ class UsageStats:
     glossary: int = 0
     average_quality: Optional[float] = None
     quality_trend: List[float] = field(default_factory=list)
+    #: تاريخ كل نقطة في ``quality_trend`` (ISO) — محور المخطّط.
+    quality_dates: List[str] = field(default_factory=list)
     formats: Counter = field(default_factory=Counter)
     features: Counter = field(default_factory=Counter)
     months: List[MonthBucket] = field(default_factory=list)
@@ -208,8 +235,18 @@ class UsageStats:
     recent: List[JobFact] = field(default_factory=list)
 
     @property
+    def finished(self) -> int:
+        """المقام الوحيد لكل ما يُقاس نجاحه: اكتملت أو فشلت.
+
+        كانت بطاقة المستندات تقول «5 من 7 مهام» (‏71٪) وبطاقة النجاح
+        بجانبها «83٪» (‏5 من 6) — مقامان لشيءٍ واحد. الملغاة بيد المستخدم
+        ليست فشلًا، والجارية لم تنتهِ بعد، والمتوقّفة تُعدّ منفصلة.
+        """
+        return self.completed + self.failed
+
+    @property
     def success_rate(self) -> Optional[float]:
-        finished = self.completed + self.failed
+        finished = self.finished
         return None if not finished else 100.0 * self.completed / finished
 
     @property
@@ -254,13 +291,34 @@ def scan_recordings(directory: Optional[Path]) -> tuple:
     return count, seconds
 
 
+def _mark_active(facts: List[JobFact]) -> List[JobFact]:
+    """المهمّة غير المنتهية الأحدث هي الجارية — حين يعمل البرنامج فعلًا."""
+    from dataclasses import replace
+
+    for index in range(len(facts) - 1, -1, -1):
+        if facts[index].status not in FINAL_STATUSES:
+            facts = list(facts)
+            facts[index] = replace(facts[index], status=ACTIVE_STATUS)
+            break
+    return facts
+
+
 def compute(facts: List[JobFact], recordings_dir: Optional[Path] = None,
-            now: Optional[datetime] = None) -> UsageStats:
+            now: Optional[datetime] = None, busy: bool = False) -> UsageStats:
+    """``busy``: البرنامج يعالج الآن، فأحدث مهمّة غير منتهية **جارية**.
+
+    رُصدت مهمّةٌ تُفرَّغ أمام المستخدم (‏5.5٪) معروضةً «… لم تكتمل»
+    ومحسوبةً بين المتعثّرة. بلا ``busy`` تبقى المهمّة غير المنتهية
+    «متوقّفة» — وهي كذلك فعلًا: لا شيء يعالجها.
+    """
     now = now or datetime.now()
     stats = UsageStats()
+    if busy:
+        facts = _mark_active(facts)
     months = {key: MonthBucket(key) for key in _month_keys(now, MONTHS)}
     this_month = f"{now.year:04d}-{now.month:02d}"
     scores: List[float] = []
+    score_dates: List[str] = []
     for fact in facts:
         stats.jobs_total += 1
         if fact.status == "completed":
@@ -269,6 +327,8 @@ def compute(facts: List[JobFact], recordings_dir: Optional[Path] = None,
             stats.failed += 1
         elif fact.status == "cancelled":
             stats.cancelled += 1
+        elif fact.status == ACTIVE_STATUS:
+            stats.running += 1
         else:
             stats.unfinished += 1
         when = fact.when
@@ -288,6 +348,7 @@ def compute(facts: List[JobFact], recordings_dir: Optional[Path] = None,
                 stats.features[name] += 1
         if fact.quality_score is not None:
             scores.append(float(fact.quality_score))
+            score_dates.append(fact.at)
         if month in months:
             months[month].jobs += 1
             months[month].video_minutes += fact.duration_seconds / 60.0
@@ -297,6 +358,7 @@ def compute(facts: List[JobFact], recordings_dir: Optional[Path] = None,
     if scores:
         stats.average_quality = sum(scores) / len(scores)
         stats.quality_trend = scores[-TREND_LENGTH:]
+        stats.quality_dates = score_dates[-TREND_LENGTH:]
     stats.months = list(months.values())
     if facts:
         stats.first_at, stats.last_at = facts[0].at, facts[-1].at
@@ -305,13 +367,13 @@ def compute(facts: List[JobFact], recordings_dir: Optional[Path] = None,
     return stats
 
 
-def collect(config) -> UsageStats:
+def collect(config, busy: bool = False) -> UsageStats:
     """إحصاءات هذا الجهاز كما تعرضها الواجهة."""
     output_dir = getattr(getattr(config, "application", None), "output_dir", None)
     recording = getattr(config, "recording", None)
     rec_dir = recording.resolved_output_dir() if recording is not None else None
     facts = load_facts([output_dir] if output_dir else [])
-    return compute(facts, rec_dir)
+    return compute(facts, rec_dir, busy=busy)
 
 
 def to_payload(stats: UsageStats) -> dict:

@@ -276,6 +276,9 @@ class RewritePanelMixin:
 
     def _update_rewrite_note(self) -> None:
         """يوضّح أثر الخيار على الخصوصية قبل تفعيله، لا بعده."""
+        refresh = getattr(self, "_refresh_privacy_header", None)
+        if refresh is not None:
+            refresh()
         if not self.rewrite_check.isChecked():
             self.rewrite_note.setText(
                 "معطّل — يُكتب نص التفريغ كما هو. لا اتصال بالإنترنت.")

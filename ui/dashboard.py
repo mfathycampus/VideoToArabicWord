@@ -31,6 +31,8 @@ from PyQt6.QtWidgets import (
 
 from core.stats import UsageStats
 from ui import theme
+from utils.arabic_plural import DOCUMENTS, TASKS_AFTER_PREPOSITION, count_label
+from utils.arabic_plural import minutes_label as _minutes
 
 ARABIC_MONTHS = ("يناير", "فبراير", "مارس", "أبريل", "مايو", "يونيو", "يوليو",
                  "أغسطس", "سبتمبر", "أكتوبر", "نوفمبر", "ديسمبر")
@@ -43,8 +45,10 @@ FEATURE_LABELS = {"rewrite": "صياغة بالذكاء الاصطناعي", "vi
                   "study": "الحزمة التعليمية", "audio_only": "ملفات صوتية"}
 STATUS_TEXT = {"completed": ("✓ اكتملت", theme.SUCCESS),
                "failed": ("✕ فشلت", theme.DANGER),
-               "cancelled": ("— أُلغيت", theme.MUTED)}
-
+               "cancelled": ("— أُلغيت", theme.MUTED),
+               "active": ("⏳ قيد المعالجة الآن", theme.ACCENT)}
+#: مهمّة غير منتهية والبرنامج لا يعالجها: توقّفت، وتُتابَع من «المهام السابقة».
+STALLED_TEXT = ("⏸ توقّفت — يمكن متابعتها", theme.WARNING)
 
 def _num(value: float, digits: int = 0) -> str:
     return f"{value:,.{digits}f}" if digits else f"{int(round(value)):,}"
@@ -352,12 +356,16 @@ class StatsDashboard(QWidget):
         since = _day_label(stats.first_at or "")
         self.subtitle.setText(f"منذ {since} · على هذا الجهاز" if since else "على هذا الجهاز")
 
-        self.tile_documents.set(
-            _num(stats.completed),
-            f"من {_num(stats.jobs_total)} مهمّة" if stats.jobs_total else "")
+        # المقام نفسه في البطاقتين: ما انتهى (اكتمل أو فشل) — انظر
+        # ``UsageStats.finished``. كانت «5 من 7» بجانب «83٪».
+        documents_note = (f"من {count_label(stats.finished, TASKS_AFTER_PREPOSITION)} منتهية"
+                          if stats.finished else "")
+        if stats.running:
+            documents_note += (" · " if documents_note else "") + "واحدة قيد المعالجة"
+        self.tile_documents.set(_num(stats.completed), documents_note)
         self.tile_hours.set(
             _num(stats.video_hours, 1),
-            f"{_num(stats.video_seconds / 60)} دقيقة" if stats.video_seconds else "")
+            _minutes(stats.video_seconds) if stats.video_seconds else "")
         if stats.average_quality is None:
             self.tile_quality.set("—", "تظهر بعد أول مستند مكتمل")
         else:
@@ -372,21 +380,27 @@ class StatsDashboard(QWidget):
             if stats.cancelled:
                 parts.append(f"{stats.cancelled} أُلغيت")
             if stats.unfinished:
-                parts.append(f"{stats.unfinished} لم تكتمل")
+                parts.append(f"{stats.unfinished} متوقّفة")
             self.tile_success.set(f"{rate:.0f}٪", " · ".join(parts))
         speed = stats.speed_ratio
         self.tile_speed.set(
             "—" if speed is None else f"{speed:.1f}×",
-            "" if speed is None else "دقائق فيديو لكل دقيقة معالجة")
+            "تظهر بعد أول مهمّة تُقاس مدّة معالجتها" if speed is None
+            else "دقائق فيديو لكل دقيقة معالجة")
         self.tile_month.set(
             _num(stats.this_month_jobs),
-            f"مستند · {_num(stats.this_month_minutes)} دقيقة فيديو"
+            f"{count_label(stats.this_month_jobs, DOCUMENTS)} · "
+            f"{_minutes(stats.this_month_minutes * 60)} فيديو"
             if stats.this_month_jobs else "لا مستندات هذا الشهر بعد")
 
         self.activity_chart.set_items(
             [(_month_label(b.month), float(b.jobs)) for b in stats.months])
+        # المحور تواريخ المستندات لا «1 2 3 4 5»: الرقم الترتيبي لا يقول
+        # أيّ مستندٍ هذا. والتلميح يذكر التاريخ والقيمة معًا.
+        dates = list(stats.quality_dates) + [""] * len(stats.quality_trend)
         self.quality_chart.set_items(
-            [(str(i + 1), float(v)) for i, v in enumerate(stats.quality_trend)])
+            [(_day_label(dates[i]) or str(i + 1), float(v))
+             for i, v in enumerate(stats.quality_trend)])
 
         self.produced.setText(self._produced_html(stats))
         self.recent.setText(self._recent_html(stats))
@@ -402,7 +416,7 @@ class StatsDashboard(QWidget):
         lines = [f"<b>{_num(v)}</b> {label}" for label, v in rows if v]
         if stats.recordings:
             lines.append(f"<b>{_num(stats.recordings)}</b> تسجيل شاشة "
-                         f"({_num(stats.recording_seconds / 60)} دقيقة)")
+                         f"({_minutes(stats.recording_seconds)})")
         formats = [f"{FORMAT_LABELS.get(k, k)} ({n})"
                    for k, n in stats.formats.most_common()]
         if formats:
@@ -420,9 +434,13 @@ class StatsDashboard(QWidget):
         import html
         lines = []
         for fact in stats.recent:
-            label, color = STATUS_TEXT.get(fact.status, ("… لم تكتمل", theme.WARNING))
-            quality = ("" if fact.quality_score is None
+            label, color = STATUS_TEXT.get(fact.status, STALLED_TEXT)
+            # الجودة درجة مستندٍ مكتمل. مهمّةٌ «فشلت» بجانبها «جودة 72»
+            # تناقضٌ ظاهر: إن خرج مستندها قبل الفشل قيل ذلك صراحةً.
+            quality = ("" if fact.quality_score is None or fact.status != "completed"
                        else f" · جودة {fact.quality_score:.0f}")
+            if fact.status == "failed" and ".docx" in (fact.outputs or []):
+                quality = " · المستند أُنشئ قبل الفشل"
             minutes = (f" · {_num(fact.duration_seconds / 60)} د"
                        if fact.duration_seconds else "")
             lines.append(

@@ -49,6 +49,13 @@ for name in ("logo.png", "logo_light.png", "logo_wordmark.png",
     if asset.is_file():
         datas.append((str(asset), "assets"))
 
+# Tesseract مشحونًا (‏``tools/setup_tesseract.py``): تمويه أسماء الطلاب
+# وقصّ شريط المتصفّح يحتاجانه، والمعلّم لا يُطلب منه تثبيت شيء.
+# غيابه عند البناء لا يُسقطه — يعمل البرنامج بلا OCR كما كان.
+_tesseract = PROJECT / "bin" / "tesseract"
+if _tesseract.is_dir():
+    datas.append((str(_tesseract), "tesseract"))
+
 # أيقونة الملف التنفيذي. ‏PyInstaller على ويندوز يقبل ``.ico`` فقط —
 # تمرير PNG يُتجاهَل بصمت، فيخرج التطبيق بأيقونة Python الافتراضية، وهي
 # أول ما يراه المستخدم في قائمة ابدأ. تُولَّد بـ ``tools/make_icon.py``
@@ -78,10 +85,30 @@ hiddenimports = collect_submodules("faster_whisper") + collect_submodules("pptx"
     "recording.session",                    # تسجيل الشاشة (استيراد متأخر من الواجهة)
     "ui.dashboard", "core.stats", "utils.stats_report",  # الإحصاءات (استيراد متأخر)
     "cryptography.hazmat.bindings._rust",   # التحقّق من الترخيص
+    "licensing.ed25519_pure",               # تحقّقٌ احتياطي بلا امتداد مُترجَم
     "ctranslate2",
     "tokenizers",
     "av",
 ]
+
+# ‏cryptography كاملة: الاستيراد داخل دالة في ``licensing/signing.py``،
+# والامتداد ``_rust`` يحمّل وحداتٍ فرعية بالاسم. رُصد على جهاز معلّم
+# نظيف: التفعيل رُفض و طُلب منه «pip install cryptography». التحقّق الآن
+# يسقط إلى ``licensing/ed25519_pure`` إن لم تتحمّل، لكن الحزمة تشحنها
+# كاملةً على أيّ حال، ويفحصها ``--selftest`` في كل بناء.
+try:
+    hiddenimports += collect_submodules("cryptography")
+    binaries += collect_dynamic_libs("cryptography")
+except Exception:                       # noqa: BLE001
+    pass
+
+# ‏_rust.pyd امتدادُ abi3 يرتبط بـ ``python3.dll`` لا بـ ``python312.dll``.
+# إن غاب الأوّل من الحزمة فشل التحميل على جهازٍ بلا Python — ونجح على
+# جهاز المطوّر لأن ``python3.dll`` في PATH عنده. يُشحن صراحةً.
+if sys.platform == "win32":
+    _stable_abi = Path(sys.base_prefix) / "python3.dll"
+    if _stable_abi.is_file():
+        binaries.append((str(_stable_abi), "."))
 
 # --- ما لا يُشحن ----------------------------------------------------------
 excludes = [

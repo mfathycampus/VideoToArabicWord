@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import base64
 import io
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
@@ -114,6 +115,11 @@ CONTINUATION_NOTE = (
     "هذا جزء من تسجيل أطول (الجزء {part} من {total}). اكتب أقسام هذا الجزء "
     "وحده، ولا تكرّر ما يُفهم أنه شُرح قبله. اترك title وabstract وkey_points "
     "فارغة إن لم يكن هذا الجزء الأول.\n\n")
+
+PREVIOUS_SECTIONS_NOTE = (
+    "أقسامٌ كُتبت في الأجزاء السابقة. إن أكمل هذا الجزء آخرها فابدأ بخطواته "
+    "التالية مباشرةً بلا عنوانٍ جديد يعيد المهمّة نفسها، ولا تكرّر خطوة أو "
+    "ملاحظة وردت فيها:\n")
 
 OUTLINE_PROMPT = """أنت محرّر عربي محترف. أمامك عناوين أقسام دليل وملخّصاتها.
 
@@ -237,6 +243,114 @@ def _seg_text(segment: AudioSegment) -> str:
     return (segment.text_clean or segment.text_raw or "").strip()
 
 
+# ── تعليق احتياطي ودمج الأقسام المكرّرة ───────────────────────────────
+
+_ENUM = re.compile(r"^\s*(?:\d+|[\u0660-\u0669]+)\s*[.)\-–]\s*")
+
+
+def _fallback_caption(previous_text: str, section_title: str) -> str:
+    """تعليقٌ لصورةٍ أعادها البرنامج إلى موضعها بلا تعليق من النموذج.
+
+    لقطةٌ لم يذكرها النموذج تُعاد إلى موضعها الزمني (``_insert_by_time``)
+    بتعليقٍ فارغ، فخرج الشكلان 11 و18 في دليلٍ حقيقي بلا أيّ وصف.
+    الخطوة التي تسبقها هي ما توضّحه في الأغلب، والعنوان احتياطٌ أخير.
+    """
+    text = _ENUM.sub("", " ".join((previous_text or "").split())).rstrip(".:؛،")
+    words = text.split()
+    if len(words) > 16:
+        text = " ".join(words[:16]) + "…"
+    return text or " ".join((section_title or "").split())
+
+
+_AR_DIACRITICS = re.compile(r"[\u064B-\u0652\u0640]")
+_TITLE_STOPWORDS = {"في", "من", "إلى", "الى", "على", "عن", "مع", "لكل", "كل",
+                    "ثم", "أو", "او", "و", "بعد", "قبل", "عند", "the", "a", "of",
+                    "to", "and", "in"}
+
+
+def _title_words(title: str) -> set:
+    words = set()
+    for word in re.findall(r"[\w\u0600-\u06FF]+", title or ""):
+        word = _AR_DIACRITICS.sub("", word.lower())
+        word = (word.replace("أ", "ا").replace("إ", "ا").replace("آ", "ا")
+                .replace("ة", "ه").replace("ى", "ي"))
+        if word in _TITLE_STOPWORDS:
+            continue
+        if word.startswith("و") and len(word) > 3:
+            word = word[1:]
+        if word.startswith("ال") and len(word) > 4:
+            word = word[2:]
+        if len(word) >= 2:
+            words.add(word)
+    return words
+
+
+def _grams(text: str) -> set:
+    text = " ".join(_AR_DIACRITICS.sub("", text or "").split())
+    return {text[i:i + 3] for i in range(max(0, len(text) - 2))}
+
+
+def _similar(a: str, b: str, threshold: float = 0.55) -> bool:
+    ga, gb = _grams(a), _grams(b)
+    if not ga or not gb:
+        return False
+    return len(ga & gb) / len(ga | gb) >= threshold
+
+
+def merge_repeated_sections(sections: List[DocumentSection]) -> List[DocumentSection]:
+    """يدمج قسمين **متتاليين** يشرحان المهمّة نفسها.
+
+    التسجيل الطويل يُكتب أجزاءً، وكلّ جزء يكتب عناوينه. فخرج في دليلٍ
+    حقيقي «تحديد تاريخ ووقت الاستحقاق لكل فصل» ثم مباشرةً «نسخ الاختبار
+    إلى فصل آخر وتحديد موعد الاستحقاق» — الخطوات نفسها والملاحظة نفسها.
+
+    المعيار كلمات العنوان المشتركة **بعد استبعاد كلمات الموضوع**: كلمةٌ
+    في ربع العناوين فأكثر («الاختبار» في دليل اختبارات) لا تدلّ على
+    مهمّةٍ بعينها، فبقاؤها كان سيدمج كل قسمين متجاورين.
+    وعند الدمج تُحذف الخطوة أو الملاحظة التي تكاد تطابق ما قبلها.
+    """
+    if len(sections) < 2:
+        return sections
+    bags = [_title_words(s.title) for s in sections]
+    frequency: Dict[str, int] = {}
+    for bag in bags:
+        for word in bag:
+            frequency[word] = frequency.get(word, 0) + 1
+    common = {w for w, n in frequency.items()
+              if len(sections) >= 6 and n / len(sections) >= 0.25}
+
+    merged: List[DocumentSection] = [sections[0]]
+    merged_bags = [bags[0] - common]
+    for section, bag in zip(sections[1:], bags[1:]):
+        bag = bag - common
+        previous, previous_bag = merged[-1], merged_bags[-1]
+        shared = previous_bag & bag
+        smaller = min(len(previous_bag), len(bag)) or 1
+        texts = [b.text for b in previous.blocks
+                 if b.kind in ("step", "note", "paragraph") and b.text]
+        # كلمتان مشتركتان وحدهما («ضبط إعدادات الاختبار العامة» و«ضبط
+        # شريط أدوات الاختبار وإعدادات الطلاب») قد تكونان مهمّتين
+        # متجاورتين حقًّا — فتلزمهما خطوةٌ أو ملاحظةٌ تكاد تتطابق.
+        echoed = any(_similar(b.text, t) for b in section.blocks
+                     if b.kind in ("step", "note") and b.text for t in texts)
+        if len(shared) / smaller >= 0.5 and (
+                len(shared) >= 3 or (len(shared) >= 2 and echoed)):
+            for block in section.blocks:
+                if (block.kind in ("step", "note", "paragraph") and block.text
+                        and any(_similar(block.text, t) for t in texts)
+                        and not block.segment_ids):
+                    continue
+                previous.blocks.append(block)
+            if section.summary and not previous.summary:
+                previous.summary = section.summary
+            merged_bags[-1] = previous_bag | bag
+            logger.info(f"دُمج قسمٌ مكرّر «{section.title}» في «{previous.title}».")
+            continue
+        merged.append(section)
+        merged_bags.append(bag)
+    return merged
+
+
 class VisualAuthor:
     """يبني ``DocumentPlan`` من اللقطات والتفريغ عبر نموذج مرئي."""
 
@@ -268,8 +382,9 @@ class VisualAuthor:
             if progress_callback:
                 progress_callback((index - 1) / (len(chunks) + 1),
                                   f"كتابة المستند من اللقطات: الجزء {index} من {len(chunks)}")
+            previous = [s["title"] for a in authored for s in a.sections if s["title"]]
             authored.append(self._author_chunk(
-                chunk, images_dir, fallback_title, index, len(chunks)))
+                chunk, images_dir, fallback_title, index, len(chunks), previous))
 
         head = authored[0]
         title, abstract, key_points = head.title, head.abstract, head.key_points
@@ -362,12 +477,20 @@ class VisualAuthor:
         return text
 
     def _parts(self, chunk: _Chunk, images_dir: Path, title: str,
-               part: int, total: int) -> Tuple[list, Dict[int, KeyframeMetadata]]:
+               part: int, total: int, previous: Tuple[str, ...] = ()
+               ) -> Tuple[list, Dict[int, KeyframeMetadata]]:
         """الخطّ الزمني: كلام، ثم لقطة، ثم كلام… بترتيب وقوعها."""
         parts: list = []
         intro = self._context(title, bool(chunk.segments))
         if total > 1:
             intro += CONTINUATION_NOTE.format(part=part, total=total)
+        if previous:
+            # «لا تكرّر ما يُفهم أنه شُرح قبله» بلا أن يرى النموذج ما شُرح
+            # قبله تعليمةٌ لا تُنفَّذ: رُصد قسمان متتاليان من جزأين
+            # («تحديد تاريخ ووقت الاستحقاق لكل فصل» ثم «نسخ الاختبار إلى
+            # فصل آخر وتحديد موعد الاستحقاق») بالخطوات والملاحظة نفسيهما.
+            listing = "\n".join(f"- {t}" for t in list(previous)[-12:])
+            intro += (PREVIOUS_SECTIONS_NOTE + listing + "\n\n")
         intro += "الخطّ الزمني:\n"
         parts.append(text_part(intro))
 
@@ -402,7 +525,8 @@ class VisualAuthor:
         return parts, sent
 
     def _author_chunk(self, chunk: _Chunk, images_dir: Path, title: str,
-                      part: int, total: int) -> _Authored:
+                      part: int, total: int,
+                      previous: Tuple[str, ...] = ()) -> _Authored:
         """يكتب جزءًا واحدًا — ويقسمه نصفين إن قُطع ردّه أو فسد.
 
         رُصد على تشغيل حقيقي: ردّ الجزء الأول (20 لقطة) «ليس JSON»،
@@ -410,7 +534,8 @@ class VisualAuthor:
         ردًّا أقصر، فالقسمة علاجٌ مباشر لا يحتاج سقفًا أعلى من الخدمة.
         """
         try:
-            return self._author_once(chunk, images_dir, title, part, total)
+            return self._author_once(chunk, images_dir, title, part, total,
+                                     tuple(previous))
         except RewriteUnavailableError as exc:
             splittable = isinstance(exc, ResponseTruncatedError) or getattr(
                 exc, "malformed", False)
@@ -420,8 +545,10 @@ class VisualAuthor:
             logger.warning(
                 f"الجزء {part}: {exc} — يُقسَم إلى {len(first.keyframes)} "
                 f"و{len(second.keyframes)} لقطة ويُعاد.")
-            a = self._author_chunk(first, images_dir, title, part, total)
-            b = self._author_chunk(second, images_dir, title, part, total)
+            a = self._author_chunk(first, images_dir, title, part, total, previous)
+            b = self._author_chunk(second, images_dir, title, part, total,
+                                   tuple(previous) + tuple(
+                                       s["title"] for s in a.sections if s["title"]))
             return _Authored(
                 doc_type=a.doc_type or b.doc_type,
                 title=a.title or b.title, abstract=a.abstract or b.abstract,
@@ -442,8 +569,9 @@ class VisualAuthor:
         return first, second
 
     def _author_once(self, chunk: _Chunk, images_dir: Path, title: str,
-                     part: int, total: int) -> _Authored:
-        parts, sent = self._parts(chunk, images_dir, title, part, total)
+                     part: int, total: int,
+                     previous: Tuple[str, ...] = ()) -> _Authored:
+        parts, sent = self._parts(chunk, images_dir, title, part, total, previous)
         self.images_sent += len(sent)
         label = f"visual_part{part}_{seconds_to_display(chunk.start)}"
         try:
@@ -594,8 +722,11 @@ class VisualAuthor:
                          if b["kind"] == "figure"]
                 start = min(times) if times else last_time
                 last_time = max([start] + times)
+                last_text = ""
                 for block in raw["blocks"]:
                     kind = block["kind"]
+                    if kind in ("step", "paragraph"):
+                        last_text = block["text"]
                     if kind == "figure":
                         keyframe = by_id[block["id"]]
                         figures_out += 1
@@ -607,7 +738,8 @@ class VisualAuthor:
                             kind="figure", timestamp=keyframe.timestamp,
                             image_id=keyframe.image_id,
                             image_filename=filename,
-                            caption=block["caption"],
+                            caption=block["caption"] or _fallback_caption(
+                                last_text, raw["title"]),
                             # ما قرأه النموذج على الشاشة — يغذّي فحص الوفاء
                             # للمصدر وتمييز الصور حين يغيب OCR.
                             ocr_text=block["screen_text"] or keyframe.ocr_text))
@@ -619,6 +751,8 @@ class VisualAuthor:
                     title=raw["title"] or f"القسم {len(sections) + 1}",
                     level=1, summary=raw["summary"], start_timestamp=start,
                     blocks=blocks))
+
+        sections = merge_repeated_sections(sections)
 
         # نسبة كل مقطع تفريغ إلى قسم واحد بزمنه: تتبّع لا تكرار.
         starts = [s.start_timestamp or 0.0 for s in sections]

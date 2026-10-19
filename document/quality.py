@@ -377,6 +377,50 @@ def completeness(segments: Iterable, duration_seconds: Optional[float],
     return info, warnings
 
 
+#: ذيلٌ بلا لقطة في المستند أطول من هذا (ومن ربع المدّة) يُحذَّر منه.
+MIN_UNCOVERED_TAIL_SECONDS = 180.0
+
+
+def content_span(plan: DocumentPlan, keyframes: list, segments: list,
+                 duration_seconds: Optional[float],
+                 start_offset: float = 0.0) -> tuple[dict, list[str]]:
+    """إلى أين يصل المستند من التسجيل؟
+
+    رُصد: دليلٌ مصوّر غلافه يقول «المدة 40 دقيقة»، وآخر شكلٍ فيه وآخر
+    خطوة عند 17:18. ولا مقياس قال شيئًا: الكلام كلّه «مغطّى» لأن كل
+    مقطعٍ يُنسب إلى قسمٍ بزمنه، ولو لم يُكتب منه حرف. فإمّا أن الشرح
+    انتهى وبقي التسجيل يدور، وإمّا أن نصف الدرس ضاع — والمعلّم وحده
+    يعرف أيّهما، فيُقال له.
+    """
+    if not duration_seconds or duration_seconds <= 0:
+        return {}, []
+    figure_times = [b.timestamp for s in plan.sections for b in s.blocks
+                    if b.image_id is not None and b.timestamp is not None]
+    if not figure_times:
+        return {}, []
+    end = start_offset + duration_seconds
+    last_figure = max(figure_times)
+    last_frame = max([k.timestamp for k in keyframes] or [last_figure])
+    tail = end - last_figure
+    speech_after = sum(max(0.0, s.end - max(s.start, last_figure))
+                       for s in segments if s.end > last_figure)
+    info = {"last_figure_seconds": round(last_figure, 1),
+            "last_keyframe_seconds": round(last_frame, 1),
+            "uncovered_tail_seconds": round(tail, 1),
+            "speech_after_last_figure_seconds": round(speech_after, 1)}
+    warnings: list[str] = []
+    if tail >= max(MIN_UNCOVERED_TAIL_SECONDS, 0.25 * duration_seconds):
+        reason = ("ولم تتغيّر الشاشة بعدها" if end - last_frame >= tail * 0.8
+                  else "مع أن لقطاتٍ بعدها استُخرجت")
+        talk = (f"، وفيه {seconds_label(speech_after)} كلام" if speech_after >= 60
+                else "، ولا كلام يُذكر بعدها")
+        warnings.append(
+            f"content_span: آخر شكل في المستند عند {seconds_label(last_figure)} "
+            f"من {seconds_label(end)} {reason}{talk} — راجع آخر التسجيل: "
+            "هل انتهى الشرح أم ضاع جزء منه؟")
+    return info, warnings
+
+
 def seconds_label(seconds: float) -> str:
     seconds = int(round(seconds))
     return f"{seconds // 60}:{seconds % 60:02d}"
@@ -538,6 +582,11 @@ def evaluate(plan: DocumentPlan,
                     "الشاشة — تحقّق منه: " + "، ".join(flagged[:8]))
 
     keyframe_list = list(keyframes)
+    span_info, span_warnings = content_span(
+        plan, keyframe_list, list(segments) if segments is not None else [],
+        duration_seconds, start_offset)
+    completeness_info.update(span_info)
+    warnings.extend(span_warnings)
     diagnostics = {
         "text_blocks": len(text_blocks),
         "figure_blocks": len(figure_blocks),

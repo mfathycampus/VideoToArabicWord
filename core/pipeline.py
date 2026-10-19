@@ -215,6 +215,8 @@ class VideoToDocPipeline(MediaStagesMixin, OutputsMixin):
                 hint = engine.info.install_hint
                 if not hint and name == "faster-whisper":
                     hint = "ثبّته عبر: pip install faster-whisper"
+                from utils.bundle import user_hint
+                hint = user_hint(hint) if hint else hint
                 raise ModelUnavailableError(
                     f"محرّك «{engine.info.label_ar}» غير مثبّت. {hint or 'شغّل Doctor لمعرفة طريقة التثبيت.'}")
             return engine
@@ -225,9 +227,10 @@ class VideoToDocPipeline(MediaStagesMixin, OutputsMixin):
             # ``available_engines()`` بصمت لو استُدعيت بدل بناء محرّك
             # صريح (تُعيد قائمة فارغة عبر ``except Exception: continue``).
             if name == "faster-whisper":
+                from utils.bundle import user_hint
                 raise ModelUnavailableError(
-                    "faster-whisper غير مثبَّت. ثبّته عبر: "
-                    "pip install faster-whisper") from exc
+                    "faster-whisper غير مثبَّت. " + user_hint(
+                        "ثبّته عبر: pip install faster-whisper")) from exc
             logger.warning(
                 f"تعذّر تجهيز محرّك «{name}» ({exc}) — "
                 "العودة إلى faster-whisper.")

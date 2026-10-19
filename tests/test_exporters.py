@@ -158,16 +158,23 @@ def test_html_skips_missing_image_without_breaking(tmp_path):
     ctx = ExportContext(plan=_plan(), metadata=_metadata(tmp_path),
                         images_dir=images, base_path=tmp_path / "l.docx",
                         document_config=DocumentConfig())
-    text = render_html(ctx)
+    text = _without_brand(render_html(ctx))
     assert "<img" not in text
     assert "القسم الأول" in text        # النصّ كامل رغم سقوط الشكل
+
+
+def _without_brand(text):
+    """شعار المخرجات (1.15.1) مضمَّنٌ دائمًا — الفحوص هنا عن صور الأشكال."""
+    import re
+
+    return re.sub(r'<img class="brand"[^>]*>', "", text)
 
 
 def test_html_links_images_when_they_exceed_the_embed_cap(ctx, monkeypatch):
     import document.exporters.html_export as html_export
 
     monkeypatch.setattr(html_export, "MAX_EMBEDDED_IMAGE_BYTES", 10)
-    text = html_export.render_html(ctx)
+    text = _without_brand(html_export.render_html(ctx))
     assert 'src="keyframes/f1.jpg"' in text
     assert "base64" not in text
 

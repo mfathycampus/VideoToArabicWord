@@ -40,8 +40,10 @@ def _install_hint() -> str:
     الواجهة؛ فيقول المستخدم «مثبَّتة» ويبقى التحذير.
     """
     import sys
-    return ("‏python-pptx غير مثبَّتة في مفسّر البرنامج — صيغة الشرائح "
-            f'تحتاجها. ثبّتها عبر: "{sys.executable}" -m pip install python-pptx')
+
+    from utils.bundle import user_hint
+    return ("‏python-pptx غير متاحة — صيغة الشرائح تحتاجها. " + user_hint(
+        f'ثبّتها عبر: "{sys.executable}" -m pip install python-pptx'))
 
 
 INSTALL_HINT = _install_hint()
@@ -323,7 +325,7 @@ class _Deck:
 
     # -- أنواع الشرائح ------------------------------------------------
     def cover(self, title: str, subtitle: str, facts: List[str],
-              image: Optional[Path]):
+              image: Optional[Path], logo: Optional[Path] = None):
         slide = self.new_slide(D.NAVY)
         # زخرفة: دائرتان تخرج أجزاؤهما من حدود الشريحة
         self.box(slide, -2.2, 3.6, 6.4, 6.4, fill="23256B", oval=True)
@@ -349,6 +351,26 @@ class _Deck:
                              alt="لقطة من التسجيل", frame="3B3DA8", radius=0.18)
             except Exception as exc:
                 logger.warning(f"تعذّرت صورة الغلاف {image.name}: {exc}")
+        if logo is not None:
+            # الشعار نفسه الذي في مستند Word — على بطاقةٍ بيضاء صغيرة أعلى
+            # اليمين، فيُقرأ شعار الجهة الملوّن على الغلاف الداكن.
+            try:
+                from PIL import Image
+
+                with Image.open(logo) as source:
+                    ratio = source.width / max(1, source.height)
+                height = 0.62
+                width = min(2.6, height * ratio)
+                height = width / ratio if ratio else height
+                card_w, card_h = width + 0.3, height + 0.24
+                self.box(slide, SLIDE_W - MARGIN - card_w, 0.38, card_w, card_h,
+                         fill=D.WHITE, radius=0.12)
+                inch = self.inches
+                slide.shapes.add_picture(
+                    str(logo), inch(SLIDE_W - MARGIN - card_w + 0.15),
+                    inch(0.5), inch(width), inch(height))
+            except Exception as exc:                  # noqa: BLE001
+                logger.warning(f"تعذّر شعار الغلاف: {exc}")
         return slide
 
     def agenda(self, page: List[Tuple[int, str]], part: int, parts: int):
@@ -541,7 +563,10 @@ def export(ctx: ExportContext) -> Optional[Path]:
              D.ar_count(len(plan.sections), "section")]
     if total_figures:
         facts.append(D.ar_count(total_figures, "figure"))
-    deck.cover(title, plan.subtitle, facts, first_image)
+    from document.branding import resolve_logo
+
+    logo = resolve_logo(ctx.document_config) if ctx.document_config is not None else None
+    deck.cover(title, plan.subtitle, facts, first_image, logo=logo)
 
     section_titles = [s.title or "قسم" for s in plan.sections]
     if len(section_titles) >= 3:

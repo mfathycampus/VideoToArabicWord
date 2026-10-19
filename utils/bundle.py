@@ -43,6 +43,19 @@ def bundled_dir() -> Path:
     return SOURCE_ROOT / "bin"
 
 
+def user_hint(developer_hint: str) -> str:
+    """نصيحة إصلاح تصلح لمن يقرؤها.
+
+    من المصدر: أمر التثبيت كما هو — القارئ مطوّر. داخل الحزمة المجمّدة:
+    لا ``pip`` إطلاقًا. المستخدم معلّم لا يعرف ما الطرفية، والحزمة تحمل
+    تبعياتها معها؛ أي نقص فيها عطبُ بناء يصلحه مثبِّتٌ جديد لا أمر.
+    رُصد: «ثبّتها عبر pip install cryptography» في نافذة التفعيل.
+    """
+    if is_frozen():
+        return "نسخة البرنامج ناقصة — أعد تنزيل المثبِّت وثبّته من جديد."
+    return developer_hint
+
+
 def binary_name(stem: str) -> str:
     """اسم الملف التنفيذي على المنصّة الحالية."""
     return f"{stem}.exe" if sys.platform == "win32" else stem

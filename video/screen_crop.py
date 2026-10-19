@@ -47,6 +47,18 @@ MAX_BOTTOM_RATIO = 0.12
 #: الحقيقيين. الساعة في شريط المهام تتغيّر بالدقائق، ولذلك يحتاج
 #: أسفلُ الشاشة تسامحًا أعلى قليلًا من أعلاها.
 STATIC_ROW_TOLERANCE = 4.0
+#: أسفل الشاشة: شريط مهام ويندوز 11 شفّافٌ جزئيًّا (‏Mica)، فصفوفه
+#: العليا تتلوّن قليلًا بما تحتها — فرقها 5–8 لا 0–3. مقيس على ستٍّ
+#: وعشرين لقطة من تسجيلٍ حقيقي (‏1366×683): بتسامح 4 يُقصّ 29 صفًّا
+#: ويبقى أعلى الشريط (6 صفوف بأيقوناته)، وبـ 8 يُقصّ الشريط كاملًا (35).
+BOTTOM_ROW_TOLERANCE = 8.0
+#: شريط المهام بين هذين الحدّين من الارتفاع (‏40–48px على 1080p، ‏30–35
+#: على 768). يُقصّ ولو بدا أكثر الإطار ساكنًا، إن فصله عن المحتوى حدٌّ
+#: حادّ: فوقه صفوفٌ تتغيّر بقوّة وهو ثابت.
+TASKBAR_MIN_RATIO = 0.025
+TASKBAR_MAX_RATIO = 0.08
+#: إطاران يختلفان بأقلّ من هذا (متوسّط الفرق المطلق) يُعدّان إطارًا واحدًا.
+DUPLICATE_FRAME_DIFF = 1.5
 #: أقلّ عدد إطارات يصلح للمقارنة. بإطارين يصير القرار حظًّا.
 MIN_FRAMES = 3
 
@@ -195,6 +207,36 @@ def _row_means(frame: np.ndarray) -> np.ndarray:
     return frame.mean(axis=1)
 
 
+def _distinct(frames: List[np.ndarray]) -> List[np.ndarray]:
+    """يُسقط الإطارات المكرّرة: تكرارها يجعل كل صفّ يبدو ثابتًا.
+
+    رُصد: تسجيلٌ من 40 دقيقة انتهى شرحه عند الدقيقة 17 وبقيت الشاشة
+    ساكنة بعدها. نصف العيّنات المتباعدة إطارٌ واحد، فبدا أكثر من نصف
+    الصفوف «ثابتًا» وأوقف الحارس القصّ كلّه — فخرج شريط المهام في كل
+    لقطة من الدليل.
+    """
+    kept: List[np.ndarray] = []
+    for frame in frames:
+        small = frame[::4, ::4].astype(np.float32)
+        if all(float(np.mean(np.abs(small - k[::4, ::4].astype(np.float32))))
+               >= DUPLICATE_FRAME_DIFF for k in kept):
+            kept.append(frame)
+    return kept
+
+
+def _taskbar_rows(spread: np.ndarray, height: int) -> int:
+    """صفوف شريط مهامٍ أسفل الإطار يفصلها عن المحتوى حدٌّ حادّ، أو 0."""
+    rows = 0
+    while rows < height and spread[height - 1 - rows] < BOTTOM_ROW_TOLERANCE:
+        rows += 1
+    if not (height * TASKBAR_MIN_RATIO <= rows <= height * TASKBAR_MAX_RATIO):
+        return 0
+    above = spread[max(0, height - rows - 6):height - rows]
+    if above.size and float(np.median(above)) >= 5 * BOTTOM_ROW_TOLERANCE:
+        return rows
+    return 0
+
+
 def detect(frames: Sequence[np.ndarray]) -> CropBox:
     """يحدّد الصفوف الثابتة أعلى الشاشة وأسفلها عبر إطارات متباعدة."""
     usable = [f for f in frames if f is not None and getattr(f, "size", 0)]
@@ -202,7 +244,10 @@ def detect(frames: Sequence[np.ndarray]) -> CropBox:
         return CropBox()
 
     height = usable[0].shape[0]
-    if any(f.shape[0] != height for f in usable):
+    if any(f.shape[:2] != usable[0].shape[:2] for f in usable):
+        return CropBox(height=height)
+    usable = _distinct(usable)
+    if len(usable) < MIN_FRAMES:
         return CropBox(height=height)
 
     profiles = np.stack([_row_means(f) for f in usable])
@@ -215,7 +260,7 @@ def detect(frames: Sequence[np.ndarray]) -> CropBox:
     while top < height and static[top]:
         top += 1
     bottom = 0
-    while bottom < height and static[height - 1 - bottom]:
+    while bottom < height and spread[height - 1 - bottom] < BOTTOM_ROW_TOLERANCE:
         bottom += 1
 
     top = min(top, int(height * MAX_TOP_RATIO))
@@ -227,9 +272,11 @@ def detect(frames: Sequence[np.ndarray]) -> CropBox:
     if bottom < height * 0.01:
         bottom = 0
 
-    # الحارس الفاصل — انظر ``MAX_STATIC_RATIO``.
+    # الحارس الفاصل — انظر ``MAX_STATIC_RATIO``. شريط المهام وحده يُستثنى:
+    # حدّه الحادّ دليلٌ بنيويّ لا يشتبه بصفحةٍ ساكنة.
     if static.mean() > MAX_STATIC_RATIO:
-        top = bottom = 0
+        top = 0
+        bottom = _taskbar_rows(spread, height)
 
     # منصّة الاجتماع: تُقاس داخل ما تبقّى بعد قصّ الزينة.
     width = usable[0].shape[1]

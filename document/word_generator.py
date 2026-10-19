@@ -38,6 +38,7 @@ from config.schemas import DocumentPlan, VideoMetadata
 from config.settings import DocumentConfig
 from core.exceptions import DocumentGenerationError
 from document.alt_text import describe
+from document.branding import resolve_logo
 from document.planner import assert_lossless
 from document.rtl_utils import (
     add_mixed_text,
@@ -76,6 +77,8 @@ MIN_INDEX_FIGURES = 20
 #: وفوق هذا العدد يصير الفهرس عبئًا: على تسجيلٍ حقيقي من 128 لقطة شغل
 #: أربع صفحات قبل أول سطر من المحتوى. جدول المحتويات يكفي للتنقّل.
 MAX_INDEX_FIGURES = 40
+#: تذييل الإصدارات السابقة — يُعامل «تلقائيًّا» (``_footer_text``).
+LEGACY_FOOTER = "تقرير تفريغ الفيديو"
 
 
 def _set_alt_text(picture, alt: str) -> None:
@@ -108,8 +111,9 @@ class DocumentGenerator:
             font=self.config.font_family,
             heading_font=self.config.font_family,
             body_pt=self.config.body_size_pt,
-            logo_path=self.config.logo_path,
-            logo_width_inches=self.config.logo_width_inches)
+            logo_path=resolve_logo(self.config),
+            logo_enabled=resolve_logo(self.config) is not None,
+            logo_width_inches=self._logo_width())
 
     # ------------------------------------------------------------------
     def generate(self, plan: DocumentPlan, metadata: VideoMetadata,
@@ -136,7 +140,7 @@ class DocumentGenerator:
         document.sections[0].different_first_page_header_footer = True
 
         add_header(document, self.theme, plan.title)
-        add_page_number_footer(document, self.theme, self.config.footer_text)
+        add_page_number_footer(document, self.theme, self._footer_text(plan))
 
         # فهرسٌ لا يملأ سطرين يأكل صفحة كاملة. رُصد على مخرج حقيقي:
         # سبع صفحات، **اثنتان منها** فهرسان بسطرٍ واحد لكلٍّ منهما —
@@ -189,7 +193,32 @@ class DocumentGenerator:
         logger.info(f"تم إنشاء المستند: {output_path}")
         return output_path
 
+    def _logo_width(self) -> float:
+        """الشعار العريض (العلامة مع الاسم، أو شعار جهةٍ أفقي) يُعرض أعرض."""
+        width = float(self.config.logo_width_inches or 2.1)
+        path = resolve_logo(self.config)
+        try:
+            with Image.open(path) as image:
+                ratio = image.width / max(1, image.height)
+        except Exception:                             # noqa: BLE001
+            return width
+        return min(3.2, width * 1.35) if ratio >= 1.8 else width
+
     # ------------------------------------------------------------------
+    def _footer_text(self, plan: DocumentPlan) -> str:
+        """نصّ التذييل يسمّي المستند بنوعه.
+
+        كان ثابتًا «تقرير تفريغ الفيديو» على كل صفحة — ومنها دليلٌ إجرائي
+        مصوّر لا تفريغ فيه أصلًا. القيمة الافتراضية القديمة تُعامل «تلقائيًّا»
+        (هي محفوظة في ملفّات إعداد المستخدمين كما هي)، فيصير التذييل نوعَ
+        المستند الذي كتبه المؤلّف المرئي. ومن كتب نصًّا خاصًّا يبقى نصّه.
+        """
+        text = (self.config.footer_text or "").strip()
+        if text in ("", LEGACY_FOOTER) and plan.subtitle \
+                and plan.generated_by.startswith("ai:"):
+            return plan.subtitle
+        return text or LEGACY_FOOTER
+
     def _cover_facts(self, plan, metadata) -> list[tuple[str, str]]:
         """ما يحتاجه قارئ الدليل عن مصدره — لا ما يحتاجه مطوّر البرنامج.
 
@@ -356,37 +385,38 @@ class DocumentGenerator:
         _set_alt_text(picture, describe(block, number))
         self._add_image_border(run)
 
-        # التسمية فقرة LTR: تبدأ برقم وتنتهي بتوقيت، فترتيبها في فقرة
-        # عربية ينعكس. الكلمة العربية «شكل» داخلها تبقى سليمة لأنها run
-        # مستقل يحمل w:rtl.
+        # التسمية: «شكل N: وصف» في فقرةٍ واحدة. **هذه الفقرة هي ما يقرؤه
+        # فهرس الأشكال** (حقل TOC بمفتاح c و"Figure" يأخذ نصّ الفقرة التي فيها حقل
+        # SEQ). كانت الفقرة «شكل N · التوقيت 00:11:32» والوصف في فقرةٍ
+        # تحتها، فحين يحدّث Word الحقول (وهو يفعل عند الحفظ PDF) صار
+        # الفهرس 36 سطرًا من التوقيتات لا يفيد قارئ الدليل شيئًا.
+        # والتوقيت سطرٌ صغير مستقلّ تحتها، خارج الفهرس.
+        text = (block.caption or "").strip()
         caption = document.add_paragraph(style=CAPTION)
-        set_paragraph_ltr(caption, WD_ALIGN_PARAGRAPH.CENTER)
+        set_paragraph_rtl(caption, WD_ALIGN_PARAGRAPH.CENTER)
         style_arabic_run(caption.add_run("شكل "), self.theme.font, 9.5,
                          bold=True, color=self.theme.muted)
         # حقل SEQ لا رقم نصّي: يعيد الترقيم تلقائيًا ويغذّي فهرس الأشكال
         add_sequence_number(caption, "Figure", self.theme, 9.5,
                             fallback=number, color=self.theme.muted)
-        # رقم الشكل لا ينفصل عن وصفه: رُصد وصف شكلٍ يتيم أعلى الصفحة
-        # التالية، تحت الترويسة مباشرةً، بعيدًا عن صورته.
-        caption.paragraph_format.keep_with_next = bool((block.caption or "").strip())
-        if self.config.show_timecodes and block.timestamp is not None:
-            style_ltr_run(caption.add_run("  ·  "), self.theme.font, 9.5,
-                          color=self.theme.muted)
-            style_arabic_run(caption.add_run("التوقيت "), self.theme.font, 9.5,
-                             color=self.theme.muted)
-            style_ltr_run(caption.add_run(seconds_to_display(block.timestamp)),
-                          self.theme.font, 9.5, bold=True,
-                          color=self.theme.accent_soft)
-
-        # نص التسمية الوصفي. كان يُحسب في الخطة ثم يُهمل هنا تمامًا،
-        # فتخرج كل صورة بلا شرح — وهو العيب الذي أبلغ عنه المستخدم.
-        text = (block.caption or "").strip()
         if text:
-            note = document.add_paragraph(style=CAPTION)
-            set_paragraph_rtl(note, WD_ALIGN_PARAGRAPH.CENTER)
-            note.paragraph_format.keep_with_next = False
-            add_mixed_text(note, text, self.theme.font, 9.5,
+            style_arabic_run(caption.add_run(": "), self.theme.font, 9.5,
+                             bold=True, color=self.theme.muted)
+            add_mixed_text(caption, text, self.theme.font, 9.5,
                            color=self.theme.muted)
+        show_time = bool(self.config.show_timecodes and block.timestamp is not None)
+        # رقم الشكل لا ينفصل عن توقيته: سطرٌ يتيم أعلى الصفحة التالية
+        # بعيدًا عن صورته رُصد من قبل.
+        caption.paragraph_format.keep_with_next = show_time
+        if show_time:
+            stamp = document.add_paragraph(style=CAPTION)
+            set_paragraph_ltr(stamp, WD_ALIGN_PARAGRAPH.CENTER)
+            stamp.paragraph_format.keep_with_next = False
+            style_arabic_run(stamp.add_run("التوقيت "), self.theme.font, 8.5,
+                             color=self.theme.muted)
+            style_ltr_run(stamp.add_run(seconds_to_display(block.timestamp)),
+                          self.theme.font, 8.5, bold=True,
+                          color=self.theme.accent_soft)
 
         # نص الشاشة عبر OCR (اختياري — video/ocr.py). فقرة منفصلة عن
         # التسمية أعلاه عمدًا: مصدرها مختلف تمامًا — هذا حرفيًا ما هو

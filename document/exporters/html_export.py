@@ -45,12 +45,14 @@ COMPACT_QUALITY = 70
 _CSS = """
 :root{
   --bg:#f6f7fb; --card:#ffffff; --ink:#15161c; --muted:#5b6070;
-  --line:#e3e5ee; --brand:#2D2E82; --brand-soft:#ececf7; --mark:#ffe9a8;
+  --line:#e3e5ee; --brand:#0F766E; --brand-soft:#e6f2f0; --mark:#ffe9a8;
+  --masthead:#0B2E2A;
 }
 @media (prefers-color-scheme: dark){
   :root{
     --bg:#14151c; --card:#1c1e28; --ink:#eceef6; --muted:#9aa0b4;
-    --line:#2b2e3c; --brand:#8f90e8; --brand-soft:#23253a; --mark:#5a4a12;
+    --line:#2b2e3c; --brand:#5FC4B8; --brand-soft:#16302d; --mark:#5a4a12;
+    --masthead:#0B2E2A;
   }
 }
 *{box-sizing:border-box}
@@ -67,7 +69,9 @@ aside{position:sticky; top:0; align-self:start; max-height:100vh;
   overflow:auto; padding:20px 0}
 main{min-width:0; padding:20px 0}
 
-header.masthead{background:var(--brand); color:#fff; padding:28px 20px; margin-bottom:8px}
+header.masthead{background:var(--masthead); color:#fff; padding:28px 20px; margin-bottom:8px}
+header.masthead .brand{float:left; height:52px; max-width:180px; object-fit:contain;
+  background:#fff; border-radius:10px; padding:6px 10px; margin-inline-start:16px}
 header.masthead .inner{max-width:1280px; margin:0 auto}
 header.masthead h1{margin:0 0 6px; font-size:1.7rem; line-height:1.5}
 header.masthead .sub{opacity:.85; font-size:.95rem}
@@ -400,6 +404,18 @@ def _render_facts(ctx: ExportContext) -> str:
     return "".join(f'<span>{_esc(f)}</span>' for f in facts)
 
 
+def _render_logo(ctx: ExportContext) -> str:
+    """الشعار نفسه الذي في مستند Word (‏``document/branding.py``)، مضمَّنًا.
+
+    كانت صفحة الويب بلا شعار وبلون مدرسةٍ قديم (‏#2D2E82) بينما المستند
+    بجانبها بشعار معين أو شعار الجهة — مخرجان لمهمّةٍ واحدة بهويّتين.
+    """
+    from document.branding import logo_data_uri
+
+    uri = logo_data_uri(ctx.document_config) if ctx.document_config is not None else ""
+    return f'<img class="brand" src="{uri}" alt="الشعار">' if uri else ""
+
+
 def render_html(ctx: ExportContext) -> str:
     """يبني الصفحة كاملةً كنصّ — منفصلة عن الكتابة ليسهُل اختبارها."""
     plan = ctx.plan
@@ -457,6 +473,7 @@ def render_html(ctx: ExportContext) -> str:
         f"<title>{title}</title>\n"
         f"<style>{_CSS}</style>\n</head>\n<body>\n"
         '<header class="masthead"><div class="inner">'
+        + _render_logo(ctx) +
         f"<h1>{title}</h1>"
         + (f'<div class="sub">{_esc(subtitle)}</div>' if subtitle else "")
         + f'<div class="facts">{_render_facts(ctx)}</div>'

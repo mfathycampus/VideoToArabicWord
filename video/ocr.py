@@ -103,6 +103,24 @@ def _from_windows_registry() -> Optional[str]:
     return None
 
 
+def _bundled_tesseract() -> Optional[str]:
+    """Tesseract المشحون مع البرنامج (‏``bin/tesseract`` → ``tesseract/``).
+
+    يُقدَّم على كل مصدرٍ آخر: المعلّم لا يثبّت شيئًا، فتمويه الأسماء
+    وقصّ شريط المتصفّح يعملان من أول تشغيل. ويُضبط ``TESSDATA_PREFIX``
+    على حزم اللغات المشحونة معه، لا على تثبيتٍ آخر قد يكون على الجهاز.
+    """
+    from utils.bundle import bundled_dir
+
+    folder = bundled_dir() / "tesseract"
+    exe = folder / ("tesseract.exe" if sys.platform == "win32" else "tesseract")
+    if exe.is_file():
+        if (folder / "tessdata").is_dir():
+            os.environ["TESSDATA_PREFIX"] = str(folder / "tessdata")
+        return str(exe)
+    return None
+
+
 def tesseract_executable() -> Optional[str]:
     """مسار ثنائي Tesseract، أو ``None`` إن لم يكن مثبَّتًا.
 
@@ -117,7 +135,9 @@ def tesseract_executable() -> Optional[str]:
     if _cached_exe != "":
         return _cached_exe
 
-    found = shutil.which("tesseract") or shutil.which("tesseract.exe")
+    found = _bundled_tesseract()
+    if found is None:
+        found = shutil.which("tesseract") or shutil.which("tesseract.exe")
 
     if found is None and sys.platform == "win32":
         for directory in _windows_install_dirs():

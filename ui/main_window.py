@@ -52,6 +52,13 @@ from utils.timestamps import humanize_duration
 from version import APP_VERSION
 
 
+def days_label(days: int) -> str:
+    """«1525 يومًا»، «3 أيام»، «يومان» — صيغة العدد العربية."""
+    from utils.arabic_plural import DAYS, count_label
+
+    return count_label(days, DAYS)
+
+
 def _engine_status(name: str) -> tuple[bool, str]:
     """‏(جاهز؟، السبب) — السبب يُعرض للمستخدم كما هو.
 
@@ -113,7 +120,7 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
 
     # ------------------------------------------------------------------
     def _build_ui(self) -> None:
-        self.setWindowTitle("معين — الفيديو إلى مستند Word، محلي بالكامل")
+        self.setWindowTitle("معين — الفيديو إلى مستند Word")
         # الحد الأدنى يكفي أضيق مجموعة؛ الباقي يتكفّل به التمرير
         self.setMinimumSize(720, 480)
         self.resize(900, 760)
@@ -388,6 +395,7 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
             "إرسالها حين يكون «إخفاء الأسماء» مفعّلًا.")
         def _vision_toggled(state) -> None:
             self.config.rewrite.send_images = self.vision_check.isChecked()
+            self._refresh_privacy_header()
         self.vision_check.stateChanged.connect(_vision_toggled)
         reason = self._policy_reason("allow_cloud_images")
         if reason:
@@ -453,21 +461,6 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
         terms_row.addWidget(self.scan_terms_status, 1)
         advanced_layout.addLayout(terms_row)
 
-        # شعار ترويسة المستند — الافتراضي شعار البرنامج.
-        logo_row = QHBoxLayout()
-        logo_row.addWidget(QLabel("شعار ترويسة المستند:"))
-        self.logo_label = QLabel("")
-        self.logo_label.setStyleSheet(f"color: {theme.MUTED}; font-size: 11px;")
-        logo_row.addWidget(self.logo_label, 1)
-        choose_logo = QPushButton("اختيار…")
-        choose_logo.clicked.connect(self._choose_logo)
-        clear_logo = QPushButton("العودة للافتراضي")
-        clear_logo.clicked.connect(self._clear_logo)
-        logo_row.addWidget(choose_logo)
-        logo_row.addWidget(clear_logo)
-        advanced_layout.addLayout(logo_row)
-        self._refresh_logo_label()
-
         toggles = QHBoxLayout()
         self.denoise_check = QCheckBox("تنظيف الصوت قبل التفريغ")
         self.denoise_check.setToolTip(
@@ -517,6 +510,7 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
         advanced_layout.addWidget(QLabel("صيغ إضافية بجوار مستند Word:"))
         advanced_layout.addLayout(self._build_export_toggles())
         advanced_layout.addLayout(self._build_study_row())
+        settings_layout.addWidget(self._build_logo_box())
         settings_layout.addWidget(advanced)
 
         # --- التشغيل ---
@@ -906,7 +900,8 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
 
     def _collect_stats(self):
         from core import stats
-        return stats.collect(self.config)
+        # يُقرأ في خيط الجمع: علمٌ بسيط لا عنصر واجهة.
+        return stats.collect(self.config, busy=getattr(self, "_processing", False))
 
     def _build_privacy_box(self) -> QGroupBox:
         """إعلان إحصاءات الاستخدام: ما يُرسل، ولمن، وكيف يُوقف."""
@@ -975,11 +970,13 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
         name = QLabel("معين")
         name.setStyleSheet(
             f"color: {theme.ON_INK}; font-size: 15px; font-weight: 600;")
-        note = QLabel("المعالجة على جهازك بالكامل")
+        note = QLabel("")
         note.setStyleSheet(f"color: {theme.ON_INK_MUTED}; font-size: 11px;")
+        self.privacy_header = note
         name.setVisible(not has_wordmark)
         titles.addWidget(name)
         titles.addWidget(note)
+        self._refresh_privacy_header()
         row.addLayout(titles)
         row.addStretch(1)
 
@@ -1059,7 +1056,13 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
         if verdict.status in (Status.ACTIVE, Status.NEEDS_RECHECK):
             urgent = bool(expiry) and 0 < verdict.days_left <= 3
             if expiry:
-                text = f"الترخيص: حتى {expiry} — {verdict.days_left} يومًا"
+                # أيامٌ تقويمية حتى التاريخ المعروض بجانبها: العقد ينتهي آخر
+                # يومه، فـ«الأيام المتبقّية» بالتقريب للأعلى كانت تزيد يومًا
+                # على ما يحسبه القارئ من التاريخ نفسه (1526 لا 1525).
+                from datetime import date
+
+                days = (date.fromisoformat(expiry) - date.today()).days
+                text = f"الترخيص: حتى {expiry} — {days_label(max(0, days))}"
             else:
                 text = "الترخيص: فعّال"
             credit = getattr(self, "_credit_minutes", None)
@@ -1129,30 +1132,151 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
         self.update_button.setEnabled(True)
         self.update_button.setText("تحقّق من التحديثات")
 
-    def _choose_logo(self) -> None:
-        """شعار ترويسة المستند.
+    def _refresh_privacy_header(self) -> None:
+        """الوعد في الشريط العلوي يطابق ما يحدث فعلًا.
 
-        ``DocumentConfig.logo_path`` موجود منذ البداية ويستعمله
-        ``document/template.py``، ولم يكن له أي عنصر في الواجهة — أي
-        أن تغييره كان يحتاج تحرير ملف YAML بيد المستخدم. الافتراضي
-        شعار البرنامج، ومَن أراد شعار مدرسته يضعه من هنا.
+        كان ثابتًا «المعالجة على جهازك بالكامل» وعنوان النافذة «محلي
+        بالكامل» — والوضع المرئي يرسل لقطات الشاشة إلى مزوّدٍ سحابي.
         """
-        path, _ = QFileDialog.getOpenFileName(
-            self, "اختر شعار ترويسة المستند", "",
-            "الصور (*.png *.jpg *.jpeg)")
-        if not path:
+        label = getattr(self, "privacy_header", None)
+        if label is None:
             return
-        self.config.document.logo_path = Path(path)
+        rewrite = self.config.rewrite
+        cloud = False
+        if rewrite.enabled:
+            try:
+                from ai.providers import build_provider
+
+                provider = build_provider(rewrite.provider, rewrite.model,
+                                          rewrite.base_url, rewrite.api_key_env,
+                                          rewrite.api_key, rewrite.workspace_id)
+                cloud = not provider.info.is_local
+            except Exception:                         # noqa: BLE001
+                cloud = rewrite.provider != "ollama"
+        if not cloud:
+            label.setText("المعالجة على جهازك بالكامل")
+            label.setToolTip("")
+        elif rewrite.send_images:
+            label.setText("التفريغ على جهازك · الصياغة ولقطات الشاشة إلى مزوّد سحابي")
+            label.setToolTip(
+                "الوضع المرئي يرسل اللقطات المختارة مع النص. تُموَّه أسماء "
+                "الأشخاص فيها أولًا حين يكون «إخفاء الأسماء» مفعّلًا.")
+        else:
+            label.setText("التفريغ على جهازك · الصياغة عبر مزوّد سحابي")
+            label.setToolTip("يُرسل نص التفريغ وحده — لا الفيديو ولا الصور.")
+
+    def _build_logo_box(self) -> QGroupBox:
+        """شعار المخرجات: Word وPDF وصفحة الويب والشرائح — اختيارٌ واحد.
+
+        كان زرًّا مدفونًا في «خيارات متقدّمة» يحفظ مسار الصورة كما هو،
+        ولا يسري إلا على Word. انظر ``document/branding.py``.
+        """
+        from document.branding import CHOICES, normalize_choice
+
+        box = QGroupBox("شعار المستندات والمخرجات")
+        layout = QVBoxLayout(box)
+        row = QHBoxLayout()
+        self.logo_combo = QComboBox()
+        for key, (label, _light, _dark) in CHOICES.items():
+            self.logo_combo.addItem(label, key)
+        row.addWidget(self.logo_combo, 1)
+        self.logo_choose_button = QPushButton("اختيار صورة…")
+        self.logo_choose_button.setToolTip(
+            "PNG أو JPG — تُنسخ إلى إعدادات البرنامج، فلا يضيع الشعار إن "
+            "نقلت الصورة أو حذفتها.")
+        self.logo_choose_button.clicked.connect(self._choose_logo)
+        row.addWidget(self.logo_choose_button)
+        layout.addLayout(row)
+
+        preview_row = QHBoxLayout()
+        self.logo_preview = QLabel("")
+        self.logo_preview.setFixedSize(150, 56)
+        self.logo_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.logo_preview.setStyleSheet(
+            f"background: #ffffff; border: 1px solid {theme.BORDER_SOFT};"
+            " border-radius: 8px;")
+        preview_row.addWidget(self.logo_preview)
+        self.logo_label = QLabel("")
+        self.logo_label.setWordWrap(True)
+        self.logo_label.setStyleSheet(f"color: {theme.MUTED}; font-size: 11px;")
+        preview_row.addWidget(self.logo_label, 1)
+        layout.addLayout(preview_row)
+
+        choice = normalize_choice(self.config.document.logo_choice,
+                                  self.config.document.logo_path)
+        self.logo_combo.setCurrentIndex(max(0, self.logo_combo.findData(choice)))
+        self.logo_combo.currentIndexChanged.connect(self._on_logo_choice)
         self._refresh_logo_label()
+        return box
+
+    def _on_logo_choice(self) -> None:
+        choice = self.logo_combo.currentData()
+        if choice == "custom" and not (self.config.document.logo_path
+                                       and Path(self.config.document.logo_path).is_file()):
+            # «شعار مؤسّستي» بلا صورة بعد: يُطلب اختيارها فورًا.
+            if not self._choose_logo():
+                previous = self.config.document.logo_choice
+                self.logo_combo.blockSignals(True)
+                self.logo_combo.setCurrentIndex(
+                    max(0, self.logo_combo.findData(previous)))
+                self.logo_combo.blockSignals(False)
+                return
+        self.config.document.logo_choice = choice
+        self._refresh_logo_label()
+        self._save_config()
+
+    def _choose_logo(self) -> bool:
+        """يختار صورة الشعار، وينسخها إلى مجلّد الإعداد، ويعتمدها."""
+        from document.branding import import_custom_logo
+
+        path, _ = QFileDialog.getOpenFileName(
+            self, "اختر شعار المدرسة أو الجهة", "",
+            "الصور (*.png *.jpg *.jpeg *.bmp *.webp)")
+        if not path:
+            return False
+        try:
+            copy = import_custom_logo(Path(path))
+        except ValueError as exc:
+            QMessageBox.warning(self, "الشعار", str(exc))
+            return False
+        self.config.document.logo_path = copy
+        self.config.document.logo_choice = "custom"
+        self.logo_combo.blockSignals(True)
+        self.logo_combo.setCurrentIndex(max(0, self.logo_combo.findData("custom")))
+        self.logo_combo.blockSignals(False)
+        self._refresh_logo_label()
+        self._save_config()
+        self.append_log(f"اعتُمد شعار المؤسّسة: {Path(path).name}")
+        return True
 
     def _clear_logo(self) -> None:
-        self.config.document.logo_path = None
+        self.config.document.logo_choice = "app"
+        self.logo_combo.setCurrentIndex(max(0, self.logo_combo.findData("app")))
         self._refresh_logo_label()
 
     def _refresh_logo_label(self) -> None:
-        chosen = self.config.document.logo_path
+        from PyQt6.QtGui import QPixmap
+
+        from document.branding import resolve_logo
+
+        logo = resolve_logo(self.config.document)
+        choice = self.logo_combo.currentData() if hasattr(self, "logo_combo") else ""
+        if logo is None:
+            self.logo_preview.setPixmap(QPixmap())
+            self.logo_preview.setText("بلا شعار")
+        else:
+            pixmap = QPixmap(str(logo))
+            self.logo_preview.setText("")
+            self.logo_preview.setPixmap(pixmap.scaled(
+                140, 46, Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation))
         self.logo_label.setText(
-            chosen.name if chosen else "شعار البرنامج (الافتراضي)")
+            "يظهر على غلاف مستند Word وفي ترويسة كل صفحة، وفي PDF وصفحة "
+            "الويب وغلاف الشرائح." if logo is not None else
+            "تخرج المستندات بلا شعار.")
+        if hasattr(self, "logo_choose_button"):
+            self.logo_choose_button.setText(
+                "تغيير الصورة…" if choice == "custom" else "اختيار صورة…")
 
     def _on_glossary_changed(self) -> None:
         self.config.whisper.glossary = \
@@ -1467,6 +1591,10 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
 
 
     def _set_running(self, running: bool) -> None:
+        # الإحصاءات تعرض المهمّة الجارية «قيد المعالجة» لا «لم تكتمل».
+        self._processing = running
+        if running and hasattr(self, "dashboard"):
+            self.dashboard.refresh()
         self.start_button.setEnabled(not running)
         self.pause_button.setEnabled(running)
         self.cancel_button.setEnabled(running)
