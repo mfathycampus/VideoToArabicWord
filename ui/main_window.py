@@ -182,12 +182,36 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
             self.record_button.setToolTip(
                 self._policy_reason("allow_meeting_recording")
                 or "تسجيل الشاشة معطّل.")
+        # «سجّلني»: كل نقرة في أي برنامج تصير خطوة مرقّمة بصورتها، ثم دليلٌ
+        # إجرائي مصوّر وإنفوجرافيك — بلا فيديو وبلا تفريغ (screenguide/).
+        from screenguide import screen_guide_supported
+        self.screen_guide_button = QPushButton("سجّلني — دليل خطوة بخطوة…")
+        self.screen_guide_button.setToolTip(
+            "تنفّذ الإجراء بنفسك في أي برنامج، وكل نقرة تصبح خطوة مرقّمة بصورتها،\n"
+            "ثم يُكتب دليل مصوّر (Word وPDF وصفحة ويب) وإنفوجرافيك لكل إجراء.\n"
+            "ما تكتبه لا يُسجَّل أبدًا.")
+        self.screen_guide_button.clicked.connect(self.open_screen_guide)
+        if not self.config.screen_guide.enabled:
+            self.screen_guide_button.setEnabled(False)
+            self.screen_guide_button.setToolTip(
+                self._policy_reason("allow_screen_guide") or "«سجّلني» معطّل.")
+        elif not screen_guide_supported():
+            self.screen_guide_button.setEnabled(False)
+            self.screen_guide_button.setToolTip("يحتاج معين على Windows.")
         file_layout.addWidget(self.file_label, 1)
         file_layout.addWidget(browse)
         file_layout.addWidget(browse_audio)
         file_layout.addWidget(browse_folder)
         file_layout.addWidget(self.record_button)
         file_box_layout.addWidget(file_row)
+        guide_row = QHBoxLayout()
+        guide_row.addWidget(self.screen_guide_button)
+        guide_hint = QLabel(
+            "سجّل إجراءً في أي برنامج ← دليل مصوّر بخطوات مرقّمة، بلا فيديو.")
+        guide_hint.setStyleSheet(f"color: {theme.MUTED};")
+        guide_row.addWidget(guide_hint)
+        guide_row.addStretch(1)
+        file_box_layout.addLayout(guide_row)
 
         # مجلد الحفظ صفٌّ داخل نفس المجموعة لا مجموعة مستقلة: مجموعة
         # كاملة لحقل واحد تُهدر ~90 بكسل من ارتفاع الواجهة بلا مقابل.
@@ -1408,6 +1432,16 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
         dialog.exec()
         if dialog.result_path is not None:
             self._set_source(dialog.result_path, audio_only=False)
+
+    def open_screen_guide(self) -> None:
+        """«سجّلني — دليل خطوة بخطوة»: نافذة التسجيل والمراجعة."""
+        if not self._license_allows_processing():
+            return
+        from ui.screenguide_dialog import ScreenGuideDialog
+
+        dialog = ScreenGuideDialog(self.config, self, save_config=self._save_config)
+        dialog.log_event.connect(self.append_log)
+        dialog.exec()
 
     def _set_source(self, path: Path, audio_only: bool) -> None:
         self.video_path = path

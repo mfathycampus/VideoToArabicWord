@@ -586,6 +586,24 @@ class RecordingConfig(BaseModel):
         return self.output_dir or (Path.home() / "Videos" / "Maeen Recordings")
 
 
+class ScreenGuideConfig(BaseModel):
+    """«سجّلني — دليل خطوة بخطوة» (انظر ``screenguide/``).
+
+    لا شيء يُسجَّل بلا ضغطة صريحة، وما يُكتب لا يُسجَّل أبدًا.
+    """
+    #: ``False`` (أو سياسة الجهاز ``allow_screen_guide: false``) يعطّل الزرّ.
+    enabled: bool = True
+    #: صورة إنفوجرافيك (ونسخة HTML) لكل إجراء، في ``infographics/``.
+    infographic: bool = True
+    #: صيغٌ بجانب Word: ‏html · pdf (‏pdf يحتاج Word أو LibreOffice).
+    export_formats: list[str] = Field(default_factory=lambda: ["html", "pdf"])
+    #: سقف الخطوات في إجراءٍ واحد.
+    max_steps: int = Field(200, ge=5, le=1000)
+    #: آخر دليلٍ ولغةٍ استُعملا — تُقترح في المرة القادمة.
+    last_guide: str = ""
+    language: str = "ar"
+
+
 class AppConfig(BaseModel):
     """الإعداد الجذر — يُحمَّل من YAML ويُحقن في الـ Pipeline."""
     application: ApplicationConfig = Field(default_factory=ApplicationConfig)
@@ -596,6 +614,7 @@ class AppConfig(BaseModel):
     rewrite: RewriteSettings = Field(default_factory=RewriteSettings)
     study: StudySettings = Field(default_factory=StudySettings)
     recording: RecordingConfig = Field(default_factory=RecordingConfig)
+    screen_guide: ScreenGuideConfig = Field(default_factory=ScreenGuideConfig)
 
     # آخر خطأ تحميل — تقرؤه الواجهة لتُعلم المستخدم بدل ابتلاعه
     load_error: str = ""

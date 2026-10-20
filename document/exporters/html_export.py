@@ -398,6 +398,11 @@ def _render_nav(plan: DocumentPlan) -> str:
 
 def _render_facts(ctx: ExportContext) -> str:
     meta = ctx.metadata
+    if ctx.plan.generated_by == "recording":
+        # دليل «سجّلني»: الإجراءات والخطوات، لا مدة فيديو.
+        steps = sum(1 for s in ctx.plan.sections for b in s.blocks if b.kind == "step")
+        facts = [f"الإجراءات: {len(ctx.plan.sections)}", f"الخطوات: {steps}"]
+        return "".join(f'<span>{_esc(f)}</span>' for f in facts)
     # ما يحتاجه القارئ لا ما يحتاجه المطوّر: الأبعاد والترميز وعدد
     # الأقسام بيانات تشخيص، لا تعريفٌ بالمستند.
     facts = [f"المدة: {seconds_to_display(meta.duration_seconds)}"]
@@ -486,10 +491,11 @@ def render_html(ctx: ExportContext) -> str:
         '<div id="searchNote" role="status"></div></div>'
         + _render_nav(plan) +
         "</aside>\n<main>\n"
-        '<div id="player"><p class="hint">اربط التسجيل بالصفحة ليصير كل '
-        'توقيت نقطة قفز — الملف لا يُنسخ ولا يُرفع، ويبقى على جهازك.</p>'
-        '<div id="pickWrap"><input id="pick" type="file" accept="video/*,audio/*"></div>'
-        '<video id="vid" class="hidden" controls preload="metadata"></video></div>\n'
+        + ("" if plan.generated_by == "recording" else
+           '<div id="player"><p class="hint">اربط التسجيل بالصفحة ليصير كل '
+           'توقيت نقطة قفز — الملف لا يُنسخ ولا يُرفع، ويبقى على جهازك.</p>'
+           '<div id="pickWrap"><input id="pick" type="file" accept="video/*,audio/*"></div>'
+           '<video id="vid" class="hidden" controls preload="metadata"></video></div>\n')
         + "".join(intro) + "".join(body) +
         "\n</main>\n</div>\n"
         f"<script>{_JS}</script>\n</body>\n</html>\n")
