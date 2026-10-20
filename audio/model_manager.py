@@ -108,6 +108,22 @@ def _directory_bytes(root: Path) -> int:
     return total
 
 
+#: ما يقرؤه faster-whisper من مجلد النموذج. ‏``preprocessor_config.json``
+#: اختياري (لا تحمله النماذج القديمة)، فلا يُشترط.
+_MODEL_FILES = ("model.bin", "config.json", "tokenizer.json")
+
+
+def _model_files_present(folder: Path) -> bool:
+    """الملفات الأساسية موجودة ومقروءة (الروابط الرمزية تُتبَع)."""
+    for name in _MODEL_FILES:
+        try:
+            if not (folder / name).is_file():
+                return False
+        except OSError:
+            return False
+    return True
+
+
 class ModelManager:
     def __init__(self, cache_root: Optional[Path] = None) -> None:
         self.cache_root = cache_root or default_cache_root()
@@ -132,6 +148,42 @@ class ModelManager:
             return False
         return any(_matches_model_dir(path.parent, name)
                    for path in root.rglob("model.bin"))
+
+    def local_path(self, name: str) -> Optional[Path]:
+        """مجلد النموذج على القرص (فيه ``model.bin``)، أو ``None``.
+
+        التفريغ يُحمِّل النموذج **من هذا المجلد مباشرةً** لا باسمه. التحميل
+        بالاسم يمرّ بـ ``huggingface_hub`` حتى بلا اتصال، و``huggingface_hub``
+        2.x صار يفحص اكتمال المخبأ بمسارات ``\\\\?\\`` الممتدّة على ويندوز،
+        فرأى روابط اللقطة الرمزية (``snapshots/<sha>/model.bin`` ←
+        ``blobs/…``) **مفقودة** وهي موجودة — فسقط التفريغ بـ E4001 «The
+        cached snapshot … is incomplete» على نموذجٍ سليم كان يعمل أمس.
+        المجلد المحلي لا يعرف المخبأ ولا الشبكة، فلا يتأثّر بأي إصدار منه.
+
+        حين تتعدّد اللقطات يُفضَّل ما يشير إليه ``refs/main``.
+        """
+        root = self.cache_root
+        if not root.exists():
+            return None
+        candidates = [path.parent for path in root.rglob("model.bin")
+                      if _matches_model_dir(path.parent, name)
+                      and _model_files_present(path.parent)]
+        if not candidates:
+            return None
+
+        def preferred(folder: Path) -> tuple:
+            ref = folder.parent.parent / "refs" / "main"
+            try:
+                current = ref.read_text(encoding="utf-8").strip() == folder.name
+            except OSError:
+                current = False
+            try:
+                stamp = (folder / "model.bin").stat().st_mtime
+            except OSError:
+                stamp = 0.0
+            return (current, stamp)
+
+        return max(candidates, key=preferred)
 
     def free_space_gb(self) -> float:
         root = self.cache_root
