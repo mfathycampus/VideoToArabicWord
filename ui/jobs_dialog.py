@@ -47,12 +47,14 @@ def open_path(path: Path) -> None:
 class JobsDialog(QDialog):
     def __init__(self, output_dir: Path, parent=None,
                  on_resume: Optional[Callable[[JobSummary], None]] = None,
-                 on_rebuild: Optional[Callable[[JobSummary], None]] = None
+                 on_rebuild: Optional[Callable[[JobSummary], None]] = None,
+                 on_open_guide: Optional[Callable[[JobSummary], None]] = None
                  ) -> None:
         super().__init__(parent)
         self.output_dir = Path(output_dir)
         self.on_resume = on_resume
         self.on_rebuild = on_rebuild
+        self.on_open_guide = on_open_guide
         self.jobs: List[JobSummary] = []
 
         self.setWindowTitle("المهام السابقة")
@@ -116,7 +118,7 @@ class JobsDialog(QDialog):
 
     # ------------------------------------------------------------------
     def refresh(self) -> None:
-        self.jobs = list_jobs(self.output_dir)
+        self.jobs = list_jobs(self.output_dir, include_guides=True)
         self.table.setRowCount(len(self.jobs))
         for row, job in enumerate(self.jobs):
             updated = (job.updated_at.strftime("%Y-%m-%d %H:%M")
@@ -129,7 +131,9 @@ class JobsDialog(QDialog):
                     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.table.setItem(row, column, item)
         if self.jobs:
-            self.table.selectRow(0)
+            # ‏setCurrentCell لا selectRow: الثانية لم تحدّد الصفّ في هذا الجدول
+            # (رأسٌ عمودي مخفي) فبقيت الأزرار معطّلة حتى ينقر المستخدم.
+            self.table.setCurrentCell(0, 0)
         self._update_buttons()
 
     def selected(self) -> Optional[JobSummary]:
@@ -144,12 +148,24 @@ class JobsDialog(QDialog):
         self.open_button.setEnabled(bool(job and job.document))
         self.folder_button.setEnabled(job is not None)
         self.rebuild_button.setEnabled(bool(job and job.can_rebuild))
+        guide = bool(job and job.is_guide)
+        self.rebuild_button.setText("مراجعة الدليل وتعديله…" if guide
+                                    else "أعد بناء المستند")
+        self.rebuild_button.setToolTip(
+            "يفتح الدليل: تعديل الخطوات وتسجيل إجراء آخر وإعادة الإخراج." if guide
+            else "يعيد التوليد من الخطة المحفوظة بالإعدادات الحالية — ثوانٍ.")
         self.resume_button.setEnabled(
             bool(job and job.can_resume and self.on_resume))
 
         if job is None:
             self.detail.setText(
                 "لا توجد مهام في مجلد الحفظ بعد." if not self.jobs else "")
+            return
+        if job.is_guide:
+            parts = ["المصدر: سجّلني — دليل خطوة بخطوة"]
+            if job.document:
+                parts.append(f"المخرج: {job.document.name}")
+            self.detail.setText("   ·   ".join(parts))
             return
         parts = [f"المصدر: {job.source.name if job.source else '—'}"]
         if job.document:
@@ -173,6 +189,13 @@ class JobsDialog(QDialog):
 
     def rebuild(self) -> None:
         job = self.selected()
+        if job and job.is_guide:
+            if self.on_open_guide:
+                self.accept()
+                self.on_open_guide(job)
+            else:
+                self.open_folder()
+            return
         if job and self.on_rebuild:
             self.on_rebuild(job)
             self.refresh()

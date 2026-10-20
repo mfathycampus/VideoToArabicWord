@@ -83,6 +83,8 @@ datas += collect_data_files("pptx")
 # tokenizers الخاص بـ faster-whisper يحمّل موارد بالاسم وقت التشغيل
 hiddenimports = collect_submodules("faster_whisper") + collect_submodules("pptx") + [
     "recording.session",                    # تسجيل الشاشة (استيراد متأخر من الواجهة)
+    "screenguide", "screenguide.windows_source", "screenguide.guide",
+    "screenguide.infographic", "ui.screenguide_dialog",  # «سجّلني» (استيراد متأخر)
     "ui.dashboard", "core.stats", "utils.stats_report",  # الإحصاءات (استيراد متأخر)
     "cryptography.hazmat.bindings._rust",   # التحقّق من الترخيص
     "licensing.ed25519_pure",               # تحقّقٌ احتياطي بلا امتداد مُترجَم

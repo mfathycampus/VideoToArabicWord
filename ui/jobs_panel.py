@@ -100,7 +100,17 @@ class JobsPanelMixin:
 
         dialog = JobsDialog(self.config.application.output_dir, self,
                             on_resume=self._resume_job,
-                            on_rebuild=self._rebuild_job)
+                            on_rebuild=self._rebuild_job,
+                            on_open_guide=self._open_guide_job)
+        dialog.exec()
+
+    def _open_guide_job(self, job) -> None:
+        """دليل «سجّلني» من المهام السابقة: نافذته على صفحة المراجعة."""
+        from ui.screenguide_dialog import ScreenGuideDialog
+
+        dialog = ScreenGuideDialog(self.config, self, save_config=self._save_config)
+        dialog.log_event.connect(self.append_log)
+        dialog.open_guide(job.guide_title)
         dialog.exec()
 
     def _rebuild_job(self, job) -> None:

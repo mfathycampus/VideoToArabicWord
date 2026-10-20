@@ -41,6 +41,14 @@ class JobSummary:
     document: Optional[Path]
     updated_at: Optional[datetime]
     last_error: Optional[str]
+    #: ‏``video`` مهمة معالجة عادية · ``guide`` دليل «سجّلني» (``screenguide``).
+    kind: str = "video"
+    #: عنوان الدليل كما سمّاه صاحبه (للأدلة وحدها) — به يُفتح للمراجعة.
+    guide_title: str = ""
+
+    @property
+    def is_guide(self) -> bool:
+        return self.kind == "guide"
 
     @property
     def is_complete(self) -> bool:
@@ -49,12 +57,17 @@ class JobSummary:
     @property
     def can_resume(self) -> bool:
         """قابلة للمتابعة: توقّفت قبل الاكتمال ومصدرها ما زال موجودًا."""
-        return (not self.is_complete
+        return (not self.is_guide and not self.is_complete
                 and self.source is not None and self.source.exists())
 
     @property
     def can_rebuild(self) -> bool:
-        """يمكن إعادة بناء مستندها من الخطة المحفوظة بلا إعادة معالجة."""
+        """يمكن إعادة بناء مستندها من الخطة المحفوظة بلا إعادة معالجة.
+
+        الدليل يُعاد إخراجه من نافذة مراجعته (تعديلات الخطوات وأسماء الأنظمة).
+        """
+        if self.is_guide:
+            return (self.job_dir / "guide.json").exists()
         return (self.job_dir / "plan.json").exists()
 
 
@@ -111,8 +124,62 @@ def read_job(job_dir: Path) -> Optional[JobSummary]:
     )
 
 
-def list_jobs(output_dir: Path) -> List[JobSummary]:
-    """كل المهام في مجلد الإخراج، الأحدث أولًا."""
+def read_guide(guide_dir: Path) -> Optional[JobSummary]:
+    """دليل «سجّلني» واحد كمهمة، أو ``None`` إن لم يكن المجلد دليلًا.
+
+    الدليل لا ``job_state.json`` له: يُكتب كاملًا في كل مرة من رحلاته
+    المحفوظة، فهو «مكتمل» ما دام مستنده موجودًا.
+    """
+    guide_dir = Path(guide_dir)
+    state_path = guide_dir / "guide.json"
+    if not state_path.exists():
+        return None
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except Exception:
+        state = {}
+    title = str(state.get("title") or guide_dir.name)
+    journeys = len(state.get("journeys") or [])
+    document = _first_existing(guide_dir, (".docx",))
+    stamps = [p.stat().st_mtime for p in (state_path, document) if p is not None]
+    return JobSummary(
+        job_dir=guide_dir,
+        name=f"دليل: {title}",
+        status="completed" if document else "queued",
+        status_label="اكتمل" if document else "بلا مستند بعد",
+        stage=f"سجّلني · {journeys} إجراء",
+        progress=100.0 if document else 0.0,
+        source=None,
+        document=document,
+        updated_at=datetime.fromtimestamp(max(stamps)) if stamps else None,
+        last_error=None,
+        kind="guide",
+        guide_title=title,
+    )
+
+
+def list_guides(output_dir: Path) -> List[JobSummary]:
+    """أدلة «سجّلني» في مجلد الإخراج (``أدلة خطوة بخطوة/``)."""
+    from screenguide.guide import guides_root
+
+    root = guides_root(Path(output_dir))
+    if not root.is_dir():
+        return []
+    out: List[JobSummary] = []
+    for child in root.iterdir():
+        if child.is_dir():
+            summary = read_guide(child)
+            if summary is not None:
+                out.append(summary)
+    return out
+
+
+def list_jobs(output_dir: Path, *, include_guides: bool = False) -> List[JobSummary]:
+    """كل المهام في مجلد الإخراج، الأحدث أولًا.
+
+    ``include_guides`` يضيف أدلة «سجّلني» — للوحة «المهام السابقة» وحدها:
+    الدمج وفهرس المقرّر والإحصاءات تقرأ مهامّ الفيديو فقط.
+    """
     output_dir = Path(output_dir)
     if not output_dir.is_dir():
         return []
@@ -123,5 +190,10 @@ def list_jobs(output_dir: Path) -> List[JobSummary]:
         summary = read_job(child)
         if summary is not None:
             jobs.append(summary)
+    try:
+        if include_guides:
+            jobs.extend(list_guides(output_dir))
+    except Exception:                                  # noqa: BLE001
+        pass   # دليلٌ تالف لا يُخفي المهام العادية
     jobs.sort(key=lambda j: (j.updated_at or datetime.min), reverse=True)
     return jobs

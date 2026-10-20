@@ -31,7 +31,7 @@ video-to-word-doctor = "tools.doctor:main"
 # ``attr:`` أدناه ولا شُحنت مع التوزيعة.
 py-modules = ["version"]
 packages = ["ai", "audio", "config", "core", "document", "recording",
-            "tools", "ui", "utils", "video"]
+            "screenguide", "tools", "ui", "utils", "video"]
 
 [tool.setuptools.dynamic]
 version = { attr = "version.APP_VERSION" }

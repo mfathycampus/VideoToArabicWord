@@ -79,6 +79,13 @@ MIN_INDEX_FIGURES = 20
 MAX_INDEX_FIGURES = 40
 #: تذييل الإصدارات السابقة — يُعامل «تلقائيًّا» (``_footer_text``).
 LEGACY_FOOTER = "تقرير تفريغ الفيديو"
+#: ‏``generated_by`` لدليل «سجّلني» (``screenguide``): خطواتٌ مسجَّلة لا تفريغ.
+RECORDED = "recording"
+
+
+def _authored(plan: DocumentPlan) -> bool:
+    """خطةٌ كتبها مؤلّفٌ يعرف نوع المستند (المؤلّف المرئي أو «سجّلني»)."""
+    return plan.generated_by.startswith("ai:") or plan.generated_by == RECORDED
 
 
 def _set_alt_text(picture, alt: str) -> None:
@@ -126,7 +133,7 @@ class DocumentGenerator:
         build_styles(document, self.theme)
 
         cover_kwargs = {}
-        if plan.subtitle and plan.generated_by.startswith("ai:"):
+        if plan.subtitle and _authored(plan):
             # نوع المستند («دليل إجرائي مصوّر») في شريط الغلاف بدل عبارة
             # عامّة، ولا يتكرّر سطرًا تحت العنوان.
             cover_kwargs["kicker"] = plan.subtitle
@@ -214,8 +221,9 @@ class DocumentGenerator:
         المستند الذي كتبه المؤلّف المرئي. ومن كتب نصًّا خاصًّا يبقى نصّه.
         """
         text = (self.config.footer_text or "").strip()
-        if text in ("", LEGACY_FOOTER) and plan.subtitle \
-                and plan.generated_by.startswith("ai:"):
+        if text in ("", LEGACY_FOOTER) and plan.subtitle and _authored(plan):
+            if plan.generated_by == RECORDED:
+                return plan.subtitle.split(" — ")[0]
             return plan.subtitle
         return text or LEGACY_FOOTER
 
@@ -226,6 +234,16 @@ class DocumentGenerator:
         النموذج (‏«ai:anthropic/claude-…»). هذه بيانات تشخيص مكانها
         ``plan.json`` و``quality.json``، لا غلافٌ يوزَّع على المعلّمين.
         """
+        if plan.generated_by == RECORDED:
+            # دليل «سجّلني»: لا ملف مصدر ولا مدة فيديو — ما يعني القارئ عدد
+            # الإجراءات والخطوات وتاريخ التسجيل.
+            from datetime import date
+
+            steps = sum(1 for s in plan.sections for b in s.blocks if b.kind == "step")
+            return [("المصدر", metadata.filename),
+                    ("الإجراءات", str(len(plan.sections))),
+                    ("الخطوات", str(steps)),
+                    ("التاريخ", date.today().isoformat())]
         # اسم ملف عربي بامتداده يُعرض «mp4.متابعة…» في سطر RTL؛ الامتداد
         # لا يعني القارئ، فيُكتفى بالاسم.
         name = metadata.filename
