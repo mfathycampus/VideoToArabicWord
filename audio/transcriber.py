@@ -380,6 +380,31 @@ class TranscriptionEngine:
 
         return BatchedInferencePipeline(model=model)
 
+    def _model_reference(self) -> str:
+        """مجلد النموذج المحلي إن وُجد، وإلا اسمه.
+
+        التحميل من المجلد لا يمرّ بمخبأ ``huggingface_hub`` إطلاقًا — انظر
+        ``ModelManager.local_path``: في 1.16.1 أسقط ``huggingface_hub`` 2.x
+        التفريغ على نموذجٍ كامل لأنه رأى روابط المخبأ الرمزية مفقودة. والاسم
+        يبقى للتنزيل الأول (بإذن المستخدم) ولنموذجٍ غائب عن المخبأ.
+        """
+        name = self.config.model_size
+        if Path(name).is_dir():
+            return name
+        from audio.model_manager import ModelManager
+
+        try:
+            folder = ModelManager(
+                Path(self.config.download_root) if self.config.download_root else None
+            ).local_path(name)
+        except Exception as exc:                          # noqa: BLE001
+            logger.debug(f"تعذّر البحث عن مجلد النموذج المحلي: {exc}")
+            folder = None
+        if folder is None:
+            return name
+        logger.info(f"النموذج من مجلده المحلي: {folder}")
+        return str(folder)
+
     def _load_model(self, device: str, compute_type: str) -> WhisperModel:
         if (self.keep_model_loaded and self._cached
                 and self._cached[0] == device and self._cached[1] == compute_type):
@@ -400,7 +425,7 @@ class TranscriptionEngine:
                 "OpenMP تتنازعان الأنوية وقد يتضاعف زمن التفريغ. "
                 "لا تُفعّل المحرّكات الاختيارية إلا عند استعمالها فعلًا.")
         model = WhisperModel(
-            self.config.model_size,
+            self._model_reference(),
             device=device,
             compute_type=compute_type,
             cpu_threads=self._resolve_threads(),
