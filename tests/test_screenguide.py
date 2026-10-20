@@ -437,3 +437,48 @@ def test_a_guide_is_listed_with_the_previous_jobs(tmp_path):
     assert job.can_rebuild and not job.can_resume
     # الدمج وفهرس المقرّر والإحصاءات لا يرونه.
     assert list_jobs(tmp_path) == []
+
+
+def test_guides_and_video_jobs_sort_together_without_crashing(tmp_path):
+    """1.16.0: «كل المهام…» أغلق البرنامج — وقت المهمة بمنطقة (UTC) ووقت
+    الدليل بلا منطقة، ومقارنتهما ``TypeError`` داخل الواجهة."""
+    from datetime import datetime, timezone
+
+    from config.settings import AppConfig
+    from core.job_registry import list_jobs
+
+    guide = _guide_with(tmp_path, "حفظ الملف", JOURNEY)
+    write_guide(guide, AppConfig(), formats=[], infographics=False)
+    for name, stamp in (("محاضرة", datetime.now(timezone.utc).isoformat()),
+                        ("تالفة الوقت", None)):
+        job = tmp_path / name
+        job.mkdir()
+        (job / "job_state.json").write_text(
+            json.dumps({"status": "completed", "updated_at": stamp}), encoding="utf-8")
+    jobs = list_jobs(tmp_path, include_guides=True)
+    assert len(jobs) == 3
+    assert jobs[-1].name == "تالفة الوقت"           # بلا وقت: الأقدم
+
+
+def test_the_jobs_dialog_opens_with_guides_and_videos(tmp_path):
+    pytest.importorskip("PyQt6.QtWidgets", exc_type=ImportError)
+    import os
+    from datetime import datetime, timezone
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PyQt6.QtWidgets import QApplication
+
+    from config.settings import AppConfig
+    from ui.jobs_dialog import JobsDialog
+
+    _app = QApplication.instance() or QApplication([])
+    guide = _guide_with(tmp_path, "حفظ الملف", JOURNEY)
+    write_guide(guide, AppConfig(), formats=[], infographics=False)
+    job = tmp_path / "محاضرة"
+    job.mkdir()
+    (job / "job_state.json").write_text(json.dumps(
+        {"status": "completed", "updated_at": datetime.now(timezone.utc).isoformat()}),
+        encoding="utf-8")
+    dialog = JobsDialog(tmp_path)
+    assert dialog.table.rowCount() == 2
+    assert dialog.selected() is not None

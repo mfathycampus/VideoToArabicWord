@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
@@ -69,6 +69,25 @@ class JobSummary:
         if self.is_guide:
             return (self.job_dir / "guide.json").exists()
         return (self.job_dir / "plan.json").exists()
+
+
+#: ما يُرتَّب به ما لا وقت له: أقدم من أي مهمة.
+_NEVER = datetime.min.replace(tzinfo=timezone.utc)
+
+
+def sort_key(moment: Optional[datetime]) -> datetime:
+    """وقتٌ قابل للمقارنة دائمًا.
+
+    ‏``job_state.json`` يكتب الوقت بمنطقته (UTC)، ووقت الملف بلا منطقة.
+    مقارنة النوعين ترفع ``TypeError`` — وفي 1.16.0 أغلق ذلك البرنامج كلّه
+    عند «كل المهام…» على جهازٍ فيه دليل «سجّلني» ومهامّ فيديو معًا. الوقت
+    بلا منطقة يُعدّ محلّيًّا.
+    """
+    if moment is None:
+        return _NEVER
+    if moment.tzinfo is None:
+        return moment.astimezone()
+    return moment
 
 
 def _first_existing(job_dir: Path, suffixes: tuple[str, ...]) -> Optional[Path]:
@@ -151,7 +170,8 @@ def read_guide(guide_dir: Path) -> Optional[JobSummary]:
         progress=100.0 if document else 0.0,
         source=None,
         document=document,
-        updated_at=datetime.fromtimestamp(max(stamps)) if stamps else None,
+        updated_at=(datetime.fromtimestamp(max(stamps)).astimezone()
+                    if stamps else None),
         last_error=None,
         kind="guide",
         guide_title=title,
@@ -195,5 +215,5 @@ def list_jobs(output_dir: Path, *, include_guides: bool = False) -> List[JobSumm
             jobs.extend(list_guides(output_dir))
     except Exception:                                  # noqa: BLE001
         pass   # دليلٌ تالف لا يُخفي المهام العادية
-    jobs.sort(key=lambda j: (j.updated_at or datetime.min), reverse=True)
+    jobs.sort(key=lambda j: sort_key(j.updated_at), reverse=True)
     return jobs

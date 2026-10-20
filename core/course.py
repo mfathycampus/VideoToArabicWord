@@ -18,11 +18,10 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from core.job_registry import JobSummary, list_jobs
+from core.job_registry import JobSummary, list_jobs, sort_key
 from utils.logger import logger
 
 #: ``الامتداد: (التسمية، أمر الإصلاح)`` — ما نتوقّع وجوده بجوار كل مستند.
@@ -173,7 +172,7 @@ def build_report(output_dir: Path, title: str = "") -> CourseReport:
     # والاسم فاصلٌ عند تساوي الوقت: دفعةٌ تُعالَج آليًّا تكتب حالاتها في
     # الثانية نفسها، فترتيبٌ يعتمد على الوقت وحده يتبدّل بين تشغيلين
     # ويجعل «المحاضرة الثالثة» تظهر أولًا بلا سبب.
-    jobs.sort(key=lambda job: (job.updated_at or datetime.min, job.name))
+    jobs.sort(key=lambda job: (sort_key(job.updated_at), job.name))
     report.lectures = [_row_from_job(job) for job in jobs]
 
     for row in report.lectures:
