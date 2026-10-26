@@ -274,6 +274,14 @@ def test_deprecated_param_is_dropped_and_retried(monkeypatch):
         httpd.shutdown()
 
 
+def test_managed_hidden_unless_managed_code():
+    """«معين المُدار» لا يظهر في القائمة إلا لكود تفعيل من باقة «مُدار»."""
+    from ai.providers import provider_choices
+
+    assert "maeen_managed" not in [k for k, _ in provider_choices(False)]
+    assert [k for k, _ in provider_choices(True)][0] == "maeen_managed"
+
+
 # ---------------- «معين المُدار» ----------------
 @pytest.fixture
 def managed(server, monkeypatch):

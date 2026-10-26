@@ -720,7 +720,8 @@ async function activate(request, env, renew) {
       recheck_at: Math.min(expires, now + recheckDays * 86400),
       grace_days: stored.grace_days ?? 3, plan: stored.plan || "",
       // «تجربة» تحمل علامة مائية في التطبيق أيًّا كانت مدّتها.
-      tier: stored.tier || ((stored.plan || "").startsWith("تجربة") ? "trial" : ""),
+      tier: stored.tier || (stored.managed ? "managed"
+        : (stored.plan || "").startsWith("تجربة") ? "trial" : ""),
     }),
     // عناوين الخادم الحالية (SERVER_ALIASES، مفصولة بفواصل): يحفظها التطبيق
     // سرًّا وينتقل إليها إن تغيّر العنوان، دون أن يراها العميل.

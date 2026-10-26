@@ -77,7 +77,19 @@ def current_tier() -> str:
     tier = str((lease.extra or {}).get("tier") or "")
     if not tier and (lease.plan or "").startswith("تجربة"):
         tier = "trial"
+    if not tier and ((lease.extra or {}).get("managed")
+                     or (lease.plan or "").startswith("مُدار")):
+        tier = "managed"
     return tier
+
+
+def managed_allowed() -> bool:
+    """هل يُعرض «معين المُدار» في الواجهة؟ فقط لكودٍ أُصدر من باقة «مُدار».
+
+    كود «مفتاحك» أو التجربة لا رصيد له عند الخادم: عرض الخيار له يقود
+    المستخدم إلى رفضٍ لا يفهم سببه.
+    """
+    return current_tier() == "managed"
 
 
 def is_trial() -> bool:

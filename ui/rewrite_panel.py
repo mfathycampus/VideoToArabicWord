@@ -153,7 +153,7 @@ class RewritePanelMixin:
         المزوّد الافتراضي محلّي (‏Ollama) عمدًا: ميزةٌ يُفترض أن
         يجرّبها كل معلّم لا يصحّ أن تكون تجربتها مشروطة بمفتاح مدفوع.
         """
-        from ai.providers import PROVIDER_CHOICES
+        from ai.providers import provider_choices
 
         row = QHBoxLayout()
         self.study_check = QCheckBox("الحزمة التعليمية (أهداف · مسرد · أسئلة · بطاقات)")
@@ -170,10 +170,13 @@ class RewritePanelMixin:
 
         row.addWidget(QLabel("المزوّد:"))
         self.study_provider = QComboBox()
-        for key, label in PROVIDER_CHOICES:
+        for key, label in provider_choices(self._managed_allowed()):
             self.study_provider.addItem(label, key)
         index = self.study_provider.findData(self.config.study.provider)
-        self.study_provider.setCurrentIndex(max(0, index))
+        if index < 0:
+            index = max(0, self.study_provider.findData("ollama"))
+            self.config.study.provider = self.study_provider.itemData(index)
+        self.study_provider.setCurrentIndex(index)
         self.study_provider.currentIndexChanged.connect(self._on_study_toggled)
         row.addWidget(self.study_provider)
 
@@ -338,7 +341,8 @@ class RewritePanelMixin:
 
             if (self.provider_combo.currentData() in ("maeen_managed", "ollama")
                     or self.config.rewrite.api_key.strip()
-                    or not app_gate.current_code()):
+                    or not app_gate.current_code()
+                    or not app_gate.managed_allowed()):
                 return
         except Exception:                              # noqa: BLE001
             return
@@ -352,6 +356,52 @@ class RewritePanelMixin:
         thread.finished.connect(thread.deleteLater)
         self._probe_thread = thread
         thread.start()
+
+    # ------------------------------------------------------------------
+    # «معين المُدار» يظهر فقط لكود تفعيل أُصدر من باقة «مُدار».
+    @staticmethod
+    def _managed_allowed() -> bool:
+        try:
+            from licensing import app_gate
+
+            return app_gate.managed_allowed()
+        except Exception:                              # noqa: BLE001
+            return False
+
+    def _sync_managed_choice(self) -> None:
+        """يضيف «معين المُدار» أو يزيله بعد تغيّر الترخيص (تفعيل كود جديد)."""
+        from ai.providers import PROVIDER_CHOICES
+
+        allowed = self._managed_allowed()
+        label = dict(PROVIDER_CHOICES)["maeen_managed"]
+        added = False
+        for name, fallback, section, on_change in (
+                ("provider_combo", "anthropic", "rewrite", "_on_rewrite_toggled"),
+                ("study_provider", "ollama", "study", "_on_study_toggled")):
+            combo = getattr(self, name, None)
+            if combo is None:
+                continue
+            index = combo.findData("maeen_managed")
+            if allowed and index < 0:
+                if combo.findData("anthropic") < 0:     # السحابة مقفلة بالسياسة
+                    continue
+                combo.blockSignals(True)
+                combo.insertItem(0, label, "maeen_managed")
+                combo.blockSignals(False)
+                added = added or name == "provider_combo"
+            elif not allowed and index >= 0:
+                was_current = combo.currentIndex() == index
+                combo.blockSignals(True)
+                combo.removeItem(index)
+                if was_current:
+                    combo.setCurrentIndex(max(0, combo.findData(fallback)))
+                combo.blockSignals(False)
+                if was_current:
+                    getattr(self.config, section).provider = combo.currentData()
+                    getattr(self, on_change)()
+                    self._save_config()
+        if added:                                      # كود مُدار فُعِّل للتوّ
+            self._auto_pick_managed()
 
     def _select_managed(self, _minutes: float) -> None:
         index = self.provider_combo.findData("maeen_managed")
