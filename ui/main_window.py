@@ -359,12 +359,15 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
         provider_row = QHBoxLayout()
         provider_row.addWidget(QLabel("المزوّد:"))
         self.provider_combo = QComboBox()
-        from ai.providers import PROVIDER_CHOICES
-        for value, label in PROVIDER_CHOICES:
+        from ai.providers import provider_choices
+        for value, label in provider_choices(self._managed_allowed()):
             self.provider_combo.addItem(label, value)
         current = self.provider_combo.findData(self.config.rewrite.provider)
-        if current >= 0:
-            self.provider_combo.setCurrentIndex(current)
+        if current < 0:
+            # مزوّد محفوظ لم يعد متاحًا (مثل «المُدار» بكود غير مُدار).
+            current = max(0, self.provider_combo.findData("anthropic"))
+            self.config.rewrite.provider = self.provider_combo.itemData(current)
+        self.provider_combo.setCurrentIndex(current)
         self.provider_combo.currentIndexChanged.connect(self._on_rewrite_toggled)
         provider_row.addWidget(self.provider_combo, 1)
         self.usage_button = QPushButton("سجل الاستهلاك")
@@ -1049,6 +1052,7 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
         # الشريط تلقائيًّا بلا استدعاء إضافي يُنسى.
         self._license_verdict = verdict
         self._refresh_license_badge()
+        self._sync_managed_choice()
 
     def _refresh_license_badge(self) -> None:
         """يعرض تاريخ انتهاء الترخيص أعلى النافذة، لا داخل حوار التفعيل وحده.

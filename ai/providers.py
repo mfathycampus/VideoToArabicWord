@@ -476,6 +476,13 @@ PROVIDER_CHOICES = (
 )
 
 
+def provider_choices(managed_allowed: bool) -> tuple:
+    """خيارات القائمة الظاهرة: «معين المُدار» لا يظهر إلا لكودٍ مُدار."""
+    if managed_allowed:
+        return PROVIDER_CHOICES
+    return tuple(c for c in PROVIDER_CHOICES if c[0] != "maeen_managed")
+
+
 def build_provider(name: str, model: str = "", base_url: str = "",
                    api_key_env: str = "", api_key: str = "",
                    workspace_id: str = "") -> LLMProvider:
