@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from utils.build_info import build_id
 from utils.logger import logger
 from version import APP_VERSION
 
@@ -76,11 +77,16 @@ class AuditRecord:
     status: str = "started"          # started | completed | failed | cancelled
     error: str = ""
     elapsed_seconds: float = 0.0
+    #: زمن كل مرحلة بالثواني — يجيب «أين ذهبت الساعة والنصف؟» بلا تخمين.
+    #: رُصد: 99 دقيقة لتسجيل 49 دقيقة، منها 75 للتفريغ وحده، ولم يكن
+    #: ذلك ظاهرًا إلا لمن قرأ app.log.
+    stage_seconds: Dict[str, float] = field(default_factory=dict)
 
     def as_line(self) -> Dict:
         return {
             "at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
             "app_version": APP_VERSION,
+            "build": build_id(),
             "user": _current_user(),
             "host": _hostname(),
             "os": f"{platform.system()} {platform.release()}",
@@ -99,6 +105,7 @@ class AuditRecord:
             "status": self.status,
             "error": self.error[:300],
             "elapsed_seconds": round(self.elapsed_seconds, 1),
+            "stage_seconds": self.stage_seconds,
         }
 
 

@@ -20,7 +20,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Sequence
 
-from ai.providers import LLMProvider, RewriteUnavailableError, complete_with_retry
+from ai.providers import (
+    LLMProvider,
+    ResponseTruncatedError,
+    RewriteUnavailableError,
+    complete_with_retry,
+)
 from ai.rewriter import _extract_json
 from ai.study_terms import build_glossary
 from ai.study_verify import verify
@@ -90,6 +95,12 @@ class StudyConfig:
 
 ProgressFn = Callable[[int, int], None]
 
+#: سقف الرموز الأول، ثم سقف الإعادة حين يُقطع الردّ عنده.
+FIRST_MAX_TOKENS = 2048
+RETRY_MAX_TOKENS = 4096
+_CONCISE = ("\n\nأعِد JSON صالحًا فقط، بلا أي نص قبله أو بعده، "
+            "وباختصار يضمن اكتماله.")
+
 
 def _batches(segments: Sequence[AudioSegment],
              batch_chars: int) -> List[List[AudioSegment]]:
@@ -155,14 +166,20 @@ class StudyBuilder:
                 # تُقتطع. التوقّف هنا يوفّرها كاملةً.
                 break
             try:
-                raw = complete_with_retry(
-                    self.provider, SYSTEM_PROMPT, self._user_prompt(batch),
-                    max_tokens=2048, timeout=config.timeout_seconds)
+                replies = self._request(batch, index)
             except RewriteUnavailableError as exc:
                 failures += 1
+                pack.failures.append(f"الدفعة {index}/{len(batches)}: {exc}")
                 logger.warning(
                     f"تعذّرت الحزمة التعليمية للدفعة {index}/{len(batches)}: {exc}")
-                if not getattr(exc, "retryable", True) and failures == 1:
+                # الردّ المقطوع ليس خطأً نهائيًا من المزوّد وإن حمل
+                # ``retryable=False``: رُصد (1.15.1، 49 دقيقة) أن قطع الدفعة
+                # الأولى عند 2048 رمزًا أوقف العشر الباقية، فخرجت «حزمة
+                # تعليمية» بلا سؤال واحد. ``_request`` يعيده بسقف أعلى ثم
+                # بنصفين؛ وإن بقي مقطوعًا فالدفعة التالية تستحقّ فرصتها.
+                if (not getattr(exc, "retryable", True)
+                        and not isinstance(exc, ResponseTruncatedError)
+                        and failures == 1):
                     # خطأ نهائي (مفتاح خاطئ، نموذج غير متاح) لن تنجح
                     # معه دفعةٌ تالية. الاستمرار يعني تكرار الفشل نفسه
                     # عشرين مرّة أمام المستخدم.
@@ -171,29 +188,16 @@ class StudyBuilder:
                 continue
             except Exception as exc:
                 failures += 1
+                pack.failures.append(f"الدفعة {index}/{len(batches)}: {exc}")
                 logger.warning(f"عطل غير متوقّع في الدفعة {index}: {exc}")
                 continue
 
-            parsed = _extract_json(raw)
-            if not isinstance(parsed, dict):
-                # رُصد: الدفعة الوحيدة لتسجيلٍ حقيقي ردٌّ غير صالح ⇒ حزمة بلا
-                # سؤال واحد. الأرجح ردٌّ مقطوع عند سقف الرموز أو نصٌّ حول
-                # الـJSON. محاولةٌ واحدة بسقفٍ أعلى وتعليمةٍ صريحة.
-                try:
-                    raw = complete_with_retry(
-                        self.provider, SYSTEM_PROMPT,
-                        self._user_prompt(batch)
-                        + "\n\nأعِد JSON صالحًا فقط، بلا أي نص قبله أو بعده، "
-                          "وباختصار يضمن اكتماله.",
-                        max_tokens=4096, timeout=config.timeout_seconds)
-                    parsed = _extract_json(raw)
-                except Exception as exc:              # noqa: BLE001
-                    logger.warning(f"فشلت إعادة محاولة الدفعة {index}: {exc}")
-            if not isinstance(parsed, dict):
+            if not replies:
                 failures += 1
                 pack.dropped.append(f"ردّ غير صالح في الدفعة {index}")
                 continue
-            self._absorb(parsed, pack)
+            for parsed in replies:
+                self._absorb(parsed, pack)
 
         if failures:
             logger.info(
@@ -209,6 +213,49 @@ class StudyBuilder:
         return pack
 
     # ------------------------------------------------------------------
+    def _ask(self, batch: Sequence[AudioSegment], max_tokens: int,
+             extra: str = "") -> str:
+        return complete_with_retry(
+            self.provider, SYSTEM_PROMPT, self._user_prompt(batch) + extra,
+            max_tokens=max_tokens, timeout=self.config.timeout_seconds)
+
+    def _request(self, batch: Sequence[AudioSegment], index: int,
+                 split: bool = True) -> List[Dict]:
+        """ردود الدفعة محلّلةً — قائمة فارغة إن لم يصلح أيّ ردّ.
+
+        الردّ المقطوع عند السقف يُعاد مرّةً بسقفٍ أعلى وتعليمة اختصار، ثم
+        تُقسم الدفعة نصفين إن بقي مقطوعًا. ``ResponseTruncatedError`` لا
+        يخرج من هنا إلا إن قُطع النصفان أيضًا.
+        """
+        try:
+            raw = self._ask(batch, FIRST_MAX_TOKENS)
+        except ResponseTruncatedError:
+            logger.info(f"الحزمة التعليمية: قُطع ردّ الدفعة {index} عند "
+                        f"{FIRST_MAX_TOKENS} رمزًا — إعادة بسقف {RETRY_MAX_TOKENS}.")
+            try:
+                raw = self._ask(batch, RETRY_MAX_TOKENS, _CONCISE)
+            except ResponseTruncatedError:
+                if not split or len(batch) < 2:
+                    raise
+                half = len(batch) // 2
+                logger.info(f"الحزمة التعليمية: الدفعة {index} ما زالت مقطوعة "
+                            "— تُقسم نصفين.")
+                replies: List[Dict] = []
+                for part in (batch[:half], batch[half:]):
+                    replies.extend(self._request(part, index, split=False))
+                return replies
+
+        parsed = _extract_json(raw)
+        if not isinstance(parsed, dict):
+            # رُصد: الدفعة الوحيدة لتسجيلٍ حقيقي ردٌّ غير صالح ⇒ حزمة بلا
+            # سؤال واحد. الأرجح نصٌّ حول الـJSON. محاولةٌ واحدة بسقفٍ أعلى
+            # وتعليمةٍ صريحة.
+            try:
+                parsed = _extract_json(self._ask(batch, RETRY_MAX_TOKENS, _CONCISE))
+            except Exception as exc:              # noqa: BLE001
+                logger.warning(f"فشلت إعادة محاولة الدفعة {index}: {exc}")
+        return [parsed] if isinstance(parsed, dict) else []
+
     def _user_prompt(self, batch: Sequence[AudioSegment]) -> str:
         config = self.config
         if config.anonymize_names:
@@ -313,6 +360,8 @@ def _log_summary(pack: StudyPack) -> None:
     line = (f"الحزمة التعليمية: {len(pack.objectives)} هدفًا · "
             f"{len(pack.glossary)} مصطلحًا · {len(pack.questions)} سؤالًا · "
             f"{len(pack.flashcards)} بطاقة")
+    if pack.failures:
+        line += f" · تعذّرت {len(pack.failures)} دفعة عند المزوّد"
     if pack.dropped:
         # العدد يُذكر دائمًا، والأسباب في دليل المذاكرة. حزمةٌ نصفُها
         # مرفوض بلا هذا السطر تبدو حزمةً فقيرة بلا سبب ظاهر.

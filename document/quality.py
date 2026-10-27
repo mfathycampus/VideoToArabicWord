@@ -322,9 +322,66 @@ MIN_WORDS_PER_MINUTE = 45.0
 #: فجوة بلا تفريغ أطول من هذا تُسمّى في التحذير بزمنها.
 LONG_GAP_SECONDS = 30.0
 
+#: كلمة احتمالها أقل من هذا تُعدّ «غير واثقة». و``faster-whisper`` يُفرط في
+#: الثقة على اللهجة: تسجيلٌ حقيقي نصّه ضعيف بوضوح خرج متوسّطه 0.80 و10٪
+#: فقط من كلماته تحت 0.5 — فالرقم إشارة مساعدة لا حكمٌ على الجودة.
+LOW_WORD_PROBABILITY = 0.5
+#: نسبة الكلمات غير الواثقة التي يُحذَّر فوقها.
+MAX_LOW_CONFIDENCE_WORDS_PCT = 20.0
+
+#: أسماء أسباب الفجوة كما تظهر للمستخدم. المصدر ``engine["gaps"]`` الذي
+#: يكتبه ``audio/transcriber._refill_gaps`` بعد قياس مستوى الصوت فيها.
+GAP_REASON_LABELS = {
+    "silent": "صمت — لا كلام فيها",
+    "audible_untranscribed": "فيها صوت لم يُفرَّغ — راجعها",
+    "refilled": "أُعيد تفريغ جزءٍ منها",
+    "unknown": "السبب غير معروف (لم يُحفظ تحليل الصوت لهذه المهمة)",
+}
+
+
+def _gap_reason(a: float, b: float, transcript_gaps: Optional[list]) -> str:
+    """سبب فجوة طويلة من تحليل الصوت المحفوظ — أو ``unknown``.
+
+    فجوات المحرّك تُقاس من الكلمات وبعتبة أقصر (12 ث)، ففجوة التقرير قد
+    تقابل أكثر من واحدة. أيّ صوتٍ لم يُفرَّغ فيها يغلب، لأنه وحده يعني
+    أن كلامًا ربما ضاع.
+    """
+    overlapping = [g for g in (transcript_gaps or [])
+                   if isinstance(g, dict) and g.get("reason")
+                   and g.get("start", 0.0) < b and g.get("end", 0.0) > a]
+    if not overlapping:
+        return "unknown"
+    reasons = {g["reason"] for g in overlapping}
+    for reason in ("audible_untranscribed", "refilled", "silent"):
+        if reason in reasons:
+            return reason
+    return "unknown"
+
+
+def _confidence(segments: list) -> dict:
+    """ثقة نموذج التفريغ بكلماته — من ``words[].probability`` المحفوظة."""
+    probs = [w.probability for s in segments for w in (getattr(s, "words", None) or [])
+             if getattr(w, "probability", None) is not None]
+    if not probs:
+        return {}
+    low_segments = 0
+    for s in segments:
+        own = [w.probability for w in (getattr(s, "words", None) or [])
+               if getattr(w, "probability", None) is not None]
+        if own and statistics.fmean(own) < 0.6:
+            low_segments += 1
+    return {
+        "mean_word_probability": round(statistics.fmean(probs), 3),
+        "low_confidence_words_pct": round(
+            100.0 * sum(1 for p in probs if p < LOW_WORD_PROBABILITY) / len(probs), 1),
+        "low_confidence_segments": low_segments,
+    }
+
 
 def completeness(segments: Iterable, duration_seconds: Optional[float],
-                 start_offset: float = 0.0) -> tuple[dict, list[str]]:
+                 start_offset: float = 0.0,
+                 transcript_gaps: Optional[list] = None,
+                 keyframe_times: Iterable[float] = ()) -> tuple[dict, list[str]]:
     """يقيس اكتمال التفريغ نفسه — ما لا تراه مقاييس قابلية القراءة.
 
     مستندٌ جميل الفقرات من ربع الكلام يمرّ من كل مقياس شكلي. هذه
@@ -360,6 +417,19 @@ def completeness(segments: Iterable, duration_seconds: Optional[float],
         "long_gaps": [[round(a, 1), round(b, 1)] for a, b in gaps
                       if b - a >= LONG_GAP_SECONDS],
     }
+    # الفجوة بلا سبب تبدو فشلًا في المعالجة حتى لو كانت صمتًا أثناء تسجيل
+    # الدخول. السبب من تحليل الصوت، وعدد اللقطات فيها يقول إن الشاشة
+    # كانت تتحرّك — أي تنقّلٌ بلا شرح، لا تسجيلٌ متوقّف.
+    times = sorted(float(t) for t in keyframe_times)
+    details = []
+    for a, b in info["long_gaps"]:
+        details.append({
+            "start": a, "end": b,
+            "reason": _gap_reason(a, b, transcript_gaps),
+            "screen_changes": sum(1 for t in times if a <= t < b),
+        })
+    info["gap_details"] = details
+    info.update(_confidence(segs))
 
     warnings: list[str] = []
     if coverage < MIN_TRANSCRIPT_COVERAGE_PCT:
@@ -370,11 +440,53 @@ def completeness(segments: Iterable, duration_seconds: Optional[float],
         warnings.append(
             f"words_per_minute: {wpm:.0f} كلمة/دقيقة "
             f"(الطبيعي 100–150) — التفريغ ناقص أو الصوت ضعيف")
-    for a, b in info["long_gaps"]:
+    low_pct = info.get("low_confidence_words_pct")
+    if low_pct is not None and low_pct >= MAX_LOW_CONFIDENCE_WORDS_PCT:
+        warnings.append(
+            f"transcript_confidence: {low_pct:.0f}% من الكلمات بثقة منخفضة — "
+            "راجع التفريغ قبل نشره")
+    for gap in details:
+        a, b = gap["start"], gap["end"]
+        label = GAP_REASON_LABELS.get(gap["reason"], gap["reason"])
+        if gap["screen_changes"]:
+            label += f"، والشاشة تتغيّر فيها ({gap['screen_changes']} لقطة)"
         warnings.append(
             f"transcript_gap: {b - a:.0f} ثانية بلا تفريغ "
-            f"({seconds_label(a)} ← {seconds_label(b)})")
+            f"({seconds_label(a)} ← {seconds_label(b)}) — {label}")
     return info, warnings
+
+
+def provenance(plan: DocumentPlan) -> dict:
+    """أي الأقسام لا يسندها مقطع تفريغ واحد؟
+
+    الصياغة المرئية تُلحق مقاطع القسم كلّها بأوّل كتلة فيه، فخطواته
+    الباقية بلا ``segment_ids`` بحكم الشكل لا لأنها مخترعة — المصدر على
+    مستوى القسم. أمّا قسمٌ لا تحمل أيُّ كتلة فيه مقطعًا فمصدره الشاشة
+    وحدها (إن كان فيه شكل) أو النموذج وحده — وهذا ما يحتاج عين المراجع.
+    """
+    screen_only: list[str] = []
+    model_only: list[str] = []
+    steps = notes = steps_with_ids = 0
+    for section in plan.sections:
+        for block in section.blocks:
+            if block.kind == "step":
+                steps += 1
+                steps_with_ids += bool(block.segment_ids)
+            elif block.kind == "note":
+                notes += 1
+        if any(block.segment_ids for block in section.blocks):
+            continue
+        if any(block.image_id is not None for block in section.blocks):
+            screen_only.append(section.title)
+        else:
+            model_only.append(section.title)
+    return {
+        "step_blocks": steps,
+        "note_blocks": notes,
+        "step_blocks_with_segment_ids": steps_with_ids,
+        "sections_screen_only": screen_only,
+        "sections_model_only": model_only,
+    }
 
 
 #: ذيلٌ بلا لقطة في المستند أطول من هذا (ومن ربع المدّة) يُحذَّر منه.
@@ -499,7 +611,8 @@ def evaluate(plan: DocumentPlan,
              keyframes: Iterable[KeyframeMetadata] = (),
              segments: Optional[Iterable] = None,
              duration_seconds: Optional[float] = None,
-             start_offset: float = 0.0) -> QualityReport:
+             start_offset: float = 0.0,
+             transcript_gaps: Optional[list] = None) -> QualityReport:
     """يقيس قابلية قراءة الخطة، ويفصل الخلل البنيوي عن الدرجة."""
     text_blocks: list = []
     figure_blocks: list = []
@@ -569,7 +682,9 @@ def evaluate(plan: DocumentPlan,
     if segments is not None:
         segments_list = list(segments)
         completeness_info, completeness_warnings = completeness(
-            segments_list, duration_seconds, start_offset)
+            segments_list, duration_seconds, start_offset,
+            transcript_gaps=transcript_gaps,
+            keyframe_times=[k.timestamp for k in keyframes])
         warnings.extend(completeness_warnings)
         if plan.generated_by.startswith("ai:"):
             unsupported = unsupported_tokens(plan, list(segments_list),
@@ -581,6 +696,19 @@ def evaluate(plan: DocumentPlan,
                     "unsupported_tokens: في المستند ما لا يرد في التفريغ ولا "
                     "الشاشة — تحقّق منه: " + "، ".join(flagged[:8]))
 
+    sources = provenance(plan)
+    if plan.generated_by.startswith("ai:"):
+        if sources["sections_model_only"]:
+            warnings.append(
+                f"provenance: {len(sources['sections_model_only'])} قسم بلا تفريغ "
+                "ولا لقطة يسندانه (استنتاج النموذج) — راجعه: "
+                + "، ".join(f"«{t}»" for t in sources["sections_model_only"][:5]))
+        if sources["sections_screen_only"]:
+            warnings.append(
+                f"provenance: {len(sources['sections_screen_only'])} قسم مصدره "
+                "الشاشة وحدها بلا كلام يسنده: "
+                + "، ".join(f"«{t}»" for t in sources["sections_screen_only"][:5]))
+
     keyframe_list = list(keyframes)
     span_info, span_warnings = content_span(
         plan, keyframe_list, list(segments) if segments is not None else [],
@@ -588,7 +716,13 @@ def evaluate(plan: DocumentPlan,
     completeness_info.update(span_info)
     warnings.extend(span_warnings)
     diagnostics = {
+        # ``text_blocks`` = الفقرات والقوائم التي تقيسها مقاييس الفقرة. الخطوات
+        # والملاحظات خارجها عمدًا، فتُعدّ هنا صراحةً — كان غيابها يقرأ «12
+        # كتلة نصّية مقابل 77 صورة» في مستندٍ فيه 135 خطوة.
         "text_blocks": len(text_blocks),
+        **{k: (len(v) if isinstance(v, list) else v) for k, v in sources.items()},
+        "sections_without_source": (sources["sections_model_only"]
+                                    + sources["sections_screen_only"]),
         "figure_blocks": len(figure_blocks),
         "sections": len(plan.sections),
         "empty_sections": empty_sections,

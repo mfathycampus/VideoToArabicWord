@@ -287,6 +287,14 @@ class StudyPack(BaseModel):
     #: ما أسقطته طبقة التحقّق وسببه. يُعرض في السجلّ وفي دليل المذاكرة.
     #: إخفاؤه يجعل حزمةً نصفُها مرفوض تبدو حزمةً صغيرة بلا سبب ظاهر.
     dropped: List[str] = Field(default_factory=list)
+    #: دفعاتٌ تعذّر توليدها عند المزوّد (ردّ مقطوع، مهلة، رفض) وسببها.
+    #: تختلف عن ``dropped``: هناك رفض التحقّقُ ما كُتب، وهنا لم يُكتب شيء.
+    #: بدونها تبدو حزمةٌ لم تُطلب أسئلتها أصلًا كأنها «لا أسئلة موثّقة».
+    failures: List[str] = Field(default_factory=list)
+
+    def has_learning_items(self) -> bool:
+        """فيها ما يُذاكَر — لا مسرد مصطلحات وحده."""
+        return bool(self.objectives or self.questions or self.flashcards)
 
     def is_empty(self) -> bool:
         return not (self.objectives or self.glossary

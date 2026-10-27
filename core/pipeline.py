@@ -444,6 +444,7 @@ class VideoToDocPipeline(MediaStagesMixin, OutputsMixin):
             return
         try:
             audit.job_dir = str(job.job_dir)
+            audit.stage_seconds = dict(job.state.stage_seconds)
             audit.outputs = sorted(
                 path.name for path in job.job_dir.iterdir() if path.is_file())
             metadata_path = job.job_dir / "metadata.json"
@@ -622,7 +623,8 @@ class VideoToDocPipeline(MediaStagesMixin, OutputsMixin):
             quality = evaluate(plan, keyframes,
                                segments=transcript.segments,
                                duration_seconds=max(0.0, clip_end - clip_start),
-                               start_offset=clip_start)
+                               start_offset=clip_start,
+                               transcript_gaps=(transcript.engine or {}).get("gaps"))
             # البوابة تفشل على الخلل البنيوي وحده. درجة قابلية القراءة
             # تُسجَّل وتُتابَع ولا تُفرَض بعد: المخرج الحالي ضعيف فيها
             # بحكم تصميمه، ففرض عتبة اليوم يُسقط كل مهمة عقابًا على عيب

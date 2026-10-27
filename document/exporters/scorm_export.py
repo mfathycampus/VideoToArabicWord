@@ -786,7 +786,8 @@ def export(ctx: ExportContext) -> Optional[Path]:
             (staging / "study.html").write_text(
                 render_study_html(pack, ctx.plan.subtitle, ctx.plan),
                 encoding="utf-8")
-            pages.append(("دليل المذاكرة", "study.html"))
+            pages.append(("دليل المذاكرة" if pack.has_learning_items()
+                          else "مسرد المصطلحات", "study.html"))
 
         mapping = _prepare_media(ctx, staging)
         chapters = _render_chapters(ctx, mapping)

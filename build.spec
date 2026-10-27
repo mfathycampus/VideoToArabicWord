@@ -56,6 +56,26 @@ _tesseract = PROJECT / "bin" / "tesseract"
 if _tesseract.is_dir():
     datas.append((str(_tesseract), "tesseract"))
 
+# معرّف البناء (``utils/build_info``): رأس git وقت البناء، يُشحن ملفًّا
+# فيعرف ``audit.jsonl`` أيّ نسخةٍ من الكود أنتجت كل مخرج.
+try:
+    import subprocess as _sp
+    _build = _sp.run(["git", "rev-parse", "--short", "HEAD"], cwd=PROJECT,
+                     capture_output=True, text=True, timeout=10).stdout.strip()
+    if _build:
+        # ‏``--ignore-cr-at-eol``: نسخة ويندوز تُظهر كل ملف معدَّلًا بنهايات
+        # الأسطر وحدها، فتصير كل حزمة «dirty» بلا تعديل حقيقي.
+        _dirty = _sp.run(["git", "diff", "--ignore-cr-at-eol", "--name-only", "HEAD"],
+                         cwd=PROJECT, capture_output=True, text=True,
+                         timeout=20).stdout.strip()
+        _build_file = PROJECT / "build" / "BUILD_ID"
+        _build_file.parent.mkdir(parents=True, exist_ok=True)
+        _build_file.write_text(_build + ("-dirty" if _dirty else ""),
+                               encoding="utf-8")
+        datas.append((str(_build_file), "."))
+except Exception:
+    pass  # بلا git: يُسجَّل «unknown» ولا يتوقّف البناء
+
 # أيقونة الملف التنفيذي. ‏PyInstaller على ويندوز يقبل ``.ico`` فقط —
 # تمرير PNG يُتجاهَل بصمت، فيخرج التطبيق بأيقونة Python الافتراضية، وهي
 # أول ما يراه المستخدم في قائمة ابدأ. تُولَّد بـ ``tools/make_icon.py``
