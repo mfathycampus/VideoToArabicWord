@@ -143,6 +143,12 @@ class KeyframeMetadata(BaseModel):
     #: مرّت اللقطة بإخفاء الأسماء (``video/redact``) — وإن لم يُعثر فيها
     #: على اسم. شرطٌ لإرسالها إلى مزوّد سحابي حين يُطلب الإخفاء.
     redacted: bool = False
+    #: ما طُمس فيها حسب النوع: ``{"name": 3, "id_row": 6, "url": 1}``.
+    #: ``redacted: true`` وحده لا يقول للمراجع ماذا حُجب ولا كم.
+    redactions: Dict[str, int] = Field(default_factory=dict)
+    #: محتوى حساس في اللقطة كلّها (``video/sensitive.classify_screen``):
+    #: ``["login"]`` لشاشة دخول. تُحجب عن السحابة والمستند افتراضيًّا.
+    sensitive: List[str] = Field(default_factory=list)
 
 
 # ملاحظة: ``TimelineMatchResult`` من الإصدار 1.1 حُذف. حلّ محلّه

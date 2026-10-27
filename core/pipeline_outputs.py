@@ -282,6 +282,26 @@ class OutputsMixin:
             return stored == "timeline"
         return stored.startswith(expected)
 
+    def _withhold_sensitive(self, keyframes):
+        """يُسقط شاشات الدخول قبل أي إرسال أو تخطيط — ويقول ذلك للمستخدم.
+
+        موضعٌ واحد يمرّ به كل مسار: المؤلّف المرئي والصياغة النصّية والمخطّط
+        الزمني. فلا تُرسل الصورة، ولا تدخل المستند، ولا تُنسخ إلى SCORM/HTML.
+        """
+        if not getattr(self.config.document, "withhold_sensitive_screens", True):
+            return keyframes
+        withheld = [k for k in keyframes if getattr(k, "sensitive", None)]
+        if not withheld:
+            return keyframes
+        stamps = "، ".join(
+            f"{int(k.timestamp) // 60}:{int(k.timestamp) % 60:02d}" for k in withheld[:8])
+        self._plan_notes.append(
+            f"privacy: حُجبت {len(withheld)} لقطة شاشة دخول عن السحابة والمستند "
+            f"({stamps}) — تبقى في مجلد المهمة؛ أعدها بتعطيل "
+            "document.withhold_sensitive_screens إن احتجتها")
+        logger.info(f"حُجبت {len(withheld)} لقطة حساسة: {stamps}")
+        return [k for k in keyframes if not getattr(k, "sensitive", None)]
+
     def _build_plan(self, transcript, keyframes, video_path, metadata, emit,
                     images_dir=None) -> DocumentPlan:
         """يبني بنية الوثيقة — مرئيًّا، أو بإعادة صياغة، وإلا زمنيًا.
@@ -306,6 +326,7 @@ class OutputsMixin:
         #: الجودة. كان سقوط الوضع المرئي و14 دفعة خامًا يمرّان سطرًا في
         #: السجلّ وحده، والمستند يحمل وسم «ai:».
         self._plan_notes = []
+        keyframes = self._withhold_sensitive(keyframes)
         try:
             from ai.providers import set_response_dump_dir
 
