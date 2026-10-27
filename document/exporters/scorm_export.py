@@ -96,6 +96,8 @@ ul.bullets{margin:0 0 14px;padding-inline-start:22px}
 .step .n{flex:none;width:30px;height:30px;border-radius:50%;background:var(--navy);
   color:#fff;font-weight:700;font-size:.9rem;display:grid;place-items:center}
 .step p{margin:2px 0 0}
+.review{display:inline-block;margin-inline-start:6px;padding:0 6px;border-radius:6px;
+  border:1px dashed var(--muted);color:var(--muted);font-size:.78rem;font-weight:400}
 .note{margin:0 0 14px;padding:10px 14px;border-inline-start:5px solid var(--accent);
   background:var(--accent-soft);color:var(--accent-ink);border-radius:10px}
 blockquote{margin:0 0 14px;padding:10px 16px;border-inline-start:4px solid var(--brand);

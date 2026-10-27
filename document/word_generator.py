@@ -309,10 +309,12 @@ class DocumentGenerator:
             for block in section.blocks:
                 if block.kind == "step":
                     step_number += 1
-                    self._add_step(document, block.text, step_number)
+                    self._add_step(document, block.text, step_number,
+                                   inferred=block.source == "inferred")
                     continue
                 if block.kind == "note":
-                    self._add_note(document, block.text)
+                    self._add_note(document, block.text,
+                                   inferred=block.source == "inferred")
                     continue
                 if block.kind == "figure":
                     path = images_dir / (block.image_filename or "")
@@ -342,7 +344,18 @@ class DocumentGenerator:
                                      self.theme.font, self.theme.body_pt)
         return missing
 
-    def _add_step(self, document, text: str, number: int) -> None:
+    def _review_mark(self, paragraph) -> None:
+        """وسمٌ خافت بعد الكتلة التي لا يسندها كلامٌ ولا لقطة.
+
+        المؤلّف المرئي يستنتج أحيانًا خطوةً تربط ما قبلها بما بعدها. قد تكون
+        صحيحة، لكن المراجع يجب أن يعرف أنها لم تُقل ولم تُرَ — انظر
+        ``DocumentBlock.source``.
+        """
+        style_arabic_run(paragraph.add_run("  (مقترحة — راجعها)"), self.theme.font,
+                         max(8.0, self.theme.body_pt - 2), color=self.theme.muted)
+
+    def _add_step(self, document, text: str, number: int,
+                  inferred: bool = False) -> None:
         """خطوة إجرائية: رقمٌ بلون الهوية ثم الفعل، بمسافة معلّقة.
 
         الخطوات المرقّمة هي ما يجعل الدليل دليلًا: القارئ ينفّذ ويعود إلى
@@ -359,8 +372,10 @@ class DocumentGenerator:
                          self.theme.body_pt, bold=True,
                          color=self.theme.accent_soft)
         add_mixed_text(paragraph, text, self.theme.font, self.theme.body_pt)
+        if inferred:
+            self._review_mark(paragraph)
 
-    def _add_note(self, document, text: str) -> None:
+    def _add_note(self, document, text: str, inferred: bool = False) -> None:
         """ملاحظة أو تنبيه في إطارٍ مظلَّل — تُرى ولا تختلط بالخطوات."""
         paragraph = document.add_paragraph(style=BODY)
         set_paragraph_rtl(paragraph)
@@ -384,6 +399,8 @@ class DocumentGenerator:
                          self.theme.body_pt, bold=True,
                          color=self.theme.accent_soft)
         add_mixed_text(paragraph, text, self.theme.font, self.theme.body_pt)
+        if inferred:
+            self._review_mark(paragraph)
 
     def _add_figure(self, document, path: Path, block, number: int) -> None:
         """الصورة + تسمية واحدة تحمل الرقم والتوقيت.

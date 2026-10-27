@@ -467,8 +467,12 @@ def provenance(plan: DocumentPlan) -> dict:
     screen_only: list[str] = []
     model_only: list[str] = []
     steps = notes = steps_with_ids = 0
+    #: مصدر كل خطوة وملاحظة كما تحقّق منه المؤلّف المرئي (``block.source``).
+    by_source: Counter = Counter()
     for section in plan.sections:
         for block in section.blocks:
+            if block.kind in ("step", "note") and getattr(block, "source", ""):
+                by_source[block.source] += 1
             if block.kind == "step":
                 steps += 1
                 steps_with_ids += bool(block.segment_ids)
@@ -486,6 +490,7 @@ def provenance(plan: DocumentPlan) -> dict:
         "step_blocks_with_segment_ids": steps_with_ids,
         "sections_screen_only": screen_only,
         "sections_model_only": model_only,
+        "steps_by_source": dict(by_source),
     }
 
 
@@ -703,6 +708,12 @@ def evaluate(plan: DocumentPlan,
                 f"provenance: {len(sources['sections_model_only'])} قسم بلا تفريغ "
                 "ولا لقطة يسندانه (استنتاج النموذج) — راجعه: "
                 + "، ".join(f"«{t}»" for t in sources["sections_model_only"][:5]))
+        inferred = sources["steps_by_source"].get("inferred", 0)
+        cited = sum(sources["steps_by_source"].values())
+        if inferred:
+            warnings.append(
+                f"provenance: {inferred} من {cited} خطوة وملاحظة لا يسندها كلامٌ "
+                "ولا لقطة — موسومة «مقترحة — راجعها» في المستند")
         if sources["sections_screen_only"]:
             warnings.append(
                 f"provenance: {len(sources['sections_screen_only'])} قسم مصدره "
@@ -721,6 +732,11 @@ def evaluate(plan: DocumentPlan,
         # كتلة نصّية مقابل 77 صورة» في مستندٍ فيه 135 خطوة.
         "text_blocks": len(text_blocks),
         **{k: (len(v) if isinstance(v, list) else v) for k, v in sources.items()},
+        # نسبة الخطوات والملاحظات ذات المصدر — ``None`` حين لا مصادر مسجّلة
+        # (المخطّط الزمني والصياغة النصّية، وخطط ما قبل 1.19.0).
+        "sourced_steps_pct": (round(100.0 * (1 - sources["steps_by_source"].get(
+            "inferred", 0) / sum(sources["steps_by_source"].values())), 1)
+            if sources["steps_by_source"] else None),
         "sections_without_source": (sources["sections_model_only"]
                                     + sources["sections_screen_only"]),
         "figure_blocks": len(figure_blocks),

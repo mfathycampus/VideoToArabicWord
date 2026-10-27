@@ -183,6 +183,15 @@ class DocumentBlock(BaseModel):
     # Provenance: نطاق المصدر الذي بُنيت منه الكتلة، إن أمكن.
     source_start: Optional[float] = None
     source_end: Optional[float] = None
+    #: مصدر الكتلة النصّية كما استشهد به المؤلّف المرئي وتحقّق منه البرنامج:
+    #: ``transcript`` (قيلت) · ``screen`` (تُرى في لقطة) · ``both`` ·
+    #: ``inferred`` (لا هذا ولا ذاك — تُعرض «مقترحة — راجعها») · ``""`` غير
+    #: معروف (المخطّط الزمني والصياغة النصّية: مصدرهما ``segment_ids``).
+    source: str = ""
+    #: أدلّة الكتلة — منفصلة عن ``segment_ids`` لأن ADR-010 يفرض ورود كل
+    #: مقطع مرّة واحدة في الخطة، وخطوتان قد تستندان إلى المقطع نفسه.
+    evidence_segments: List[int] = Field(default_factory=list)
+    evidence_images: List[int] = Field(default_factory=list)
 
 
 class DocumentSection(BaseModel):
