@@ -437,8 +437,9 @@ def test_low_word_confidence_is_reported_and_warned():
 
 def test_steps_and_notes_are_counted_and_unsourced_sections_named():
     """رُصد: «12 كتلة نصّية مقابل 77 صورة» في مستندٍ فيه 135 خطوة."""
-    step = lambda ids: DocumentBlock(kind="step", text="اضغط «حفظ».",
-                                     segment_ids=ids)
+    def step(ids):
+        return DocumentBlock(kind="step", text="اضغط «حفظ».", segment_ids=ids)
+
     note = DocumentBlock(kind="note", text="تنبيه مهم.")
     plan = _plan([
         DocumentSection(title="إنشاء اختبار", blocks=[step([1]), step([]), note]),

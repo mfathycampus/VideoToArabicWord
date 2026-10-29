@@ -249,9 +249,11 @@ class MediaStagesMixin:
             if getattr(self.config.document, "anonymize_names", False):
                 from video.ocr import extract_text_and_words
                 from video.redact import blur_boxes, redact_keyframe
-                from video.sensitive import (classify_screen,
-                                             find_sensitive_boxes,
-                                             scrub_screen_text)
+                from video.sensitive import (
+                    classify_screen,
+                    find_sensitive_boxes,
+                    scrub_screen_text,
+                )
 
                 text, words = extract_text_and_words(path)
                 # التصنيف قبل الطمس: «Password» و«Sign in» قد تُحذف من النصّ.
