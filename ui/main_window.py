@@ -1160,6 +1160,21 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
         self.update_button.setEnabled(True)
         self.update_button.setText("تحقّق من التحديثات")
 
+    def _cloud_study_label(self):
+        """اسم مزوّد الحزمة التعليمية إن كانت مفعّلة وسحابية — وإلا ``None``."""
+        study = getattr(self.config, "study", None)
+        if study is None or not getattr(study, "enabled", False):
+            return None
+        try:
+            from ai.providers import build_provider
+
+            provider = build_provider(study.provider, study.model, study.base_url,
+                                      study.api_key_env, study.api_key,
+                                      getattr(study, "workspace_id", ""))
+            return None if provider.info.is_local else provider.info.label_ar
+        except Exception:                             # noqa: BLE001
+            return None if study.provider == "ollama" else study.provider
+
     def _refresh_privacy_header(self) -> None:
         """الوعد في الشريط العلوي يطابق ما يحدث فعلًا.
 
@@ -1574,12 +1589,14 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
                     "ستتم المعالجة الآن بالنص الخام دون إعادة صياغة.")
             elif (not provider.info.is_local
                   and self.config.rewrite.provider != "maeen_managed"):
+                from utils.egress_notice import describe_egress
+
+                # النصّ من الإعداد الفعلي: كان ثابتًا يقول «الصور لا تُرسل
+                # إطلاقًا» والوضع المرئي يرسلها — انظر utils/egress_notice.
                 answer = QMessageBox.question(
                     self, "تأكيد الإرسال إلى خدمة خارجية",
-                    f"سيُرسل نص التفريغ كاملًا إلى "
-                    f"«{provider.info.label_ar}» لإعادة صياغته.\n\n"
-                    "الفيديو والصوت والصور لا تُرسل إطلاقًا.\n"
-                    "النص الخام يبقى محفوظًا على جهازك.\n\nهل توافق؟",
+                    describe_egress(self.config, provider.info.label_ar,
+                                    self._cloud_study_label()),
                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                     QMessageBox.StandardButton.No)
                 if answer != QMessageBox.StandardButton.Yes:

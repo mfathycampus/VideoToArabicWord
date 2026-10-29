@@ -524,3 +524,69 @@ def test_one_word_answers_and_true_false_are_not_judged_by_overlap():
         QuizQuestion(kind="true_false", question="TCP يتخلّى عن الضمان لأجل السرعة.",
                      answer="خطأ", segment_ids=[3])])
     assert len(verify(pack, _transcript()).questions) == 2
+
+
+# ---------------------------------------------------------------------
+# 1.17.0 — الردّ المقطوع لا يوقف الحزمة، والناتج يُسمّى بما فيه
+# ---------------------------------------------------------------------
+from ai.providers import ResponseTruncatedError  # noqa: E402
+
+
+class _CapProvider(FakeProvider):
+    def __init__(self, replies):
+        super().__init__(replies)
+        self.caps = []
+
+    def complete(self, system_prompt, user_prompt, max_tokens=2048, timeout=180):
+        self.caps.append(max_tokens)
+        return super().complete(system_prompt, user_prompt, max_tokens, timeout)
+
+
+def test_a_truncated_reply_is_retried_with_a_higher_cap():
+    """رُصد (1.15.1): قطعٌ عند 2048 رمزًا أوقف 10 دفعات من 11 ⇒ صفر أسئلة."""
+    provider = _CapProvider([ResponseTruncatedError("قُطع"), _good_reply()])
+    pack = StudyBuilder(provider, StudyConfig(batch_chars=10_000)).build(
+        _plan(), _transcript())
+    assert provider.caps == [2048, 4096]
+    assert pack.questions and not pack.failures
+
+
+def test_a_truncated_batch_does_not_stop_the_next_batches():
+    cut = ResponseTruncatedError("قُطع")
+    provider = FakeProvider([cut, cut, cut, cut, _good_reply()])
+    pack = StudyBuilder(provider, StudyConfig(batch_chars=60)).build(
+        _plan(), _transcript())
+    assert pack.questions, "الدفعات بعد المقطوعة يجب أن تُطلب"
+    assert any("قُطع" in f for f in pack.failures)
+
+
+def test_a_still_truncated_batch_is_split_in_half():
+    cut = ResponseTruncatedError("قُطع")
+    provider = _CapProvider([cut, cut, _good_reply(), _good_reply()])
+    pack = StudyBuilder(provider, StudyConfig(batch_chars=10_000)).build(
+        _plan(), _transcript())
+    assert provider.calls == 4
+    assert pack.questions and not pack.failures
+
+
+def test_a_glossary_only_pack_is_not_called_a_study_guide():
+    from document.exporters.study_export import render_study_html
+
+    pack = StudyPack(title="دليل", generated_by="ai:anthropic",
+                     glossary=[GlossaryTerm(term="Schoology", origin="screen")],
+                     failures=["الدفعة 1/11: قُطع ردّ Claude عند سقف الرموز"])
+    html = render_study_html(pack, "", _plan())
+    assert "<title>مسرد المصطلحات" in html
+    assert "هذا مسرد مصطلحات لا دليل مذاكرة" in html
+    assert "قُطع ردّ Claude" in html
+    assert "دليل المذاكرة</span>" not in html
+
+
+def test_a_real_study_pack_keeps_its_name():
+    from document.exporters.study_export import render_study_html
+
+    pack = StudyBuilder(FakeProvider([_good_reply()]),
+                        StudyConfig(batch_chars=10_000)).build(
+        _plan(), _transcript())
+    html = render_study_html(pack, "", _plan())
+    assert "<title>دليل المذاكرة" in html and 'class="notice"' not in html

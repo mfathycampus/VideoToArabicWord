@@ -107,6 +107,8 @@ ul.bullets{margin:0 0 14px; padding-inline-start:22px}
   background:var(--brand); color:#fff; font-weight:700; font-size:.9rem;
   display:flex; align-items:center; justify-content:center}
 .step p{margin:3px 0 0}
+.review{display:inline-block; margin-inline-start:6px; padding:0 6px; border-radius:6px;
+  border:1px dashed var(--muted); color:var(--muted); font-size:.78rem; font-weight:400}
 .note{margin:0 0 14px; padding:10px 14px; border-inline-start:4px solid var(--brand);
   background:var(--brand-soft); border-radius:0 8px 8px 0; font-size:.95rem}
 blockquote{margin:0 0 14px; padding:10px 16px; border-inline-start:3px solid var(--brand);
@@ -305,6 +307,14 @@ def _stamp_button(timestamp: Optional[float]) -> str:
             f'{_esc(seconds_to_display(timestamp))}</button>')
 
 
+def _review_mark(block: DocumentBlock) -> str:
+    """وسم الكتلة التي لا يسندها كلامٌ ولا لقطة — انظر ``DocumentBlock.source``."""
+    if getattr(block, "source", "") != "inferred":
+        return ""
+    return ('<span class="review" title="لم تُقل في التسجيل ولم تظهر في لقطة — '
+            'استنتاجٌ يحتاج مراجعة">مقترحة — راجعها</span>')
+
+
 def _render_block(block: DocumentBlock, images_dir: Path,
                   embed: bool, step_number: int = 0) -> str:
     if block.kind == "paragraph":
@@ -334,14 +344,14 @@ def _render_block(block: DocumentBlock, images_dir: Path,
         if not text:
             return ""
         return (f'<div class="step"><span class="n">{step_number}</span>'
-                f'<p data-searchable>{_esc(text)}</p></div>')
+                f'<p data-searchable>{_esc(text)}{_review_mark(block)}</p></div>')
 
     if block.kind == "note":
         text = (block.text or "").strip()
         if not text:
             return ""
         return (f'<div class="note" data-searchable><strong>ملاحظة: </strong>'
-                f'{_esc(text)}</div>')
+                f'{_esc(text)}{_review_mark(block)}</div>')
 
     # نوعٌ لا يعرفه المُصيِّر يُعرض فقرةً: لا يضيع نصّ.
     text = (block.text or "").strip()

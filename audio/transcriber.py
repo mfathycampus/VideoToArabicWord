@@ -262,6 +262,8 @@ class TranscriptionEngine:
         # يرفعه الـ pipeline فقط بعد إذن صريح من المستخدم.
         self.allow_download = False
         self._cached: Optional[tuple[str, str, WhisperModel]] = None
+        #: أسباب فجوات آخر تفريغ — يملؤها ``_refill_gaps``.
+        self._gap_report: list[dict] = []
         if self.config.download_root is None:
             from audio.model_manager import default_cache_root
             self.config = self.config.model_copy(
@@ -553,6 +555,10 @@ class TranscriptionEngine:
                                           end=end - offset, text_raw="",
                                           text_clean=""))
         gaps = self.find_gaps(local, 0.0, duration, cfg.gap_refill_min_seconds)
+        #: سبب كل فجوة يُحفظ في ``engine["gaps"]`` فيقرؤه تقرير الجودة. كان
+        #: يُكتب في السجلّ وحده («3 فيها صوت · 3 صامتة»)، فيرى المستخدم في
+        #: quality.json «47 ثانية بلا تفريغ» ولا يعرف أهي صمتٌ أم كلامٌ ضاع.
+        report = self._gap_report
         if not gaps:
             logger.info(f"سدّ الفجوات: لا فجوة ≥ {cfg.gap_refill_min_seconds:.0f} ث "
                         f"(مدّة {duration:.0f} ث، {len(local)} مقطعًا).")
@@ -580,10 +586,16 @@ class TranscriptionEngine:
                 return added
             rms = float(np.sqrt(np.mean(np.square(samples))))
             level = 20.0 * np.log10(max(rms, 1e-9))
+            entry = {"start": round(gap_start + offset, 1),
+                     "end": round(gap_end + offset, 1),
+                     "level_dbfs": round(level, 1)}
+            report.append(entry)
             if level < cfg.gap_refill_min_rms_dbfs:
                 skipped += 1
+                entry["reason"] = "silent"
                 continue
             audible += 1
+            added_before = len(added)
             if progress_callback:
                 progress_callback(
                     min(1.0, gap_end / duration) if duration else 1.0,
@@ -608,6 +620,10 @@ class TranscriptionEngine:
                 added.append(AudioSegment(id=0, start=start, end=end,
                                           text_raw=raw, text_clean=clean,
                                           words=piece_words))
+            # صوتٌ أُعيد تفريغه فأضاف كلامًا، أو صوتٌ لم يُخرج شيئًا موثوقًا
+            # (موسيقى، ضجيج، كلام غير مفهوم) — الثاني هو ما يستحقّ المراجعة.
+            entry["reason"] = ("refilled" if len(added) > added_before
+                               else "audible_untranscribed")
         covered = sum(sg.end - sg.start for sg in added)
         logger.info(
             f"سدّ الفجوات: {len(gaps)} فجوة ≥ {cfg.gap_refill_min_seconds:.0f} ث · "
@@ -733,6 +749,7 @@ class TranscriptionEngine:
                         f"({(seg.end + offset) / 60:.0f} من "
                         f"{total / 60:.0f} دقيقة){eta}")
 
+            self._gap_report = []
             if not (cfg.vad_filter and cfg.gap_refill):
                 logger.info(f"سدّ الفجوات معطَّل (vad_filter={cfg.vad_filter}، "
                             f"gap_refill={cfg.gap_refill}).")
@@ -772,6 +789,7 @@ class TranscriptionEngine:
                     "device": device,
                     "compute_type": compute_type,
                     "fallback_used": fallback_used,
+                    "gaps": list(self._gap_report),
                 },
             )
         finally:

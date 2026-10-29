@@ -372,3 +372,119 @@ def test_repeated_section_titles_count_as_defects():
                  + [DocumentSection(title="إنهاء المتابعة",
                                     blocks=[_para(SENTENCE * 3, [4])])])
     assert evaluate(plan).get("section_titling") == 25.0
+
+
+# ---------------------------------------------------------------------
+# 1.17.0 — سبب الفجوة، وثقة التفريغ، ومصدر الأقسام
+# ---------------------------------------------------------------------
+class _Word:
+    def __init__(self, probability):
+        self.probability = probability
+
+
+class _WSeg(_Seg):
+    def __init__(self, start, end, text, probs):
+        super().__init__(start, end, text)
+        self.words = [_Word(p) for p in probs]
+
+
+def test_gap_warning_names_its_reason_and_the_screen_activity():
+    """رُصد (1.15.1): «47 ثانية بلا تفريغ» بلا سبب تبدو فشلًا في المعالجة."""
+    from document.quality import completeness
+
+    segments = [_Seg(0, 60, "كلمة " * 120), _Seg(110, 200, "كلمة " * 180)]
+    info, warnings = completeness(
+        segments, 200.0,
+        transcript_gaps=[{"start": 62.0, "end": 108.0, "level_dbfs": -60.0,
+                          "reason": "silent"}],
+        keyframe_times=[70.0, 90.0, 150.0])
+    gap = info["gap_details"][0]
+    assert gap["reason"] == "silent" and gap["screen_changes"] == 2
+    line = next(w for w in warnings if w.startswith("transcript_gap"))
+    assert "1:00 ← 1:50" in line and "صمت" in line and "2 لقطة" in line
+
+
+def test_audible_untranscribed_wins_over_silence_in_the_same_gap():
+    from document.quality import completeness
+
+    info, warnings = completeness(
+        [_Seg(0, 10, "كلمة " * 20), _Seg(100, 110, "كلمة " * 20)], 110.0,
+        transcript_gaps=[{"start": 10, "end": 40, "reason": "silent"},
+                         {"start": 50, "end": 99, "reason": "audible_untranscribed"}])
+    assert info["gap_details"][0]["reason"] == "audible_untranscribed"
+    assert any("فيها صوت لم يُفرَّغ" in w for w in warnings)
+
+
+def test_gap_without_saved_audio_analysis_says_so():
+    from document.quality import completeness
+
+    info, warnings = completeness(
+        [_Seg(0, 10, "كلمة " * 20), _Seg(100, 110, "كلمة " * 20)], 110.0)
+    assert info["gap_details"][0]["reason"] == "unknown"
+    assert any("السبب غير معروف" in w for w in warnings)
+
+
+def test_low_word_confidence_is_reported_and_warned():
+    from document.quality import completeness
+
+    segments = [_WSeg(t, t + 9.5, "كلمة " * 20, [0.3] * 10 + [0.9] * 10)
+                for t in range(0, 300, 10)]
+    info, warnings = completeness(segments, 300.0)
+    assert info["low_confidence_words_pct"] == pytest.approx(50.0)
+    assert info["mean_word_probability"] == pytest.approx(0.6)
+    assert any(w.startswith("transcript_confidence") for w in warnings)
+
+
+def test_steps_and_notes_are_counted_and_unsourced_sections_named():
+    """رُصد: «12 كتلة نصّية مقابل 77 صورة» في مستندٍ فيه 135 خطوة."""
+    def step(ids):
+        return DocumentBlock(kind="step", text="اضغط «حفظ».", segment_ids=ids)
+
+    note = DocumentBlock(kind="note", text="تنبيه مهم.")
+    plan = _plan([
+        DocumentSection(title="إنشاء اختبار", blocks=[step([1]), step([]), note]),
+        DocumentSection(title="ضبط الألوان", blocks=[step([]), _figure(1, "لوحة الألوان")]),
+        DocumentSection(title="تعديل الدرس", blocks=[step([]), note]),
+    ], generated_by="ai:anthropic/test")
+    report = evaluate(plan, segments=[_Seg(0, 10, "كلمة " * 20)],
+                      duration_seconds=10.0)
+    d = report.diagnostics
+    assert (d["step_blocks"], d["note_blocks"], d["step_blocks_with_segment_ids"]) == (4, 2, 1)
+    assert d["sections_without_source"] == ["تعديل الدرس", "ضبط الألوان"]
+    assert any("استنتاج النموذج" in w and "«تعديل الدرس»" in w for w in report.warnings)
+    assert any("الشاشة وحدها" in w and "«ضبط الألوان»" in w for w in report.warnings)
+
+
+def test_audit_line_carries_build_and_stage_times(monkeypatch):
+    """1.17.0: رقم الإصدار وحده لا يفرّق بين بناءين، ولا يقول أين ذهب الوقت."""
+    from utils import audit, build_info
+
+    monkeypatch.setenv("MOEEN_BUILD_ID", "abc1234")
+    build_info.build_id.cache_clear()
+    try:
+        line = audit.AuditRecord(stage_seconds={"transcription": 4516.0}).as_line()
+    finally:
+        build_info.build_id.cache_clear()
+    assert line["build"] == "abc1234"
+    assert line["stage_seconds"] == {"transcription": 4516.0}
+
+
+def test_build_id_from_source_reads_git_head_without_running_git(tmp_path):
+    from utils.build_info import _git_head
+
+    git = tmp_path / ".git"
+    (git / "refs" / "heads").mkdir(parents=True)
+    (git / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    (git / "refs" / "heads" / "main").write_text("d0f2e1c9" * 5 + "\n", encoding="utf-8")
+    assert _git_head(tmp_path) == "d0f2e1c"
+
+
+def test_job_state_records_how_long_each_stage_took(tmp_path):
+    from core.job_state import JobManager, Stage
+
+    job = JobManager.create_or_resume(tmp_path / "job", tmp_path / "v.mp4")
+    job.begin_stage(Stage.METADATA)
+    job.complete_stage(Stage.METADATA)
+    assert "metadata" in job.state.stage_seconds
+    reloaded = JobManager.create_or_resume(tmp_path / "job", tmp_path / "v.mp4")
+    assert "metadata" in reloaded.state.stage_seconds

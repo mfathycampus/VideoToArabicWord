@@ -89,6 +89,14 @@ SYSTEM_PROMPT = """أنت كاتب أدلّة تقنية ومحرّر عربي �
   عرض الصورة وارتفاعها. يُقصّ المستطيل ويُكبَّر في المستند فيُقرأ ما فيه. لا تجعله أصغر
   من ثلث العرض أو ربع الارتفاع. احذفه حين تهمّ الشاشة كاملة.
 
+مصدر كل كتلة نصّية ("src") — إلزامي:
+- كل مقطع كلام في الخطّ الزمني يبدأ برقمه: [#12 · 00:03:41]. وكل لقطة برقمها: [لقطة 3 · …].
+- مع كل step وnote وparagraph وbullets أرفق "src": {"s": [أرقام مقاطع الكلام التي تقولها],
+  "img": [أرقام اللقطات التي تُظهرها]} — من الأرقام المعطاة حرفيًّا.
+- خطوة تُرى على الشاشة: "img". خطوة قيلت: "s". كلاهما إن اجتمعا.
+- إن كتبت كتلةً لا يقولها الكلام ولا تُظهرها لقطة (ربطٌ أو استنتاج تحتاجه الخطوات)،
+  فاجعل "src": {} — تظهر للقارئ «مقترحة — راجعها». لا تخترع أرقامًا لتملأ الحقل.
+
 الأسلوب: عربية فصحى معاصرة واضحة ومختصرة، بلا حشو ولا مخاطبة للقارئ عن المهمّة نفسها
 ولا ذكر للتسجيل أو المتحدّث («يقول المتحدّث»، «في هذا الفيديو»).
 العنوان يصف المهمّة أو الموضوع في 3–8 كلمات. عناوين الأقسام مختلفة ومحدّدة.
@@ -101,12 +109,12 @@ SYSTEM_PROMPT = """أنت كاتب أدلّة تقنية ومحرّر عربي �
  "sections": [
    {"title": "عنوان القسم", "summary": "جملة اختيارية",
     "blocks": [
-      {"type": "step", "text": "اضغط «Admin» في الشريط العلوي."},
+      {"type": "step", "text": "اضغط «Admin» في الشريط العلوي.", "src": {"s": [12], "img": [3]}},
       {"type": "figure", "id": 3, "caption": "قائمة Admin مفتوحة وفيها خيار Lesson Feedback",
        "screen_text": "Admin | Lesson Feedback | Curriculum", "focus": [0.3, 0.0, 0.75, 0.45]},
-      {"type": "paragraph", "text": "..."},
-      {"type": "bullets", "items": ["...", "..."]},
-      {"type": "note", "text": "تنبيه أو ملاحظة مهمّة"}
+      {"type": "paragraph", "text": "...", "src": {"s": [13, 14]}},
+      {"type": "bullets", "items": ["...", "..."], "src": {"s": [15]}},
+      {"type": "note", "text": "تنبيه أو ملاحظة مهمّة", "src": {}}
     ]}
  ],
  "omit": [5]}"""
@@ -241,6 +249,62 @@ def _crop_focus(images_dir: Path, filename: str,
 
 def _seg_text(segment: AudioSegment) -> str:
     return (segment.text_clean or segment.text_raw or "").strip()
+
+
+# ── مصدر كل كتلة ───────────────────────────────────────────────────────
+#
+# رُصد (1.15.1، 49 دقيقة): 106 خطوات من 135 بلا أي مرجع، لأن المقاطع كانت
+# تُنسب إلى القسم كلّه وتُلصق بأوّل كتلة فيه. فلا يعرف المراجع أيّ خطوة
+# قيلت، وأيّها رآها النموذج على الشاشة، وأيّها استنتجها. ‏``segment_ids``
+# لا تصلح لذلك: ADR-010 يفرض أن يرد كل مقطع مرّةً واحدة في الخطة، وخطوتان
+# من المقطع نفسه تخرقانه. فالدليل في حقلين منفصلين لا يدخلان فحص الاكتمال.
+
+def _ids(values, allowed) -> List[int]:
+    out: List[int] = []
+    for value in values or []:
+        try:
+            number = int(str(value).lstrip("#"))
+        except (TypeError, ValueError):
+            continue
+        if number in allowed and number not in out:
+            out.append(number)
+    return out
+
+
+def _evidence(raw: dict, segment_ids: set, sent: Dict[int, "KeyframeMetadata"]) -> dict:
+    """الأرقام التي استشهد بها النموذج — ما لم يُرسَل في هذا الجزء يُسقط.
+
+    رقمٌ مختلق يُسقَط بصمت فتُعدّ الكتلة بلا ذلك المصدر: الاستشهاد بمقطعٍ
+    غير موجود ليس دليلًا.
+    """
+    src = raw.get("src")
+    if not isinstance(src, dict):
+        # صيغة مسطّحة يكتبها النموذج أحيانًا: {"s": [...], "img": [...]}
+        src = raw
+    return {"s": _ids(src.get("s"), segment_ids),
+            "img": _ids(src.get("img"), sent),
+            # ‏``"src": {}`` تصريحٌ بأن الكتلة استنتاج — لا يُستبدل بترتيب اللقطات.
+            "declared": any(key in raw for key in ("src", "s", "img"))}
+
+
+def _figure_after_step(blocks: List[dict]) -> None:
+    """الخطوة التي تليها لقطتها مباشرةً مصدرُها الشاشة — بنصّ التعليمة.
+
+    الموجّه يطلب «ضع اللقطة بعد الخطوة التي توضّحها مباشرة». نموذجٌ لم يملأ
+    "src" لخطوةٍ وضع لقطتها بعدها قال مصدرها بالترتيب.
+    """
+    for block, following in zip(blocks, blocks[1:]):
+        if (block["kind"] == "step" and following["kind"] == "figure"
+                and not block.get("declared")):
+            block["img"] = [following["id"]]
+
+
+def _provenance(block: dict) -> dict:
+    spoken, seen = block.get("s") or [], block.get("img") or []
+    source = ("both" if spoken and seen else "transcript" if spoken
+              else "screen" if seen else "inferred")
+    return {"evidence_segments": list(spoken), "evidence_images": list(seen),
+            "source": source}
 
 
 # ── تعليق احتياطي ودمج الأقسام المكرّرة ───────────────────────────────
@@ -509,7 +573,8 @@ class VisualAuthor:
 
         for _, kind, item in events:
             if kind == 1:
-                speech.append(f"[{seconds_to_display(item.start)}] {_seg_text(item)}")
+                speech.append(
+                    f"[#{item.id} · {seconds_to_display(item.start)}] {_seg_text(item)}")
                 continue
             data = self._encode(images_dir / item.filename)
             if data is None:
@@ -601,6 +666,7 @@ class VisualAuthor:
         """يطبّع ردّ النموذج ويفرض قيود اللقطات."""
         used: set[int] = set()
         sections: List[dict] = []
+        segment_ids = {s.id for s in chunk.segments}
         for raw_section in data.get("sections") or []:
             if not isinstance(raw_section, dict):
                 continue
@@ -627,11 +693,14 @@ class VisualAuthor:
                     items = [self._clean(i) for i in raw.get("items") or []
                              if self._clean(i)]
                     if items:
-                        blocks.append({"kind": "bullets", "items": items})
+                        blocks.append({"kind": "bullets", "items": items,
+                                       **_evidence(raw, segment_ids, sent)})
                 else:
                     text = self._clean(raw.get("text"))
                     if text:
-                        blocks.append({"kind": kind, "text": text})
+                        blocks.append({"kind": kind, "text": text,
+                                       **_evidence(raw, segment_ids, sent)})
+            _figure_after_step(blocks)
             title = self._clean(raw_section.get("title"))
             if blocks:
                 sections.append({"title": title,
@@ -744,9 +813,11 @@ class VisualAuthor:
                             # للمصدر وتمييز الصور حين يغيب OCR.
                             ocr_text=block["screen_text"] or keyframe.ocr_text))
                     elif kind == "bullets":
-                        blocks.append(DocumentBlock(kind="bullets", bullets=block["items"]))
+                        blocks.append(DocumentBlock(kind="bullets", bullets=block["items"],
+                                                    **_provenance(block)))
                     else:
-                        blocks.append(DocumentBlock(kind=kind, text=block["text"]))
+                        blocks.append(DocumentBlock(kind=kind, text=block["text"],
+                                                    **_provenance(block)))
                 sections.append(DocumentSection(
                     title=raw["title"] or f"القسم {len(sections) + 1}",
                     level=1, summary=raw["summary"], start_timestamp=start,

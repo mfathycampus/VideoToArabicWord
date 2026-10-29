@@ -174,3 +174,15 @@ def test_gap_inside_a_long_raw_segment_is_found_from_word_timings(tmp_path):
     assert len(model.calls) == 1
     assert model.calls[0][0] == pytest.approx(89 * 16000, abs=16)
     assert added[0].start == pytest.approx(194.0)
+
+
+def test_each_gap_records_its_reason_for_the_quality_report(tmp_path):
+    """1.17.0: السبب كان يُكتب في السجلّ وحده، فيرى المستخدم فجوةً بلا تفسير."""
+    audio = _wav(tmp_path / "a.wav",
+                 [(10, 0.3), (20, 0.0), (10, 0.3), (20, 0.3), (10, 0.3)])
+    engine, model = _engine(), FakeModel()
+    engine._refill_gaps(
+        model, {"vad_filter": True, "vad_parameters": None, "beam_size": 1},
+        audio, [_seg(0, 10), _seg(30, 40), _seg(60, 70)], 0.0, 70.0, None, None)
+    reasons = [(g["start"], g["end"], g["reason"]) for g in engine._gap_report]
+    assert reasons == [(10.0, 30.0, "silent"), (40.0, 60.0, "refilled")]

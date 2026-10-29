@@ -356,6 +356,11 @@ class DocumentConfig(BaseModel):
     #: الصياغة والحزمة التعليمية وصف الدور بدل الاسم. انظر video/redact.py
     #: لحدود الكشف (الأسماء اللاتينية والبريد؛ لا العربية على الشاشة).
     anonymize_names: bool = True
+    #: شاشات الدخول (``video/sensitive.classify_screen``) لا تُرسل إلى أي
+    #: مزوّد ولا تدخل المستند ولا صيغه. تبقى في مجلد المهمة على الجهاز.
+    #: رُصد: أربع شاشات دخول Microsoft في دليلٍ حقيقي، فيها اقتراحات مدير
+    #: كلمات المرور، أُرسلت إلى نموذج الرؤية ووُضعت في المستند.
+    withhold_sensitive_screens: bool = True
     font_family: str = "Arial"
     body_size_pt: float = 12.0
     heading_size_pt: float = 17.0

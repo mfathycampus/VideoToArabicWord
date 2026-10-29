@@ -115,6 +115,9 @@ class JobState(BaseModel):
     progress: float = 0.0
     completed_stages: list[Stage] = Field(default_factory=list)
     artifacts: Dict[str, ArtifactRef] = Field(default_factory=dict)
+    #: زمن آخر تنفيذٍ فعلي لكل مرحلة (ثوانٍ). المرحلة المتخطّاة عند
+    #: الاستئناف تحتفظ بزمنها السابق.
+    stage_seconds: Dict[str, float] = Field(default_factory=dict)
     retry_count: int = 0
     max_retries: int = 3
     last_error: Optional[str] = None
@@ -250,8 +253,9 @@ class JobManager:
         # مدة المرحلة جزء من عقد السجلّات (§25) ولم تكن تُسجَّل إطلاقًا
         started = getattr(self, "_stage_started_at", None)
         if started is not None:
-            logger.info(f"اكتملت المرحلة {stage.value} في "
-                        f"{time.monotonic() - started:.1f}s")
+            elapsed = time.monotonic() - started
+            self.state.stage_seconds[stage.value] = round(elapsed, 1)
+            logger.info(f"اكتملت المرحلة {stage.value} في {elapsed:.1f}s")
             self._stage_started_at = None
         self.persist()
 

@@ -240,7 +240,7 @@ class MediaStagesMixin:
             return
 
         total = len(keyframes)
-        hidden = 0
+        hidden = other = 0
         for index, kf in enumerate(keyframes):
             cancel_token.raise_if_cancelled()
             emit(Stage.KEYFRAMES, 0.85 + 0.15 * (index / total),
@@ -248,20 +248,48 @@ class MediaStagesMixin:
             path = images_dir / kf.filename
             if getattr(self.config.document, "anonymize_names", False):
                 from video.ocr import extract_text_and_words
-                from video.redact import redact_keyframe
+                from video.redact import blur_boxes, redact_keyframe
+                from video.sensitive import (
+                    classify_screen,
+                    find_sensitive_boxes,
+                    scrub_screen_text,
+                )
 
                 text, words = extract_text_and_words(path)
+                # التصنيف قبل الطمس: «Password» و«Sign in» قد تُحذف من النصّ.
+                kf.sensitive = classify_screen(text)
                 kf.ocr_text, names = redact_keyframe(path, words, text)
-                kf.redacted = True
+                boxes, counts, tokens = find_sensitive_boxes(words)
+                if boxes:
+                    try:
+                        blur_boxes(path, boxes)
+                    except Exception as exc:          # noqa: BLE001
+                        logger.warning(f"تعذّر طمس {path.name}: {exc}")
+                    kf.ocr_text = scrub_screen_text(kf.ocr_text, tokens)
+                kf.redactions = dict(counts)
                 if names:
+                    kf.redactions["name"] = len(names)
+                kf.redacted = True
+                if names or boxes:
                     hidden += len(names)
+                    other += sum(counts.values())
                     try:
                         kf.checksum = hashlib.sha256(
                             path.read_bytes()).hexdigest()[:16]
                     except OSError:
                         pass
             else:
+                from video.sensitive import classify_screen
+
                 kf.ocr_text = extract_text(path)
+                kf.sensitive = classify_screen(kf.ocr_text)
         if hidden:
             logger.info(f"إخفاء الأسماء: مُوِّه {hidden} اسمًا/بريدًا في اللقطات "
                         "وحُذف من نصّ الشاشة.")
+        if other:
+            logger.info(f"الطمس: {other} منطقة (أرقام هوية بصفوفها، روابط، مسارات).")
+        logins = [k for k in keyframes if "login" in k.sensitive]
+        if logins:
+            logger.info("شاشات دخول: " + "، ".join(
+                f"{k.image_id}@{int(k.timestamp) // 60}:{int(k.timestamp) % 60:02d}"
+                for k in logins))

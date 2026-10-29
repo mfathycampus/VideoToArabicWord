@@ -126,6 +126,8 @@ ul.opts li.opt.wrong .k{background:var(--bad);color:#fff}
   font-size:.72rem;color:var(--muted);z-index:2;pointer-events:none}
 
 details.dropped{margin-top:40px;font-size:.88rem;color:var(--muted)}
+.notice{margin:28px 0 8px;padding:14px 18px;border-radius:12px;border:1px solid var(--line);background:var(--soft);line-height:1.8}
+.notice b{display:block;margin-bottom:4px}
 details.dropped summary{cursor:pointer}
 details.dropped ul{padding-inline-start:22px}
 
@@ -385,6 +387,47 @@ def _flashcards(pack: StudyPack) -> str:
             + f'<div class="deck">{cards}</div>')
 
 
+def _kind_label(pack: StudyPack) -> str:
+    """اسم الناتج بما فيه فعلًا.
+
+    رُصد (1.15.1): صفحةٌ عنوانها «دليل المذاكرة» وفيها 25 مصطلحًا بلا
+    تعريف، ولا هدف ولا سؤال ولا بطاقة. الاسم وعدٌ لم يُسلَّم.
+    """
+    return "دليل المذاكرة" if pack.has_learning_items() else "مسرد المصطلحات"
+
+
+def _notice(pack: StudyPack) -> str:
+    """لماذا لا أسئلة؟ — يُقال صراحةً بدل أن تبدو الأداة فقيرة بلا سبب."""
+    if pack.has_learning_items():
+        if not pack.failures:
+            return ""
+        return ('<div class="notice"><b>الحزمة ناقصة</b>'
+                f'تعذّر توليد {len(pack.failures)} دفعة عند المزوّد، فالأسئلة '
+                'والبطاقات من بقية التسجيل فقط. أعد المعالجة لإكمالها.</div>')
+    if pack.failures:
+        why = (f'تعذّر توليد الأهداف والأسئلة والبطاقات عند المزوّد '
+               f'({_esc(pack.failures[0])}). أعد المعالجة لإكمالها.')
+    elif pack.generated_by in ("screen", "none"):
+        why = ('لم يُضبط مزوّد ذكاء اصطناعي للحزمة التعليمية، فهذه مصطلحات '
+               'مستخرجة من الشاشة والكلام وحدها، بلا تعريفات ولا أسئلة.')
+    elif pack.dropped:
+        why = (f'رفض التحقّق {len(pack.dropped)} عنصرًا لم يثبت مصدره في التفريغ، '
+               'فبقيت المصطلحات وحدها.')
+    else:
+        why = ('لم يخرج من النموذج هدفٌ ولا سؤال، فبقيت المصطلحات وحدها. '
+               'سبب ذلك في سجلّ البرنامج (app.log)؛ أعد المعالجة لإكمال الحزمة.')
+    return f'<div class="notice"><b>هذا مسرد مصطلحات لا دليل مذاكرة</b>{why}</div>'
+
+
+def _failures(pack: StudyPack) -> str:
+    if not pack.failures:
+        return ""
+    items = "".join(f"<li>{_esc(reason)}</li>" for reason in pack.failures[:30])
+    return ('<details class="dropped"><summary>'
+            f'تعذّرت {len(pack.failures)} دفعة عند المزوّد — اضغط للتفاصيل'
+            f'</summary><ul>{items}</ul></details>')
+
+
 def _dropped(pack: StudyPack) -> str:
     if not pack.dropped:
         return ""
@@ -413,7 +456,8 @@ def _stats(pack: StudyPack, plan: Optional[DocumentPlan]) -> str:
 
 def render_study_html(pack: StudyPack, subtitle: str = "",
                       plan: Optional[DocumentPlan] = None) -> str:
-    title = _esc(pack.title or (plan.title if plan else "") or "دليل المذاكرة")
+    kind = _kind_label(pack)
+    title = _esc(pack.title or (plan.title if plan else "") or kind)
     sections = [
         ("goals", "الأهداف", _objectives(pack)),
         ("map", "خريطة المراجعة", _review_map(plan)),
@@ -430,10 +474,10 @@ def render_study_html(pack: StudyPack, subtitle: str = "",
         "<!doctype html>\n"
         '<html lang="ar" dir="rtl">\n<head>\n<meta charset="utf-8">\n'
         '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
-        f"<title>دليل المذاكرة — {title}</title>\n"
+        f"<title>{kind} — {title}</title>\n"
         f"<style>{_CSS}</style>\n</head>\n<body>\n"
         '<header class="hero"><div class="in">'
-        '<span class="kicker">دليل المذاكرة</span>'
+        f'<span class="kicker">{kind}</span>'
         f"<h1>{title}</h1>"
         + (f'<p class="sub">{_esc(subtitle)}</p>' if subtitle else "")
         + _stats(pack, plan) + "</div></header>\n"
@@ -442,7 +486,7 @@ def render_study_html(pack: StudyPack, subtitle: str = "",
         '<button class="btn" id="linkVideo" title="يبقى الملف على جهازك — '
         'لا يُنسخ ولا يُرفع">ربط التسجيل</button>'
         '<button class="btn" id="printBtn">طباعة</button></div></nav>\n'
-        f'<main class="wrap">{body}{_dropped(pack)}'
+        f'<main class="wrap">{_notice(pack)}{body}{_failures(pack)}{_dropped(pack)}'
         '<footer class="end">أُعدّ هذا الدليل آليًّا من التسجيل؛ راجع المقطع '
         'المرتبط بكل عنصر للتحقّق منه.</footer></main>\n'
         '<aside class="mini hidden" id="mini"><button id="miniClose" '

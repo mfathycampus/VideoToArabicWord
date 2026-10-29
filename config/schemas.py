@@ -143,6 +143,12 @@ class KeyframeMetadata(BaseModel):
     #: مرّت اللقطة بإخفاء الأسماء (``video/redact``) — وإن لم يُعثر فيها
     #: على اسم. شرطٌ لإرسالها إلى مزوّد سحابي حين يُطلب الإخفاء.
     redacted: bool = False
+    #: ما طُمس فيها حسب النوع: ``{"name": 3, "id_row": 6, "url": 1}``.
+    #: ``redacted: true`` وحده لا يقول للمراجع ماذا حُجب ولا كم.
+    redactions: Dict[str, int] = Field(default_factory=dict)
+    #: محتوى حساس في اللقطة كلّها (``video/sensitive.classify_screen``):
+    #: ``["login"]`` لشاشة دخول. تُحجب عن السحابة والمستند افتراضيًّا.
+    sensitive: List[str] = Field(default_factory=list)
 
 
 # ملاحظة: ``TimelineMatchResult`` من الإصدار 1.1 حُذف. حلّ محلّه
@@ -177,6 +183,15 @@ class DocumentBlock(BaseModel):
     # Provenance: نطاق المصدر الذي بُنيت منه الكتلة، إن أمكن.
     source_start: Optional[float] = None
     source_end: Optional[float] = None
+    #: مصدر الكتلة النصّية كما استشهد به المؤلّف المرئي وتحقّق منه البرنامج:
+    #: ``transcript`` (قيلت) · ``screen`` (تُرى في لقطة) · ``both`` ·
+    #: ``inferred`` (لا هذا ولا ذاك — تُعرض «مقترحة — راجعها») · ``""`` غير
+    #: معروف (المخطّط الزمني والصياغة النصّية: مصدرهما ``segment_ids``).
+    source: str = ""
+    #: أدلّة الكتلة — منفصلة عن ``segment_ids`` لأن ADR-010 يفرض ورود كل
+    #: مقطع مرّة واحدة في الخطة، وخطوتان قد تستندان إلى المقطع نفسه.
+    evidence_segments: List[int] = Field(default_factory=list)
+    evidence_images: List[int] = Field(default_factory=list)
 
 
 class DocumentSection(BaseModel):
@@ -287,6 +302,14 @@ class StudyPack(BaseModel):
     #: ما أسقطته طبقة التحقّق وسببه. يُعرض في السجلّ وفي دليل المذاكرة.
     #: إخفاؤه يجعل حزمةً نصفُها مرفوض تبدو حزمةً صغيرة بلا سبب ظاهر.
     dropped: List[str] = Field(default_factory=list)
+    #: دفعاتٌ تعذّر توليدها عند المزوّد (ردّ مقطوع، مهلة، رفض) وسببها.
+    #: تختلف عن ``dropped``: هناك رفض التحقّقُ ما كُتب، وهنا لم يُكتب شيء.
+    #: بدونها تبدو حزمةٌ لم تُطلب أسئلتها أصلًا كأنها «لا أسئلة موثّقة».
+    failures: List[str] = Field(default_factory=list)
+
+    def has_learning_items(self) -> bool:
+        """فيها ما يُذاكَر — لا مسرد مصطلحات وحده."""
+        return bool(self.objectives or self.questions or self.flashcards)
 
     def is_empty(self) -> bool:
         return not (self.objectives or self.glossary
