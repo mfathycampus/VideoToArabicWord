@@ -1,3 +1,5 @@
 -r requirements.txt
 pytest>=7.4.0
+# CI يشغّل ``ruff check .`` على كل طلب دمج — ثبّته محليًّا ليظهر الخطأ قبله.
+ruff>=0.6
 pip-tools>=7.0.0

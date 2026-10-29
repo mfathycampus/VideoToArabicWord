@@ -109,7 +109,7 @@ def _keyframe(image_id, sensitive=()):
                             filename=f"{image_id}.jpg", scene_id=image_id,
                             change_score=0.5, width=10, height=10,
                             selection_reason="stable_frame",
-                            sensitive=list(sensitive))
+                            sensitive=list(sensitive), privacy_scanned=True)
 
 
 def _outputs(withhold=True):
@@ -233,3 +233,14 @@ def test_network_path_with_a_staff_username_is_blurred():
     _boxes, counts, scrub = find_sensitive_boxes(
         [_w(r"(\\172.20.54.173\Users\A.Metwoly\Desktop", 300)])
     assert counts == {"path": 1}
+
+
+def test_unscanned_frames_are_reported_not_assumed_safe():
+    """1.19.1: بلا Tesseract لا تُفترض اللقطة آمنة لأن ``sensitive`` فارغ."""
+    from config.schemas import KeyframeMetadata
+    host = _outputs()
+    frames = [KeyframeMetadata(image_id=1, timestamp=9.0, filename="1.jpg", scene_id=1,
+                               change_score=0.5, width=10, height=10,
+                               selection_reason="stable_frame")]
+    assert host._withhold_sensitive(frames) == frames
+    assert "لم تُفحص 1 من 1 لقطة" in host._plan_notes[0]

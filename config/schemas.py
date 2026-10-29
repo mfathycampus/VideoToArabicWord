@@ -149,6 +149,10 @@ class KeyframeMetadata(BaseModel):
     #: محتوى حساس في اللقطة كلّها (``video/sensitive.classify_screen``):
     #: ``["login"]`` لشاشة دخول. تُحجب عن السحابة والمستند افتراضيًّا.
     sensitive: List[str] = Field(default_factory=list)
+    #: مرّت اللقطة بفحص الخصوصية (OCR ثم ``classify_screen`` والطمس). ‏``False``
+    #: = لم تُقرأ أصلًا (Tesseract غير مثبّت، أو مهمّة قبل 1.19.1): ``sensitive``
+    #: الفارغ عندها لا يعني «آمنة» بل «لم تُفحص».
+    privacy_scanned: bool = False
 
 
 # ملاحظة: ``TimelineMatchResult`` من الإصدار 1.1 حُذف. حلّ محلّه
@@ -306,6 +310,9 @@ class StudyPack(BaseModel):
     #: تختلف عن ``dropped``: هناك رفض التحقّقُ ما كُتب، وهنا لم يُكتب شيء.
     #: بدونها تبدو حزمةٌ لم تُطلب أسئلتها أصلًا كأنها «لا أسئلة موثّقة».
     failures: List[str] = Field(default_factory=list)
+    #: بصمة ما بُنيت منه الحزمة (التفريغ، الخطة، الإعداد، الموجّه، المزوّد) —
+    #: شرط إعادة استعمالها. انظر ``OutputsMixin._study_fingerprint``.
+    fingerprint: str = ""
 
     def has_learning_items(self) -> bool:
         """فيها ما يُذاكَر — لا مسرد مصطلحات وحده."""

@@ -189,6 +189,21 @@ class MediaStagesMixin:
             raw = job.load_artifact("keyframes")
             keyframes = [KeyframeMetadata(**k) for k in raw["keyframes"]]
             if all((images_dir / k.filename).exists() for k in keyframes):
+                # مهمّة مستأنفة من قبل 1.19.1 (أو بلا Tesseract حينها): لقطاتها
+                # لم تُفحص. تُفحص الآن بدل أن يُعاد استعمالها كما هي.
+                unscanned = [k for k in keyframes
+                             if not (k.privacy_scanned or k.redacted)]
+                if unscanned and self._privacy_scan_required():
+                    self._run_ocr(unscanned, images_dir, cancel_token, emit)
+                    if any(k.privacy_scanned for k in unscanned):
+                        job.save_artifact("keyframes", "keyframes.json", json.dumps(
+                            {"schema_version": "1.3",
+                             "keyframes": [k.model_dump() for k in keyframes]},
+                            ensure_ascii=False, indent=2),
+                            processing_fingerprint=keyframes_fp)
+                        # البصمة لم تتغيّر فالخطة المحفوظة تبدو صالحة — وهي
+                        # بُنيت من لقطاتٍ لم تُفحص. تُعاد من بعد اللقطات.
+                        job.invalidate_from(Stage.MATCHING)
                 return keyframes
             logger.warning("صور مفقودة — إعادة الاستخراج.")
 
@@ -204,7 +219,12 @@ class MediaStagesMixin:
         # معطّلًا متى كانت اللقطات ستغادر الجهاز إلى نموذجٍ مرئيّ. كان
         # الإخفاء حبيس ``enable_ocr`` (المعطّل افتراضيًّا)، أي أن
         # ``anonymize_names`` المفعّل افتراضيًّا لم يكن يموّه شيئًا.
-        if self.config.frames.enable_ocr or self._images_may_leave():
+        #
+        # ولا يكفي ذلك: فحص الخصوصية (شاشات الدخول، أرقام الهوية، الأسماء)
+        # وعدٌ للمستند المحلي أيضًا. رُصد في مراجعة 1.19.0: مستندٌ محلي بلا
+        # إرسال صور ولا OCR يُدخل شاشة الدخول رغم ``withhold_sensitive_screens``.
+        if (self.config.frames.enable_ocr or self._images_may_leave()
+                or self._privacy_scan_required()):
             self._run_ocr(keyframes, images_dir, cancel_token, emit)
 
         job.save_artifact("keyframes", "keyframes.json", json.dumps(
@@ -215,6 +235,17 @@ class MediaStagesMixin:
         job.complete_stage(Stage.KEYFRAMES)
         cancel_token.raise_if_cancelled()
         return keyframes
+
+    def _privacy_scan_required(self) -> bool:
+        """هل وعد الإعداد بحماية لا تتحقّق إلا بقراءة اللقطة؟
+
+        ``OCR`` هنا دوران: إثراء المستند (اختياري، ``enable_ocr``) وفحص
+        الخصوصية (إلزامي متى فُعّل الحجب أو الإخفاء). كانا مربوطين، فإطفاء
+        الأوّل أطفأ الثاني بصمت.
+        """
+        document = self.config.document
+        return bool(getattr(document, "withhold_sensitive_screens", False)
+                    or getattr(document, "anonymize_names", False))
 
     def _images_may_leave(self) -> bool:
         """هل قد تُرسَل اللقطات إلى نموذج مرئي مع طلب إخفاء الأسماء؟"""
@@ -234,9 +265,11 @@ class MediaStagesMixin:
         if not keyframes:
             return
         if not is_available():
-            logger.info(
-                "OCR مفعَّل في الإعداد لكن Tesseract غير مثبَّت — "
-                "المتابعة بلا نص شاشة. شغّل tools/doctor.py للتثبيت.")
+            # كل لقطة تبقى ``privacy_scanned=False``، فيُنذر بها عند بناء المستند
+            # (``_withhold_sensitive``) بدل أن يُفترض أنها فُحصت.
+            logger.warning(
+                "Tesseract غير مثبَّت — لم تُفحص اللقطات: لا كشف لشاشات الدخول "
+                "ولا طمس للأسماء وأرقام الهوية. شغّل tools/doctor.py للتثبيت.")
             return
 
         total = len(keyframes)
@@ -246,6 +279,7 @@ class MediaStagesMixin:
             emit(Stage.KEYFRAMES, 0.85 + 0.15 * (index / total),
                 f"استخراج نص الشاشة… ({index + 1}/{total})")
             path = images_dir / kf.filename
+            kf.privacy_scanned = True
             if getattr(self.config.document, "anonymize_names", False):
                 from video.ocr import extract_text_and_words
                 from video.redact import blur_boxes, redact_keyframe

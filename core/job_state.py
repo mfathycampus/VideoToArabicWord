@@ -198,6 +198,19 @@ class JobManager:
             self.state.model_dump_json(indent=2),
         )
 
+    def invalidate_from(self, stage: Stage) -> None:
+        """يُسقط ``stage`` وكل ما يليها من المراحل المكتملة.
+
+        لمن غيّر ناتجًا سابقًا بعد اكتماله — كفحص الخصوصية عند الاستئناف:
+        خطةٌ بُنيت من لقطاتٍ لم تُفحص لا يجوز أن تُعاد كما هي.
+        """
+        order = list(Stage)
+        cut = order.index(stage)
+        kept = [s for s in self.state.completed_stages if order.index(s) < cut]
+        if kept != self.state.completed_stages:
+            self.state.completed_stages = kept
+            self.persist()
+
     def _invalidate_missing_artifacts(self) -> None:
         """يُسقط أي مرحلة اختفى أو تغيّر ناتجها على القرص.
 
