@@ -319,3 +319,42 @@ def test_arabic_advice_never_reaches_the_command_block():
         "الأمر الحقيقي اختفى مع الفلترة"
     # النصيحة نفسها تبقى معروضة في متن التقرير — تُقرأ ولا تُنفَّذ
     assert "اختر مجلد إخراج" in format_report(diagnosis)
+
+
+# ── 1.19.2 ───────────────────────────────────────────────────────────
+def _usage(free_gb):
+    from collections import namedtuple
+    Usage = namedtuple("Usage", "total used free")
+    return lambda path: Usage(238 * 1024 ** 3, 0, int(free_gb * 1024 ** 3))
+
+
+def test_low_disk_warns_but_does_not_block_startup(monkeypatch):
+    """1.19.1 المثبَّت على قرصٍ فيه 1.4 GB: «problem blocking startup» —
+    لا يُفتح البرنامج ولا تُفتح المستندات السابقة. المعالجة تُمنع وحدها."""
+    from utils import deps
+
+    monkeypatch.setattr(deps.shutil, "disk_usage", _usage(1.4))
+    result = deps.check_disk_space()
+    assert result.ok
+    assert "1.4 GB" in result.detail and "المعالجة تحتاج 2.0 GB" in result.detail
+    assert "وفّر 2.0 GB" in result.fix
+
+
+def test_an_almost_full_disk_still_blocks(monkeypatch):
+    from utils import deps
+
+    monkeypatch.setattr(deps.shutil, "disk_usage", _usage(0.1))
+    assert not deps.check_disk_space().ok
+
+
+def test_ocr_check_finds_the_bundled_tesseract(monkeypatch):
+    """المثبَّت يشحن Tesseract في ``_internal\\tesseract`` خارج PATH، وكان
+    الفحص يقول «غير مثبَّت» والبرنامج يستعمله فعلًا."""
+    import video.ocr as ocr
+    from utils import deps
+
+    monkeypatch.setattr(deps.shutil, "which", lambda name: None)
+    monkeypatch.setattr(ocr, "tesseract_executable",
+                        lambda: r"C:\App\_internal\tesseract\tesseract.exe")
+    result = deps.check_ocr_binary()
+    assert result.ok and result.detail.endswith(r"_internal\tesseract\tesseract.exe")

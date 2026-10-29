@@ -171,8 +171,19 @@ def check_binaries() -> List[CheckResult]:
 def check_ocr_binary() -> CheckResult:
     """Tesseract اختياري (ميزة OCR — video/ocr.py). غيابه لا يمنع تشغيل
     البرنامج، لذا ``ok=True`` دائمًا هنا (تحذير لا فشل — نفس نمط
-    ``check_environment_isolation`` أدناه)."""
-    found = shutil.which("tesseract") or shutil.which("tesseract.exe")
+    ``check_environment_isolation`` أدناه).
+
+    يبحث كما يبحث البرنامج نفسه (``video.ocr.tesseract_executable``): المشحون
+    مع الحزمة أولًا، ثم PATH ومواضع التثبيت والسجلّ. رُصد في 1.19.1 المثبَّت:
+    «غير مثبَّت» وTesseract في ``_internal\tesseract`` يعمل — لأن الفحص كان
+    يقرأ PATH وحده، فيُخبر المستخدم أن فحص الخصوصية معطّل وهو ليس كذلك.
+    """
+    try:
+        from video.ocr import tesseract_executable
+
+        found = tesseract_executable()
+    except Exception:                                  # noqa: BLE001
+        found = shutil.which("tesseract") or shutil.which("tesseract.exe")
     if found:
         return CheckResult("tesseract (OCR)", True, found)
     hint = ("sudo apt install tesseract-ocr tesseract-ocr-ara"
@@ -225,19 +236,36 @@ def check_environment_isolation() -> CheckResult:
 
 
 
+#: أقلّ مساحة يُفتح معها البرنامج أصلًا: السجلّ والإعداد وملفات Qt المؤقتة.
+#: ما فوقها وتحت ``minimum_gb`` تحذيرٌ لا منع — المعالجة نفسها تفحص المساحة
+#: قبل كل مهمّة (``core/pipeline_media._MIN_FREE_BYTES``) وتمنعها برسالة.
+MIN_STARTUP_GB = 0.25
+
+
 def check_disk_space(path: Path | None = None, minimum_gb: float = 2.0) -> CheckResult:
-    """يتحقق من المساحة الحرة دون افتراض مسار ثابت للتثبيت."""
+    """يتحقق من المساحة الحرة دون افتراض مسار ثابت للتثبيت.
+
+    رُصد (1.19.1، قرص فيه 1.4 GB): «1 problem blocking startup» — لا يُفتح
+    البرنامج إطلاقًا، فلا يصل المستخدم حتى إلى مستنداته السابقة. ومنع البدء
+    لا يحمي شيئًا: المعالجة تُمنع وحدها قبل أن تبدأ.
+    """
     target = Path(path or Path.home()).resolve()
     try:
         usage = shutil.disk_usage(target)
     except OSError as exc:
         return CheckResult("مساحة القرص", False, f"تعذر الفحص: {exc}")
     free_gb = usage.free / (1024 ** 3)
-    ok = free_gb >= minimum_gb
+    if free_gb >= minimum_gb:
+        return CheckResult("مساحة القرص", True, f"{free_gb:.1f} GB متاحة")
+    if free_gb >= MIN_STARTUP_GB:
+        return CheckResult(
+            "مساحة القرص", True,
+            f"{free_gb:.1f} GB متاحة — يُفتح البرنامج، والمعالجة تحتاج "
+            f"{minimum_gb:.1f} GB",
+            f"وفّر {minimum_gb:.1f} GB على الأقل قبل بدء المعالجة")
     return CheckResult(
-        "مساحة القرص", ok, f"{free_gb:.1f} GB متاحة",
-        f"وفّر {minimum_gb:.1f} GB على الأقل قبل بدء المعالجة" if not ok else "",
-    )
+        "مساحة القرص", False, f"{free_gb:.2f} GB متاحة",
+        f"وفّر {minimum_gb:.1f} GB على الأقل — القرص ممتلئ تقريبًا")
 
 
 def default_output_dir() -> Path:
