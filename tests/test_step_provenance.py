@@ -129,3 +129,22 @@ def test_inferred_steps_are_marked_in_word(tmp_path):
     gen._add_step(doc, "اضغط «Add Materials».", 2)
     texts = [p.text for p in doc.paragraphs]
     assert "مقترحة — راجعها" in texts[0] and "مقترحة" not in texts[1]
+
+
+def test_section_with_cited_speech_is_not_reported_as_unsourced():
+    """تشغيل 1.19.0 الحقيقي: «إنشاء مجلد» يبدأ عند لقطته، وكلامه قيل قبلها
+    فوُزّع على القسم السابق — وأُنذر به خطأً «مصدره الشاشة وحدها»."""
+    plan = DocumentPlan(title="t", generated_by="ai:anthropic/x", sections=[
+        DocumentSection(title="نشر خبر", blocks=[
+            DocumentBlock(kind="step", text="اضغط.", segment_ids=[1, 2])]),
+        DocumentSection(title="إنشاء مجلد لتنظيم المحتوى", blocks=[
+            DocumentBlock(kind="step", text="اختر «إنشاء مجلد».", source="both",
+                          evidence_segments=[2], evidence_images=[14]),
+            DocumentBlock(kind="figure", image_id=14, image_filename="14.jpg")]),
+        DocumentSection(title="متطلبات النشر", blocks=[
+            DocumentBlock(kind="bullets", bullets=["خبر أسبوعي"], source="transcript",
+                          evidence_segments=[1])]),
+    ])
+    report = evaluate(plan)
+    assert report.diagnostics["sections_without_source"] == []
+    assert not any(w.startswith("provenance") for w in report.warnings)

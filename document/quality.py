@@ -478,9 +478,14 @@ def provenance(plan: DocumentPlan) -> dict:
                 steps_with_ids += bool(block.segment_ids)
             elif block.kind == "note":
                 notes += 1
-        if any(block.segment_ids for block in section.blocks):
+        # الأدلّة المسجّلة لكل كتلة (1.19.0) قبل توزيع المقاطع بالزمن: رُصد
+        # قسمٌ يبدأ عند لقطته (8:12) والكلام الذي يسند خطواته قيل قبلها
+        # (7:33–8:10)، فوُزّعت مقاطعه على القسم السابق وأُنذر به «بلا كلام».
+        if any(block.segment_ids or getattr(block, "evidence_segments", None)
+               for block in section.blocks):
             continue
-        if any(block.image_id is not None for block in section.blocks):
+        if any(block.image_id is not None or getattr(block, "evidence_images", None)
+               for block in section.blocks):
             screen_only.append(section.title)
         else:
             model_only.append(section.title)
