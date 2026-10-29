@@ -203,15 +203,22 @@ def check_export_extras() -> List[CheckResult]:
     مجلد المخرجات يحتاج مكانًا واحدًا يقول له لماذا.
     """
     from document.exporters.pdf_export import INSTALL_HINT as PDF_HINT
-    from document.exporters.pdf_export import find_soffice
+    from document.exporters.pdf_export import find_soffice, word_installed
 
     results: List[CheckResult] = []
 
+    # التحويل يستعمل LibreOffice إن وُجد وإلا Word (``pdf_export.convert``)،
+    # فالفحص يسأل عنهما بالترتيب نفسه.
     soffice = find_soffice()
+    if soffice:
+        detail = f"LibreOffice ({soffice})"
+    elif word_installed():
+        detail = "Microsoft Word"
+    else:
+        detail = "لا Word ولا LibreOffice — صيغة PDF ستبقى معطّلة"
     results.append(CheckResult(
-        "LibreOffice (تحويل PDF)", True,
-        str(soffice) if soffice else "غير مثبَّت — صيغة PDF ستبقى معطّلة",
-        "" if soffice else PDF_HINT))
+        "تحويل PDF", True, detail,
+        "" if (soffice or word_installed()) else PDF_HINT))
 
     try:
         import pptx  # noqa: F401

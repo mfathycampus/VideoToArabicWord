@@ -173,6 +173,24 @@ try {
 """
 
 
+def word_installed() -> bool:
+    """هل Microsoft Word مسجَّلٌ لـCOM على هذا الجهاز؟ — بلا تشغيله.
+
+    يقرأ ``HKEY_CLASSES_ROOT\\Word.Application`` كما يقرؤه ``New-Object
+    -ComObject`` نفسه. كان فحص البيئة يسأل عن LibreOffice وحده، فقال «صيغة
+    PDF ستبقى معطّلة» على جهازٍ يحوّل عبر Word بنجاح (1.19.1 المثبَّت).
+    """
+    if not sys.platform.startswith("win"):
+        return False
+    try:
+        import winreg
+
+        with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, r"Word.Application\CLSID"):
+            return True
+    except OSError:
+        return False
+
+
 def convert_with_word(docx_path: Path, target: Path) -> Optional[Path]:
     """‏PDF عبر Microsoft Word المثبَّت — ويندوز وحده.
 

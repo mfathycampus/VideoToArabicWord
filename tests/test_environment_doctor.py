@@ -358,3 +358,19 @@ def test_ocr_check_finds_the_bundled_tesseract(monkeypatch):
                         lambda: r"C:\App\_internal\tesseract\tesseract.exe")
     result = deps.check_ocr_binary()
     assert result.ok and result.detail.endswith(r"_internal\tesseract\tesseract.exe")
+
+
+def test_pdf_check_counts_microsoft_word(monkeypatch):
+    """1.19.1 المثبَّت: «لا Word ولا LibreOffice — PDF معطّلة» على جهازٍ حوّل
+    إلى PDF عبر Word في تشغيله الأخير."""
+    import document.exporters.pdf_export as pdf
+    from utils import deps
+
+    monkeypatch.setattr(pdf, "find_soffice", lambda: None)
+    monkeypatch.setattr(pdf, "word_installed", lambda: True)
+    row = next(r for r in deps.check_export_extras() if r.name == "تحويل PDF")
+    assert row.detail == "Microsoft Word" and row.fix == ""
+
+    monkeypatch.setattr(pdf, "word_installed", lambda: False)
+    row = next(r for r in deps.check_export_extras() if r.name == "تحويل PDF")
+    assert "معطّلة" in row.detail and row.fix
