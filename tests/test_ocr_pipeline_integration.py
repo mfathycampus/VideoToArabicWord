@@ -21,8 +21,12 @@ def make(out: Path, enable_ocr: bool = False,
                               model_manager=StubModelManager())
 
 
-def test_ocr_disabled_by_default_leaves_ocr_text_empty(tmp_path):
+def test_ocr_off_and_privacy_guards_off_leaves_ocr_text_empty(tmp_path):
+    """OCR المحتوى معطّل **والحماية معطّلة**: لا قراءة. منذ 1.19.1 الحماية
+    المفعّلة افتراضيًّا تقرأ اللقطات ولو كان OCR المحتوى معطّلًا."""
     pipeline = make(tmp_path / "out", enable_ocr=False)
+    pipeline.config.document.anonymize_names = False
+    pipeline.config.document.withhold_sensitive_screens = False
     pipeline.run(VIDEO)
     job_dir = pipeline.job_dir_for(VIDEO)
     saved = json.loads((job_dir / "keyframes.json").read_text(encoding="utf-8"))
@@ -98,3 +102,64 @@ def test_ocr_result_reaches_the_generated_document(tmp_path, monkeypatch):
     doc = Document(str(result))
     body = "\n".join(p.text for p in doc.paragraphs)
     assert "نص من الشاشة الحقيقية" in body
+
+
+# ── 1.19.1: فحص الخصوصية في المسار المحلي الافتراضي ─────────────────────
+def _login_ocr(monkeypatch):
+    import video.ocr as ocr_module
+    login = "Microsoft\nSign in\nEmail, phone, or Skype\nNo account? Create one!"
+    monkeypatch.setattr(ocr_module, "is_available", lambda: True)
+    monkeypatch.setattr(ocr_module, "extract_text", lambda p, timeout_seconds=20.0: login)
+    monkeypatch.setattr(ocr_module, "extract_text_and_words",
+                        lambda p, timeout_seconds=20.0: (login, []))
+
+
+def test_default_local_run_withholds_login_screens_without_enable_ocr(tmp_path, monkeypatch):
+    """مراجعة 1.19.0: مستندٌ محلي (بلا إرسال صور، OCR المحتوى معطّل) كان
+    يُدخل شاشة الدخول رغم ``withhold_sensitive_screens``."""
+    _login_ocr(monkeypatch)
+    pipeline = make(tmp_path / "out", enable_ocr=False)
+    assert not pipeline.config.rewrite.enabled
+    pipeline.run(VIDEO)
+
+    job_dir = pipeline.job_dir_for(VIDEO)
+    saved = json.loads((job_dir / "keyframes.json").read_text(encoding="utf-8"))
+    assert saved["keyframes"]
+    assert all(k["privacy_scanned"] and k["sensitive"] == ["login"]
+               for k in saved["keyframes"])
+    plan = json.loads((job_dir / "plan.json").read_text(encoding="utf-8"))
+    figures = [b for s in plan["sections"] for b in s["blocks"] if b.get("image_id")]
+    assert figures == [], "شاشة دخول دخلت المستند"
+    quality = json.loads((job_dir / "quality.json").read_text(encoding="utf-8"))
+    assert any(w.startswith("privacy: حُجبت") for w in quality["warnings"])
+
+
+def test_default_run_without_tesseract_says_frames_were_not_scanned(tmp_path, monkeypatch):
+    import video.ocr as ocr_module
+    monkeypatch.setattr(ocr_module, "is_available", lambda: False)
+    pipeline = make(tmp_path / "out", enable_ocr=False)
+    pipeline.run(VIDEO)
+
+    job_dir = pipeline.job_dir_for(VIDEO)
+    quality = json.loads((job_dir / "quality.json").read_text(encoding="utf-8"))
+    assert any("لم تُفحص" in w and "Tesseract" in w for w in quality["warnings"])
+
+
+def test_resumed_job_from_before_the_scan_is_scanned_and_its_plan_rebuilt(tmp_path, monkeypatch):
+    """مهمّة 1.19.0 محلية (بلا فحص) تُستأنف: تُفحص لقطاتها، ولا تُعاد خطّتها
+    القديمة التي فيها شاشة الدخول."""
+    import video.ocr as ocr_module
+    monkeypatch.setattr(ocr_module, "is_available", lambda: False)
+    pipeline = make(tmp_path / "out", enable_ocr=False)
+    pipeline.run(VIDEO)
+    job_dir = pipeline.job_dir_for(VIDEO)
+    plan = json.loads((job_dir / "plan.json").read_text(encoding="utf-8"))
+    assert any(b.get("image_id") for s in plan["sections"] for b in s["blocks"])
+
+    _login_ocr(monkeypatch)
+    pipeline = make(tmp_path / "out", enable_ocr=False)
+    pipeline.run(VIDEO)
+    saved = json.loads((job_dir / "keyframes.json").read_text(encoding="utf-8"))
+    assert all(k["privacy_scanned"] for k in saved["keyframes"])
+    plan = json.loads((job_dir / "plan.json").read_text(encoding="utf-8"))
+    assert not any(b.get("image_id") for s in plan["sections"] for b in s["blocks"])

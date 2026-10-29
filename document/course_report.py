@@ -98,12 +98,30 @@ def _quality_pill(row: LectureRow) -> str:
             f'<span class="num">{row.quality_score:.0f}%</span></span>')
 
 
+#: أسماء المراحل كما يقرؤها المعلّم في تقرير المقرّر.
+STAGE_LABELS = {
+    "validation": "التحقّق من الملف", "metadata": "قراءة بيانات الفيديو",
+    "audio_extraction": "استخراج الصوت", "transcription": "التفريغ",
+    "scene_detection": "تحليل المشاهد", "keyframes": "اللقطات",
+    "matching": "بناء المستند", "document": "كتابة المخرجات",
+}
+
+
 def _status_pill(row: LectureRow) -> str:
+    """الحالة ومعناها — لا «فشلت 100%».
+
+    رُصد في مراجعة 1.19.0: «فشلت 100%» و«قيد التشغيل 100%» يُقرآن نجاحًا.
+    النسبة تقدّمٌ لا نتيجة: تُعرض مع المهمّة الجارية وحدها، والفاشلة تُسمّى
+    بالمرحلة التي توقّفت عندها.
+    """
     css = "ok" if row.is_complete else (
         "bad" if row.status == "failed" else "warn")
     label = _esc(row.status_label)
-    if not row.is_complete and row.progress:
-        label += f' <span class="num">{row.progress:.0f}%</span>'
+    stage = STAGE_LABELS.get(row.stage, row.stage)
+    if row.status == "failed" and stage:
+        label += f" عند «{_esc(stage)}»"
+    elif not row.is_complete and row.status != "failed" and row.progress:
+        label += f' <span class="num">{min(row.progress, 99):.0f}%</span>'
     return f'<span class="pill {css}">{label}</span>'
 
 

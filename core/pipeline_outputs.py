@@ -61,15 +61,17 @@ class OutputsMixin:
 
         from config.schemas import StudyPack
 
-        signature = self._study_signature()
+        fingerprint = self._study_fingerprint(job)
         study_path = job.job_dir / "study.json"
         if study_path.is_file():
             try:
                 stored = StudyPack(**json.loads(
                     study_path.read_text(encoding="utf-8")))
-                if stored.generated_by == signature and not stored.is_empty():
-                    logger.info("حزمة تعليمية محفوظة بالتوقيع نفسه — أُعيد استعمالها.")
+                reason = _study_reuse_blocker(stored, fingerprint)
+                if reason is None:
+                    logger.info("حزمة تعليمية محفوظة بالبصمة نفسها — أُعيد استعمالها.")
                     return stored
+                logger.info(f"لا تُعاد الحزمة التعليمية المحفوظة: {reason}")
             except Exception as exc:
                 logger.warning(f"تعذّرت قراءة study.json المحفوظ: {exc}")
 
@@ -82,12 +84,38 @@ class OutputsMixin:
 
         if pack is None or pack.is_empty():
             return None
+        pack.fingerprint = fingerprint
         try:
             atomic_write_text(study_path, pack.model_dump_json(indent=2))
             job.register_artifact("study", study_path)
         except Exception as exc:
             logger.warning(f"تعذّر حفظ study.json: {exc}")
         return pack
+
+    def _study_fingerprint(self, job) -> str:
+        """كل ما يغيّر الحزمة إن تغيّر — لا اسم المزوّد وحده.
+
+        كان الاستعمال يُعاد بتطابق ``ai:{provider}/{model}`` فقط، فتعود حزمةٌ
+        بُنيت من تفريغٍ أو خطةٍ أو إعدادٍ أو موجّهٍ آخر (مراجعة 1.19.0).
+        """
+        import hashlib
+
+        from ai.study_builder import SYSTEM_PROMPT
+
+        settings = self.config.study
+        artifacts = job.state.artifacts
+        parts = {
+            "signature": self._study_signature(),
+            "transcription": getattr(artifacts.get("transcription"), "checksum", ""),
+            "plan": getattr(artifacts.get("plan"), "checksum", ""),
+            "settings": settings.model_dump(exclude={"api_key", "api_key_env",
+                                                     "workspace_id", "base_url",
+                                                     "timeout_seconds"}),
+            "prompt": hashlib.sha256(SYSTEM_PROMPT.encode("utf-8")).hexdigest()[:12],
+            "anonymize": bool(getattr(self.config.document, "anonymize_names", False)),
+        }
+        blob = json.dumps(parts, ensure_ascii=False, sort_keys=True, default=str)
+        return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:20]
 
     def _study_signature(self) -> str:
         settings = self.config.study
@@ -288,7 +316,21 @@ class OutputsMixin:
         موضعٌ واحد يمرّ به كل مسار: المؤلّف المرئي والصياغة النصّية والمخطّط
         الزمني. فلا تُرسل الصورة، ولا تدخل المستند، ولا تُنسخ إلى SCORM/HTML.
         """
-        if not getattr(self.config.document, "withhold_sensitive_screens", True):
+        document = self.config.document
+        guarded = (getattr(document, "withhold_sensitive_screens", True)
+                   or getattr(document, "anonymize_names", False))
+        unscanned = [k for k in keyframes
+                     if not (getattr(k, "privacy_scanned", False)
+                             or getattr(k, "redacted", False))]
+        if guarded and unscanned:
+            # الحماية مفعّلة ولم تُقرأ اللقطات: لا يُفترض أنها آمنة. رُصد في
+            # مراجعة 1.19.0 أن هذا المسار كان صامتًا تمامًا.
+            self._plan_notes.append(
+                f"privacy: لم تُفحص {len(unscanned)} من {len(keyframes)} لقطة "
+                "(Tesseract غير متاح) — لم تُكشف شاشات الدخول ولم تُطمس الأسماء "
+                "وأرقام الهوية فيها؛ راجع الصور قبل توزيع المستند")
+            logger.warning(f"{len(unscanned)} لقطة لم تمرّ بفحص الخصوصية.")
+        if not getattr(document, "withhold_sensitive_screens", True):
             return keyframes
         withheld = [k for k in keyframes if getattr(k, "sensitive", None)]
         if not withheld:
@@ -448,3 +490,20 @@ class OutputsMixin:
 
         emit(Stage.MATCHING, 0.9, "بناء بنية المستند…")
         return self.planner.build(transcript, keyframes, title, subtitle)
+
+
+def _study_reuse_blocker(stored, fingerprint: str):
+    """سبب رفض إعادة استعمال حزمة محفوظة — أو ``None`` إن صلحت.
+
+    الحزمة الناقصة لا تُعاد: تشغيل 1.15.1 خرج بمسردٍ وحده بعد ردٍّ مقطوع،
+    وإعادته كما هي تجعل الإصلاح لا يصل أبدًا إلى تلك المهمّة.
+    """
+    if not stored.fingerprint:
+        return "بلا بصمة (قبل 1.19.1)"
+    if stored.fingerprint != fingerprint:
+        return "تغيّر التفريغ أو الخطة أو الإعداد أو الموجّه"
+    if stored.failures:
+        return f"ناقصة — تعذّرت {len(stored.failures)} دفعة"
+    if stored.is_empty():
+        return "فارغة"
+    return None

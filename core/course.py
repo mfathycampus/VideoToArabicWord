@@ -47,6 +47,8 @@ class LectureRow:
     status: str
     status_label: str
     progress: float = 0.0
+    #: آخر مرحلة بلغتها المهمّة (``Stage.value``) — تُعرض مع الفشل بدل نسبة.
+    stage: str = ""
     duration_seconds: float = 0.0
     sections: int = 0
     figures: int = 0
@@ -128,7 +130,7 @@ def _row_from_job(job: JobSummary) -> LectureRow:
     row = LectureRow(
         name=job.name, job_dir=job.job_dir, status=job.status,
         status_label=job.status_label, progress=job.progress,
-        last_error=job.last_error or "")
+        stage=job.stage or "", last_error=job.last_error or "")
 
     metadata = _read_json(job.job_dir / "metadata.json") or {}
     row.duration_seconds = float(metadata.get("duration_seconds") or 0.0)
