@@ -34,6 +34,12 @@ RPC_VERSION = 1
 _OP_HELLO, _OP_IDENTIFY, _OP_IDENTIFIED, _OP_REQUEST, _OP_RESPONSE = 0, 1, 2, 6, 7
 #: رمز حالة obs-websocket: المورد غير موجود.
 CODE_NOT_FOUND = 600
+#: رمز حالة obs-websocket: OBS لم يكمل إقلاعه بعد («OBS is not ready to
+#: perform the request»). خادم websocket يقبل الاتصال والتوثيق قبل أن تكتمل
+#: واجهة OBS، فأوّل طلب بعد التشغيل قد يُرفض بهذا الرمز. حالة مؤقتة لا فشل.
+CODE_NOT_READY = 207
+#: أقصى انتظار لاكتمال إقلاع OBS قبل اعتبار الرفض نهائيًّا.
+NOT_READY_TIMEOUT = 30.0
 
 
 class ObsRequestFailed(RecordingControlError):
@@ -73,9 +79,15 @@ class ObsWebSocket:
 
     def __init__(self, host: str, port: int, password: str, *,
                  connect: Optional[Callable] = None,
-                 timeout: float = 10.0) -> None:
+                 timeout: float = 10.0,
+                 not_ready_timeout: float = NOT_READY_TIMEOUT,
+                 sleep: Callable[[float], None] = time.sleep,
+                 clock: Callable[[], float] = time.monotonic) -> None:
         self.host, self.port, self.password = host, port, password
         self.timeout = timeout
+        self.not_ready_timeout = not_ready_timeout
+        self._sleep = sleep
+        self._clock = clock
         self._connect = connect or _default_connect
         self._ws = None
         self.obs_version = ""
@@ -122,6 +134,18 @@ class ObsWebSocket:
     # -- الطلبات ---------------------------------------------------
     def request(self, request_type: str,
                 data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """يرسل الطلب، ويعيده تلقائيًّا ما دام OBS يردّ «لم أجهز بعد» (207)."""
+        deadline = self._clock() + self.not_ready_timeout
+        while True:
+            try:
+                return self._request_once(request_type, data)
+            except ObsRequestFailed as exc:
+                if exc.code != CODE_NOT_READY or self._clock() >= deadline:
+                    raise
+            self._sleep(0.5)
+
+    def _request_once(self, request_type: str,
+                      data: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         if self._ws is None:
             raise RecordingControlError("لا اتصال مفتوح مع OBS.")
         request_id = uuid.uuid4().hex

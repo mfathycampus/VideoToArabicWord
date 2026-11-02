@@ -274,3 +274,84 @@ def test_start_times_out_if_obs_never_reports_active(tmp_path):
     rec = ObsRecorder(fake, sleep=lambda _s: None, clock=lambda: next(ticks))
     with pytest.raises(RecordingControlError, match="لم يبدأ"):
         rec.start(timeout=10)
+
+
+def test_request_retries_while_obs_is_not_ready():
+    """1.19.3: أوّل طلب بعد الإقلاع قد يُرفض بـ207 — يُعاد بدل أن يفشل التسجيل."""
+    sock = FakeSocket("p", {"GetProfileList": lambda d: {"profiles": ["Maeen"]}})
+    refusals = {"left": 3}
+    original = sock.send
+
+    def send(text):
+        msg = json.loads(text)
+        if msg["op"] == 6 and refusals["left"]:
+            refusals["left"] -= 1
+            d = msg["d"]
+            sock.outbox.append(json.dumps({"op": 7, "d": {
+                "requestType": d["requestType"], "requestId": d["requestId"],
+                "requestStatus": {"result": False, "code": 207,
+                                  "comment": "OBS is not ready to perform the request."}}}))
+            return
+        original(text)
+
+    sock.send = send
+    sleeps = []
+    client = ObsWebSocket("h", 1, "p", connect=lambda u, t: sock,
+                          sleep=sleeps.append)
+    client.open()
+    assert client.request("GetProfileList") == {"profiles": ["Maeen"]}
+    assert len(sleeps) == 3
+
+
+def test_request_gives_up_on_not_ready_after_timeout():
+    sock = FakeSocket("p", {})
+    original = sock.send
+
+    def send(text):
+        msg = json.loads(text)
+        if msg["op"] == 6:
+            d = msg["d"]
+            sock.outbox.append(json.dumps({"op": 7, "d": {
+                "requestType": d["requestType"], "requestId": d["requestId"],
+                "requestStatus": {"result": False, "code": 207}}}))
+            return
+        original(text)
+
+    sock.send = send
+    now = [0.0]
+    client = ObsWebSocket("h", 1, "p", connect=lambda u, t: sock,
+                          not_ready_timeout=5.0,
+                          sleep=lambda s: now.__setitem__(0, now[0] + s),
+                          clock=lambda: now[0])
+    client.open()
+    with pytest.raises(ObsRequestFailed) as info:
+        client.request("GetProfileList")
+    assert info.value.code == 207 and now[0] >= 5.0
+
+
+def test_request_does_not_retry_other_failures():
+    sock = FakeSocket("p", {"GetSceneItemId": lambda d: False})
+    sleeps = []
+    client = ObsWebSocket("h", 1, "p", connect=lambda u, t: sock,
+                          sleep=sleeps.append)
+    client.open()
+    with pytest.raises(ObsRequestFailed):
+        client.request("GetSceneItemId", {})
+    assert sleeps == []
+
+
+def test_log_tail_hides_benign_startup_noise(tmp_path):
+    """أسطر AJA/DeckLink/NVIDIA تُكتب عند كل إقلاع ولا تفسّر الفشل."""
+    from recording import obs_log
+    exe = tmp_path / "obs" / "32.2.2" / "bin" / "64bit" / "obs64.exe"
+    logs = obs_config.config_dir(exe) / "logs"
+    logs.mkdir(parents=True)
+    (logs / "a.txt").write_text(
+        "08:48:48.734: Failed to initialize module 'aja.dll'\n"
+        "08:48:48.818: Failed to load 'en-US' text for module: 'decklink-captions.dll'\n"
+        "08:48:49.140: Failed to get C:\\Program Files\\NVIDIA Corporation\\NVIDIA "
+        "Audio Effects SDK\\NVAudioEffects.dll version info size\n"
+        "08:48:49.936: LoadLibrary failed for 'nvEncodeAPI64.dll': not found\n"
+        "08:48:49.936: Failed to initialize module 'obs-nvenc.dll'\n"
+        "08:49:01.000: Starting the output failed\n", encoding="utf-8")
+    assert obs_log.log_tail(exe) == "08:49:01.000: Starting the output failed"
