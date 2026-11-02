@@ -7,6 +7,22 @@ from typing import List
 from recording.obs_config import config_dir
 
 _MARKERS = ("error", "failed", "unable", "cannot", "warning: ")
+#: أسطر يكتبها OBS عند كل إقلاع على جهاز بلا بطاقة التقاط أو بطاقة NVIDIA —
+#: لا علاقة لها بفشل التسجيل، وعرضها يوهم المستخدم أنها السبب.
+_BENIGN = (
+    "'aja", "aja-",            # بطاقات AJA
+    "decklink",               # بطاقات Blackmagic DeckLink
+    "nvidia corporation",     # NVIDIA Audio/Video Effects SDK
+    "nvencodeapi",            # NVENC (التسجيل يستعمل x264 فلا يحتاجه)
+    "obs-nvenc",
+    "nvvideoeffects", "nvaudioeffects",
+)
+
+
+def _relevant(line: str) -> bool:
+    low = line.lower()
+    return (any(m in low for m in _MARKERS)
+            and not any(b in low for b in _BENIGN))
 
 
 def log_tail(exe: Path, max_lines: int = 8) -> str:
@@ -20,5 +36,5 @@ def log_tail(exe: Path, max_lines: int = 8) -> str:
     except OSError:
         return ""
     hits: List[str] = [ln.strip() for ln in text.splitlines()
-                       if any(m in ln.lower() for m in _MARKERS)]
+                       if _relevant(ln)]
     return "\n".join(hits[-max_lines:])
