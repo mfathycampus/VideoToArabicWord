@@ -162,6 +162,40 @@ def write(record: AuditRecord, *extra_dirs: Path) -> List[Path]:
     return written
 
 
+def _writable(directory: Path) -> bool:
+    """هل يُكتب السجلّ هنا؟ يُفتح الملفّ للإلحاق بلا كتابة شيء."""
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        with open(directory / AUDIT_FILENAME, "a", encoding="utf-8"):
+            pass
+        return True
+    except Exception:                                 # noqa: BLE001
+        return False
+
+
+def _required_by_policy(config) -> bool:
+    return "require_audit_log" in (getattr(config, "policy_locked", {}) or {})
+
+
+def preflight(config, job_dir: Optional[Path]) -> None:
+    """سياسةٌ تُلزم السجلّ + سحابةٌ مسموحة ⇒ موضع كتابة مضمون **قبل** أي إرسال.
+
+    1.20.0: الكتابة تجري في نهاية المهمّة ولا ترمي — فمجلدٌ للقراءة فقط
+    كان يعني إرسالًا بلا شهادة رغم أن الجهة فرضت الشهادة. الفحص هنا قبل
+    البدء، حين ما زال المنع ممكنًا.
+    """
+    if not (_required_by_policy(config) and cloud_providers_in_use(config)):
+        return
+    targets = [default_audit_dir()] + ([Path(job_dir)] if job_dir else [])
+    if any(_writable(d) for d in targets):
+        return
+    from core.exceptions import AuditLogUnavailableError
+    raise AuditLogUnavailableError(
+        "سياسة الجهاز تُلزم سجلّ التدقيق، ولا يمكن الكتابة في "
+        f"{targets[0]} ولا في مجلد المهمة — لن يُرسل شيء إلى مزوّد سحابي بلا "
+        "سجلّ. أصلح صلاحيات المجلد، أو عطّل إعادة الصياغة السحابية لهذه المهمة.")
+
+
 @contextmanager
 def record_job(config, source: Path, job_dir: Optional[Path] = None,
                enabled: bool = True):
@@ -173,6 +207,7 @@ def record_job(config, source: Path, job_dir: Optional[Path] = None,
     """
     from ai import providers as provider_layer
 
+    preflight(config, job_dir)
     # الصفحة البيضاء أولًا: ما يُسجَّل بعدها هو ما جرى في هذه المهمّة.
     provider_layer.reset_egress()
 
@@ -214,5 +249,13 @@ def record_job(config, source: Path, job_dir: Optional[Path] = None,
             record.images_left_device = int(egress.get("images", 0))
         except Exception as exc:
             logger.warning(f"تعذّرت قراءة سجلّ الخروج: {exc}")
-        if enabled:
-            write(record, Path(record.job_dir) if record.job_dir else None)
+            left = True                   # لا نعرف ⇒ لا نفترض أنه لم يخرج شيء
+        else:
+            left = bool(record.text_left_device or record.images_left_device)
+        # 1.20.0: «كل إرسال فعلي يُسجَّل» — وعدٌ لا يتوقّف على خيار السجلّ
+        # العام. المهمّة المحلّية بلا سجلّ إن عطّله المستخدم؛ ما خرج يُسجَّل.
+        if enabled or left:
+            written = write(record, Path(record.job_dir) if record.job_dir else None)
+            if left and not written:
+                logger.error("خرجت بيانات إلى مزوّد سحابي وتعذّرت كتابة سجلّ "
+                             "التدقيق في كل المواضع.")

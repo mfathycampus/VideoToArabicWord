@@ -274,12 +274,16 @@ class MediaStagesMixin:
 
         total = len(keyframes)
         hidden = other = 0
+        unread: List[str] = []
+        unblurred: List[str] = []
         for index, kf in enumerate(keyframes):
             cancel_token.raise_if_cancelled()
             emit(Stage.KEYFRAMES, 0.85 + 0.15 * (index / total),
                 f"استخراج نص الشاشة… ({index + 1}/{total})")
             path = images_dir / kf.filename
-            kf.privacy_scanned = True
+            # العلامات تُرفع بعد النجاح لا قبله (1.20.0): كانت ``privacy_scanned``
+            # تُضبط قبل القراءة، و``redacted`` بعد طمسٍ فشل، فتُعدّ اللقطة آمنة.
+            kf.privacy_scanned = kf.redacted = kf.redaction_failed = False
             if getattr(self.config.document, "anonymize_names", False):
                 from video.ocr import extract_text_and_words
                 from video.redact import blur_boxes, redact_keyframe
@@ -289,21 +293,37 @@ class MediaStagesMixin:
                     scrub_screen_text,
                 )
 
-                text, words = extract_text_and_words(path)
+                result = extract_text_and_words(path)
+                if getattr(result, "failed", False):
+                    unread.append(kf.filename)
+                    continue
+                text, words = result
+                kf.privacy_scanned = True
                 # التصنيف قبل الطمس: «Password» و«Sign in» قد تُحذف من النصّ.
                 kf.sensitive = classify_screen(text)
-                kf.ocr_text, names = redact_keyframe(path, words, text)
+                blur_ok = True
+                try:
+                    kf.ocr_text, names = redact_keyframe(path, words, text, strict=True)
+                except Exception:                     # noqa: BLE001 - سُجّل في redact
+                    from video.redact import find_name_boxes, scrub_text
+                    names = find_name_boxes(words)[1]
+                    kf.ocr_text = scrub_text(text, names)
+                    blur_ok = False
                 boxes, counts, tokens = find_sensitive_boxes(words)
                 if boxes:
                     try:
                         blur_boxes(path, boxes)
                     except Exception as exc:          # noqa: BLE001
                         logger.warning(f"تعذّر طمس {path.name}: {exc}")
+                        blur_ok = False
                     kf.ocr_text = scrub_screen_text(kf.ocr_text, tokens)
                 kf.redactions = dict(counts)
                 if names:
                     kf.redactions["name"] = len(names)
-                kf.redacted = True
+                kf.redacted = blur_ok
+                kf.redaction_failed = not blur_ok
+                if not blur_ok:
+                    unblurred.append(kf.filename)
                 if names or boxes:
                     hidden += len(names)
                     other += sum(counts.values())
@@ -315,8 +335,21 @@ class MediaStagesMixin:
             else:
                 from video.sensitive import classify_screen
 
-                kf.ocr_text = extract_text(path)
+                text = extract_text(path)
+                if getattr(text, "failed", False):
+                    unread.append(kf.filename)
+                    continue
+                kf.privacy_scanned = True
+                kf.ocr_text = str(text)
                 kf.sensitive = classify_screen(kf.ocr_text)
+        if unread:
+            logger.warning(
+                f"تعذّرت قراءة {len(unread)} لقطة (مهلة/خطأ Tesseract) — تُعامل "
+                "«غير مفحوصة»: لا تُرسل إلى مزوّد سحابي: " + "، ".join(unread[:8]))
+        if unblurred:
+            logger.warning(
+                f"فشل طمس {len(unblurred)} لقطة — تُحجب عن السحابة والمستند: "
+                + "، ".join(unblurred[:8]))
         if hidden:
             logger.info(f"إخفاء الأسماء: مُوِّه {hidden} اسمًا/بريدًا في اللقطات "
                         "وحُذف من نصّ الشاشة.")

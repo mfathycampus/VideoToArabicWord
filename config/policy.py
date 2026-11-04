@@ -96,11 +96,55 @@ class Policy:
 _EMPTY = Policy()
 
 
-def load(path: Optional[Path] = None) -> Policy:
-    """يقرأ السياسة. أي عطل يعيد سياسة فارغة ولا يمنع التشغيل.
+#: رسالة القفل حين يتعذّر فهم ملفّ السياسة.
+BROKEN_NOTICE = ("ملفّ سياسة الجهاز غير مقروء — المزوّدات السحابية ممنوعة "
+                 "حتى يُصلحه مسؤول تقنية المعلومات")
+_TRUE = {"true", "yes", "on", "1"}
+_FALSE = {"false", "no", "off", "0"}
 
-    ملفٌّ تالف يجب ألا يوقف معلّمًا عن عمله — لكنه يُسجَّل بوضوح، لأن
-    سياسةً يظنّها المسؤول مفروضة وهي غير مقروءة أخطرُ من لا سياسة.
+
+def _parse_bool(key: str, value) -> bool:
+    """قيمة منطقية صريحة؛ وما لا يُفهم يُقرأ **بالأشدّ تقييدًا**.
+
+    1.20.0: ``bool(data[key])`` قلب ``allow_cloud_ai: 'false'`` (نصٌّ مقتبس)
+    إلى ``True`` — فسياسة المنع لم تمنع شيئًا والمسؤول يظنّها مطبّقة.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in _TRUE:
+        return True
+    if text in _FALSE:
+        return False
+    strict = not key.startswith("allow_")      # allow_* ⇒ False، require_* ⇒ True
+    logger.warning(f"سياسة الجهاز: قيمة غير مفهومة لـ{key} ({value!r}) — "
+                   f"طُبّق الأشدّ تقييدًا ({strict}).")
+    return strict
+
+
+def _broken(path: Path, exc: Exception) -> Policy:
+    """ملفّ سياسة موجود ولا يُفهم: يمنع السحابة، ويترك العمل المحلّي.
+
+    كان يعيد سياسة فارغة — فخطأ تنسيقٍ واحد يُطلق كل ما قصد المسؤول منعه.
+    والتوازن القديم باقٍ: المعلّم لا يُوقَف عن عمله، المعالجة المحلّية
+    كلّها تعمل؛ ما يُمنع هو خروج البيانات وحده إلى أن يُصلَح الملفّ.
+    """
+    logger.error(f"تعذّرت قراءة سياسة الجهاز {path}: {exc} — مُنعت المزوّدات "
+                 "السحابية احتياطًا حتى يُصلَح الملفّ.")
+    policy = Policy(source=str(path), notice=BROKEN_NOTICE,
+                    allow_cloud_ai=False, allow_cloud_images=False)
+    policy.locked = {"allow_cloud_ai": BROKEN_NOTICE,
+                     "allow_cloud_images": BROKEN_NOTICE}
+    return policy
+
+
+def load(path: Optional[Path] = None) -> Policy:
+    """يقرأ السياسة. لا يمنع التشغيل أبدًا.
+
+    ملفٌّ تالف لا يوقف معلّمًا عن عمله، لكنه لا يُطلق ما قصد المسؤول منعه:
+    تُمنع المزوّدات السحابية حتى يُصلَح (``_broken``).
     """
     path = path or policy_path()
     if path is None:
@@ -113,8 +157,7 @@ def load(path: Optional[Path] = None) -> Policy:
         if not isinstance(data, dict):
             raise ValueError("جذر الملفّ ليس قاموسًا")
     except Exception as exc:
-        logger.warning(f"تعذّرت قراءة سياسة الجهاز {path}: {exc}")
-        return _EMPTY
+        return _broken(Path(path), exc)
 
     policy = Policy(source=str(path), notice=str(data.get("notice") or ""))
     known = {
@@ -130,7 +173,9 @@ def load(path: Optional[Path] = None) -> Policy:
     }
     for key, caster in known.items():
         if key in data and data[key] is not None:
-            setattr(policy, key, caster(data[key]))
+            value = (_parse_bool(key, data[key]) if caster is bool
+                     else str(data[key]))
+            setattr(policy, key, value)
     formats = data.get("lock_export_formats")
     if isinstance(formats, list):
         policy.lock_export_formats = [str(f).strip().lower() for f in formats]

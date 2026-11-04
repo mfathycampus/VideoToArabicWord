@@ -190,9 +190,15 @@ class ApplicationConfig(BaseModel):
     #: الجهاز (``require_audit_log``) فلا يستطيع المستخدم تعطيله.
     audit_log: bool = False
     #: إرسال أعداد الاستخدام المجمّعة (لا أسماء ولا نصوص) لمسؤول الترخيص —
-    #: انظر ``core/stats.to_payload`` و``utils/stats_report``. يُعلَن في
-    #: صفحة الإعدادات، وتمنعه سياسة الجهاز ``allow_usage_stats: false``.
-    share_usage_stats: bool = True
+    #: انظر ``core/stats.to_payload`` و``utils/stats_report``. تمنعه سياسة
+    #: الجهاز ``allow_usage_stats: false``.
+    #:
+    #: 1.20.0: **بموافقة لا افتراضيًّا.** كان ``True`` ويُرسل عند فتح الواجهة
+    #: قبل أن يرى المستخدم الإعلان — والوعد أن الاتصال الوحيد افتراضيًّا هو
+    #: تنزيل النموذج بإذن. لا يُرسل شيء قبل ``usage_stats_asked`` (سؤالٌ مرّة
+    #: واحدة في الواجهة، أو تغيير الخيار يدويًّا).
+    share_usage_stats: bool = False
+    usage_stats_asked: bool = False
 
 
 class TranscriptionConfig(BaseModel):

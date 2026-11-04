@@ -7,7 +7,10 @@
     python tools/make_license.py revoke --code VTAW-....
 
 ‏``init`` يولّد زوج مفاتيح: العام يُكتب في ``licensing/keys.py`` ويُشحن مع
-البرنامج، والخاص يُحفظ في ``license_private.key`` **خارج المستودع**.
+البرنامج، والخاص يُحفظ في ``license_private.key`` **خارج مجلد المشروع**:
+‏``%APPDATA%\\VideoToArabicWord\\`` على ويندوز (مجلد المستخدم، لا يُشارَك ولا
+يدخل أرشيف المشروع)، أو المسار في ``VTAD_LICENSE_KEY``. المفتاح القديم في جذر
+المشروع يعمل مع تحذير، و``move-key`` ينقله.
 ضياع الخاص يعني أن الأكواد القديمة تبقى صالحة ولا يمكن إصدار جديد؛
 تسرّبه يعني أن غيرك يستطيع إصدار تراخيص — احفظه كما تحفظ كلمة مرور.
 
@@ -19,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import secrets
 import sys
 import time
@@ -33,7 +37,29 @@ from licensing.lease import Lease  # noqa: E402
 from licensing.signing import generate_keypair, sign  # noqa: E402
 from utils.console import enable_utf8_console  # noqa: E402
 
-PRIVATE_KEY_FILE = ROOT / "license_private.key"
+KEY_FILENAME = "license_private.key"
+#: الموضع القديم — داخل مجلد المشروع، فيُنسخ معه ويُضغط معه (مراجعة 1.20.0).
+LEGACY_KEY_FILE = ROOT / KEY_FILENAME
+
+
+def key_path() -> Path:
+    """موضع المفتاح الخاص: ``VTAD_LICENSE_KEY`` أو مجلد إعداد المستخدم."""
+    override = os.environ.get("VTAD_LICENSE_KEY", "").strip()
+    if override:
+        return Path(override)
+    if sys.platform.startswith("win"):
+        base = Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming")
+        return base / "VideoToArabicWord" / KEY_FILENAME
+    return Path.home() / ".config" / "videotoarabicword" / KEY_FILENAME
+
+
+def _write_key(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    try:
+        os.chmod(path, 0o600)          # بلا أثر يُذكر على ويندوز؛ مجلد المستخدم يحميه
+    except OSError:
+        pass
 CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"   # بلا O/0 و I/1
 
 
@@ -44,9 +70,15 @@ def _new_code() -> str:
 
 
 def _private_key() -> str:
-    if not PRIVATE_KEY_FILE.exists():
-        raise SystemExit(f"لا مفتاح خاص في {PRIVATE_KEY_FILE} — شغّل: init")
-    return PRIVATE_KEY_FILE.read_text(encoding="utf-8").strip()
+    path = key_path()
+    if path.exists():
+        return path.read_text(encoding="utf-8").strip()
+    if LEGACY_KEY_FILE.exists():
+        print(f"⚠ المفتاح الخاص في مجلد المشروع ({LEGACY_KEY_FILE}) — يُنسخ مع "
+              "المجلد ويدخل أي أرشيف له. انقله: python tools/make_license.py move-key",
+              file=sys.stderr)
+        return LEGACY_KEY_FILE.read_text(encoding="utf-8").strip()
+    raise SystemExit(f"لا مفتاح خاص في {path} — شغّل: init")
 
 
 def _admin_post(server: str, token: str, path: str, payload: dict) -> dict:
@@ -63,20 +95,41 @@ def _admin_post(server: str, token: str, path: str, payload: dict) -> dict:
                          f"{exc.read().decode('utf-8')[:200]}") from exc
 
 
+def cmd_move_key(args) -> int:
+    """ينقل المفتاح من جذر المشروع إلى ``key_path()`` — لا يولّد ولا يغيّر شيئًا."""
+    target = key_path()
+    if not LEGACY_KEY_FILE.exists():
+        print(f"لا مفتاح في مجلد المشروع. الموضع الحالي: {target}"
+              + ("" if target.exists() else " (غير موجود)"))
+        return 0
+    text = LEGACY_KEY_FILE.read_text(encoding="utf-8")
+    if target.exists():
+        if target.read_text(encoding="utf-8").strip() != text.strip():
+            raise SystemExit(f"يوجد مفتاح مختلف في {target} — لم يُنقل شيء.")
+    else:
+        _write_key(target, text)
+    if target.read_text(encoding="utf-8").strip() != text.strip():
+        raise SystemExit("تعذّر التحقق من النسخة الجديدة — لم يُحذف الأصل.")
+    LEGACY_KEY_FILE.unlink()
+    print(f"نُقل المفتاح إلى {target} وحُذف من مجلد المشروع.")
+    return 0
+
+
 def cmd_init(args) -> int:
-    if PRIVATE_KEY_FILE.exists() and not args.force:
+    existing = next((p for p in (key_path(), LEGACY_KEY_FILE) if p.exists()), None)
+    if existing and not args.force:
         raise SystemExit(
-            f"يوجد مفتاح خاص في {PRIVATE_KEY_FILE}. توليد مفتاح جديد يُبطل "
+            f"يوجد مفتاح خاص في {existing}. توليد مفتاح جديد يُبطل "
             "كل الأكواد الصادرة. أضف --force إن كنت متأكدًا.")
     private, public = generate_keypair()
-    PRIVATE_KEY_FILE.write_text(private + "\n", encoding="utf-8")
+    _write_key(key_path(), private + "\n")
     keys = ROOT / "licensing" / "keys.py"
     text = keys.read_text(encoding="utf-8")
     text = text.replace('PUBLIC_KEY_B64 = ""', f'PUBLIC_KEY_B64 = "{public}"')
     if args.server:
         text = text.replace('SERVER_URL = ""', f'SERVER_URL = "{args.server}"')
     keys.write_text(text, encoding="utf-8")
-    print(f"المفتاح الخاص: {PRIVATE_KEY_FILE}  ← احفظه ولا ترفعه إلى Git")
+    print(f"المفتاح الخاص: {key_path()}  ← احفظ نسخة منه في مكان آمن ولا ترفعه إلى Git")
     print(f"المفتاح العام كُتب في {keys}")
     print("وللخادم: ضَع المفتاح الخاص سرًّا باسم LICENSE_PRIVATE_KEY")
     return 0
@@ -122,6 +175,10 @@ def main() -> int:
     enable_utf8_console()
     parser = argparse.ArgumentParser(description="إصدار أكواد التفعيل")
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    move = subparsers.add_parser(
+        "move-key", help="نقل المفتاح الخاص من مجلد المشروع إلى مجلد المستخدم")
+    move.set_defaults(func=cmd_move_key)
 
     init = subparsers.add_parser("init", help="توليد زوج المفاتيح")
     init.add_argument("--server", default="")

@@ -101,6 +101,11 @@ class RecordingControlError(EnvironmentError):
     """فشل التحكم في OBS عبر obs-websocket."""
 
 
+class AuditLogUnavailableError(EnvironmentError):
+    error_code = "E2004"
+    """سياسة الجهاز تُلزم سجلّ التدقيق، والإرسال السحابي مسموح، ولا موضع يُكتب فيه السجلّ."""
+
+
 class RecordingToolDownloadError(NetworkError):
     error_code = "E5001"
     """تعذّر تنزيل أداة التسجيل أو فشل التحقق من سلامتها."""
