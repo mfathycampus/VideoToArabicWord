@@ -739,8 +739,13 @@ class TranscriptionEngine:
                     fraction = min(1.0, (seg.end + offset) / total)
                     # الوقت المتبقي: بدونه تبدو النسبة الزاحفة وكأن
                     # البرنامج متجمد، والمستخدم يلغي عملًا سليمًا
+                    # المعدّل من صوت **هذا التشغيل** وحده: بعد استئنافٍ عند
+                    # 80٪ كانت النسبة الكلّية تُقسَم على دقائق قليلة من
+                    # العمل فيخرج «متبقٍ» أقصر من الحقيقة بأضعاف.
+                    run_fraction = (min(1.0, seg.end / remaining_total)
+                                    if remaining_total > 0 else fraction)
                     remaining = estimate_remaining(
-                        time.monotonic() - started_at, fraction)
+                        time.monotonic() - started_at, run_fraction)
                     eta = (f" · متبقٍ ~{humanize_duration(remaining)}"
                            if remaining is not None else "")
                     progress_callback(

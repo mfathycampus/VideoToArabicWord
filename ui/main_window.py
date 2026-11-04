@@ -1533,16 +1533,36 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
                 f"على {device} توقّع مدة أطول بكثير من Whisper.")
             return
 
-        seconds = estimate_processing_seconds(
-            self.model_combo.currentData(), duration, on_gpu=on_gpu)
-        if int(self.beam_combo.currentData() or 5) == 1:
-            seconds /= GREEDY_SPEEDUP
+        model = self.model_combo.currentData()
+        measured = self._measured_speed(engine, model)
+        if measured is not None:
+            # سرعة هذا الجهاز نفسه في مهامّه السابقة — أصدق من أي معامل
+            # قِيس على جهاز آخر (1.19.4).
+            seconds = duration * measured.ratio
+            from utils.arabic_plural import TASKS_AFTER_PREPOSITION, count_label
+            basis = (f" (بسرعة هذا الجهاز في آخر "
+                     f"{count_label(measured.jobs, TASKS_AFTER_PREPOSITION)})")
+        else:
+            seconds = estimate_processing_seconds(model, duration, on_gpu=on_gpu)
+            if int(self.beam_combo.currentData() or 5) == 1:
+                seconds /= GREEDY_SPEEDUP
+            basis = " (تقدير عام — يدقّ بعد أول مهمّة على هذا الجهاز)"
         if self.transcript_only_check.isChecked():
             # بلا تحليل بصري ولا بناء مستند
             seconds *= 0.9
         self.estimate_label.setText(
             f"سيُعالَج {humanize_duration(duration)}{clip_note} — "
-            f"المعالجة على {device} تستغرق ~{humanize_duration(seconds)}")
+            f"المعالجة على {device} تستغرق ~{humanize_duration(seconds)}{basis}")
+
+    @staticmethod
+    def _measured_speed(engine: str, model: str):
+        """سرعة المعالجة المقيسة على هذا الجهاز، أو ``None`` (لا يرمي)."""
+        try:
+            from core import stats
+            return stats.measured_processing_ratio(
+                stats.load_facts(), engine=str(engine or ""), model=str(model or ""))
+        except Exception:                             # noqa: BLE001
+            return None
 
     # ------------------------------------------------------------------
     def start(self) -> None:
@@ -1640,6 +1660,10 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
         self.append_log("بدأت المعالجة…")
         if self.estimate_label.text():
             self.append_log(self.estimate_label.text())
+            # أثناء العمل يحسب الشريط المتبقّي من السرعة الفعلية؛ رقمان
+            # بلا وسم بدَوَا متناقضَين (1.19.4). يعود التقدير عند الانتهاء.
+            self.estimate_label.setText(
+                f"التقدير قبل البدء: {self.estimate_label.text()}")
         self.append_log("يمكنك الإيقاف المؤقت أو الإلغاء في أي وقت — "
                         "المراحل المكتملة تُحفظ وتُستأنف لاحقًا.")
         self.thread.start()
@@ -1660,6 +1684,7 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
 
     def _reset_buttons(self) -> None:
         self._set_running(False)
+        self._refresh_estimate()
         self.start_button.setEnabled(self.video_path is not None)
         self.pause_button.setText("إيقاف مؤقت")
         self._refresh_rebuild_button()
