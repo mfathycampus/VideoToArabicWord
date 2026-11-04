@@ -84,13 +84,19 @@ def _count(n: int, one: str, two: str, few: str) -> str:
     return f"{n} {one}"
 
 
+#: لا يُعرض «متبقٍ» قبل هذه النسبة. 1.19.4: عند 1.4٪ (دقيقة من 72) قال
+#: الشريط «ساعتان و23 دقيقة» والتقدير المسبق «ساعة و32 دقيقة» — أوّل دقيقة
+#: فيها بطء الإحماء، فالاستقراء منها يقفز ويناقض نفسه بعد دقائق.
+MIN_ETA_FRACTION = 0.03
+
+
 def estimate_remaining(elapsed: float, fraction_done: float) -> float | None:
     """الوقت المتبقي المقدَّر من نسبة الإنجاز والزمن المنقضي.
 
-    يعيد ``None`` قبل تجميع عيّنة كافية — تقدير مبني على أول ثانية من
-    العمل يكون عشوائيًا ويفقد ثقة المستخدم أكثر مما يفيده.
+    يعيد ``None`` قبل تجميع عيّنة كافية (``MIN_ETA_FRACTION``) — تقدير مبني
+    على أوّل دقيقة من العمل يكون عشوائيًا ويفقد ثقة المستخدم أكثر مما يفيده.
     """
-    if fraction_done <= 0.005 or elapsed < 5.0:
+    if fraction_done < MIN_ETA_FRACTION or elapsed < 5.0:
         return None
     return elapsed * (1.0 - fraction_done) / fraction_done
 

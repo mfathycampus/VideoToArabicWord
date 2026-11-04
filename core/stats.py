@@ -196,6 +196,43 @@ def load_facts(output_dirs: Iterable[Path] = (),
     return sorted(latest.values(), key=lambda f: f.at)
 
 
+# ── سرعة هذا الجهاز ─────────────────────────────────────────────────
+#: أقصر مهمّة تُقاس منها السرعة: مقطعٌ قصير يغلب عليه زمن تحميل النموذج.
+MIN_MEASURED_DURATION_SECONDS = 120.0
+#: آخر عدد مهامّ يُؤخذ وسيطها — الجهاز يتغيّر (ترقية، كرت شاشة).
+RECENT_SPEED_JOBS = 8
+
+
+@dataclass(frozen=True)
+class MeasuredSpeed:
+    """ثوانٍ معالجة لكل ثانية فيديو، مقيسةً على هذا الجهاز."""
+    ratio: float
+    jobs: int
+
+
+def measured_processing_ratio(facts: Iterable[JobFact], *, engine: str,
+                              model: str) -> Optional[MeasuredSpeed]:
+    """وسيط ``زمن المعالجة ÷ مدّة الفيديو`` لآخر المهامّ المكتملة بنفس المحرّك والنموذج.
+
+    1.19.4: التقدير المسبق كان معاملًا ثابتًا قِيس على جهاز آخر (turbo:
+    1.28)، وجهاز المستخدم يعالج بـ0.4× — فقال «ساعة و32 دقيقة» لعملٍ يأخذ
+    قرابة ثلاث ساعات. **الوسيط لا المتوسّط:** إعادة بناء مستندٍ من تفريغٍ
+    محفوظ، أو مهمّة مستأنفة، تعطي سرعةً خيالية؛ وإيقافٌ مؤقّت طويل يعطي
+    بطئًا خياليًّا. واحدةٌ منها لا تحرّك الوسيط.
+    """
+    ratios = [f.elapsed_seconds / f.duration_seconds for f in facts
+              if f.status == "completed" and f.engine == engine
+              and f.model == model and f.elapsed_seconds > 0
+              and f.duration_seconds >= MIN_MEASURED_DURATION_SECONDS]
+    ratios = sorted(ratios[-RECENT_SPEED_JOBS:])
+    if not ratios:
+        return None
+    mid = len(ratios) // 2
+    median = (ratios[mid] if len(ratios) % 2
+              else (ratios[mid - 1] + ratios[mid]) / 2)
+    return MeasuredSpeed(ratio=median, jobs=len(ratios))
+
+
 # ── التجميع ─────────────────────────────────────────────────────────
 @dataclass
 class MonthBucket:

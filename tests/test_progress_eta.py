@@ -95,3 +95,9 @@ def test_transcriber_progress_message_carries_eta(monkeypatch):
     assert "25.0%" in message
     assert "دقيقة" in message
     assert "متبقٍ" in message
+
+
+def test_no_eta_before_three_percent():
+    """1.19.4: عند 1.4٪ قفز «متبقٍ» إلى ساعتين وناقض التقدير المسبق."""
+    assert estimate_remaining(120.0, 0.014) is None
+    assert estimate_remaining(300.0, 0.03) is not None
