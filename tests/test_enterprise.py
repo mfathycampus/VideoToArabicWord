@@ -264,6 +264,46 @@ def test_audit_failure_never_breaks_a_job(tmp_path, monkeypatch):
         pass          # لا استثناء
 
 
+def test_actual_egress_is_audited_even_with_the_log_disabled(tmp_path, monkeypatch):
+    """1.20.0: «كل إرسال فعلي يُسجَّل» — كان يتوقّف على خيار السجلّ العام."""
+    from ai import providers
+    from utils import audit
+
+    monkeypatch.setenv("VTAD_AUDIT_DIR", str(tmp_path / "central"))
+    source = tmp_path / "د.mp4"
+    source.write_bytes(b"x")
+    with audit.record_job(AppConfig(), source, tmp_path / "job", enabled=False):
+        pass                                          # محلّية: لا سجلّ
+    assert not (tmp_path / "central" / audit.AUDIT_FILENAME).exists()
+
+    with audit.record_job(AppConfig(), source, tmp_path / "job", enabled=False):
+        providers.record_egress("anthropic", True, images=2)
+    line = json.loads((tmp_path / "job" / audit.AUDIT_FILENAME)
+                      .read_text(encoding="utf-8").strip())
+    assert line["text_left_device"] is True and line["images_left_device"] == 2
+
+
+def test_required_audit_blocks_cloud_jobs_when_unwritable(tmp_path, monkeypatch):
+    """السياسة تُلزم الشهادة ولا موضع لها ⇒ لا تبدأ مهمّة سحابية."""
+    from core.exceptions import AuditLogUnavailableError
+    from utils import audit
+
+    monkeypatch.setattr(audit, "_writable", lambda d: False)
+    config = AppConfig()
+    config.rewrite.enabled = True
+    config.rewrite.provider = "anthropic"
+    config.policy_locked = {"require_audit_log": "سياسة"}
+    source = tmp_path / "د.mp4"
+    source.write_bytes(b"x")
+    with pytest.raises(AuditLogUnavailableError):
+        with audit.record_job(config, source, tmp_path / "job"):
+            pytest.fail("بدأت المهمّة")
+
+    config.rewrite.provider = "ollama"                # محلّية: تعمل
+    with audit.record_job(config, source, tmp_path / "job"):
+        pass
+
+
 # ---------------------------------------------------------------------
 # سياسة الجهاز
 # ---------------------------------------------------------------------
@@ -315,10 +355,30 @@ def test_policy_forces_the_audit_log_and_locks_the_formats(tmp_path, monkeypatch
 
 
 def test_a_broken_policy_file_never_stops_the_program(tmp_path, monkeypatch):
-    """معلّمٌ مُوقَف بسبب ملفّ أخطأ المسؤول في كتابته ليس أمنًا."""
+    """معلّمٌ مُوقَف بسبب ملفّ أخطأ المسؤول في كتابته ليس أمنًا — لكن 1.20.0:
+    الملفّ التالف لا يُطلق ما قصد المسؤول منعه؛ تُمنع السحابة وحدها."""
     _write_policy(tmp_path, "allow_cloud_ai: [هذا ليس منطقيًّا\n", monkeypatch)
     config = AppConfig.load(None)
-    assert config.policy_locked == {}
+    assert set(config.policy_locked) == {"allow_cloud_ai", "allow_cloud_images"}
+    assert config.rewrite.provider == "ollama"
+
+
+@pytest.mark.parametrize("raw", ["'false'", '"False"', "no", "off", "0"])
+def test_quoted_false_still_blocks_cloud(tmp_path, monkeypatch, raw):
+    """``bool('false')`` كان ``True``: سياسة المنع لم تكن تمنع."""
+    _write_policy(tmp_path, f"allow_cloud_ai: {raw}\nallow_cloud_images: {raw}\n",
+                  monkeypatch)
+    from config import policy as policy_mod
+    policy = policy_mod.load()
+    assert policy.allow_cloud_ai is False and policy.allow_cloud_images is False
+
+
+def test_unintelligible_value_is_read_as_the_strictest(tmp_path, monkeypatch):
+    _write_policy(tmp_path, "allow_cloud_ai: ربما\nrequire_audit_log: نعم\n",
+                  monkeypatch)
+    from config import policy as policy_mod
+    policy = policy_mod.load()
+    assert policy.allow_cloud_ai is False and policy.require_audit_log is True
 
 
 def test_no_policy_file_means_no_locks(tmp_path, monkeypatch):

@@ -113,6 +113,8 @@ def licensed(monkeypatch):
 
 def test_report_sends_payload_and_throttles(licensed, tmp_path):
     config = AppConfig()
+    config.application.share_usage_stats = True
+    config.application.usage_stats_asked = True
     config.application.output_dir = tmp_path / "out"
     sent = []
     sender = lambda *args: sent.append(args)  # noqa: E731
@@ -147,3 +149,26 @@ def test_no_report_without_activation(monkeypatch):
     monkeypatch.setattr(app_gate, "current_code", lambda: None)
     assert stats_report.maybe_report(
         AppConfig(), force=True, sender=lambda *a: pytest.fail("أُرسل")) is False
+
+
+
+# ── 1.20.0: بموافقة لا افتراضيًّا ─────────────────────────────────────
+def test_nothing_is_sent_before_the_user_is_asked(licensed):
+    """مراجعة خارجية: الإرسال كان يجري عند فتح الواجهة قبل أي موافقة."""
+    config = AppConfig()
+    assert config.application.share_usage_stats is False
+    sender = lambda *a: pytest.fail("أُرسل قبل الموافقة")  # noqa: E731
+    assert stats_report.maybe_report(config, force=True, sender=sender) is False
+    # إعدادٌ قديم حُفظ بـTrue الافتراضية ولم يُسأل صاحبه بعد
+    config.application.share_usage_stats = True
+    assert stats_report.maybe_report(config, force=True, sender=sender) is False
+    assert stats_report.should_ask(config) is True
+
+
+def test_no_question_when_policy_decides_or_already_answered(licensed):
+    config = AppConfig()
+    config.policy_locked = {"allow_usage_stats": "سياسة"}
+    assert stats_report.should_ask(config) is False
+    config = AppConfig()
+    config.application.usage_stats_asked = True
+    assert stats_report.should_ask(config) is False

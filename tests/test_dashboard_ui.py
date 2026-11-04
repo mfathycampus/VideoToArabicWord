@@ -135,3 +135,21 @@ def test_share_stats_locked_by_policy(app, tmp_path):
     assert not win.share_stats_check.isEnabled()
     assert not win.share_stats_check.isChecked()
     win.close()
+
+
+def test_first_launch_asks_before_any_usage_report(window, monkeypatch):
+    """1.20.0: السؤال قبل أول إرسال، والجواب يُحفظ ويُعكس في الإعدادات."""
+    from PyQt6.QtWidgets import QMessageBox
+
+    from utils import stats_report
+    sent = []
+    monkeypatch.setattr(stats_report, "should_ask", lambda config: True)
+    monkeypatch.setattr(stats_report, "report_in_background",
+                        lambda config, **k: sent.append(stats_report.enabled(config)))
+    monkeypatch.delenv("VTAD_DISABLE_USAGE_REPORT", raising=False)
+    monkeypatch.setattr(QMessageBox, "question",
+                        lambda *a, **k: QMessageBox.StandardButton.No)
+    window._ask_usage_stats_then_report()
+    app_cfg = window.config.application
+    assert app_cfg.usage_stats_asked is True and app_cfg.share_usage_stats is False
+    assert not window.share_stats_check.isChecked() and sent == [False]

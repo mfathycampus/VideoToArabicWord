@@ -296,13 +296,37 @@ def _ocr_tsv(image_path: Path, timeout_seconds: float) -> Optional[tuple[str, fl
             return None
 
 
+class OcrText(str):
+    """نصّ OCR يحمل ``failed``: فشل القراءة غير «لا نصّ في الصورة».
+
+    1.20.0: كلاهما كان سلسلةً فارغة، ففحص الخصوصية عدّ اللقطة التي تجاوزت
+    مهلة Tesseract «مفحوصةً ونظيفة» وأرسلها. ``str`` فرعيّ ليبقى كل مستدعٍ
+    قديم يعمل كما كان.
+    """
+    failed = False
+
+
+class OcrResult(tuple):
+    """``(النصّ، الكلمات)`` مع ``failed`` — انظر ``OcrText``."""
+    failed = False
+
+
+def _failed_text() -> OcrText:
+    text = OcrText("")
+    text.failed = True
+    return text
+
+
 def extract_text(image_path: Path, timeout_seconds: float = 20.0) -> str:
     """يستخرج النص من صورة لقطة. سلسلة فارغة عند أي فشل أو غياب —
     OCR إثراء اختياري لمحتوى المستند، وليس مرحلة حرجة في الـpipeline،
-    فلا يجوز أن يُسقط استخراج لقطة واحدة معالجة الفيديو كلها.
+    فلا يجوز أن يُسقط استخراج لقطة واحدة معالجة الفيديو كلها. فحص الخصوصية
+    يميّز الفشل بـ``failed`` (‏``OcrText``).
     """
-    text, _words = extract_text_and_words(image_path, timeout_seconds)
-    return text
+    result = extract_text_and_words(image_path, timeout_seconds)
+    if getattr(result, "failed", False):
+        return _failed_text()
+    return OcrText(result[0])
 
 
 def extract_text_and_words(image_path: Path, timeout_seconds: float = 20.0
@@ -310,9 +334,11 @@ def extract_text_and_words(image_path: Path, timeout_seconds: float = 20.0
     """النصّ الموثوق + كل كلمة بإحداثياتها في الصورة الأصلية — بتشغيلٍ واحد."""
     ran = _ocr_tsv(Path(image_path), timeout_seconds)
     if ran is None:
-        return "", []
+        failed = OcrResult(("", []))
+        failed.failed = True
+        return failed
     raw, scale = ran
-    return _clean(_confident_lines(raw)), _words(raw, scale)
+    return OcrResult((_clean(_confident_lines(raw)), _words(raw, scale)))
 
 
 def _words(tsv_text: str, scale: float) -> list[dict]:

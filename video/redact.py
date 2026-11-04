@@ -420,13 +420,19 @@ def scrub_text(text: str, names: Iterable[str]) -> str:
     return "\n".join(line for line in lines if len(line) >= 2)
 
 
-def redact_keyframe(image_path: Path, words: list[dict], text: str
-                    ) -> tuple[str, list[str]]:
-    """يموّه الأسماء في اللقطة ويعيد (النصّ منقّى، الأسماء)."""
+def redact_keyframe(image_path: Path, words: list[dict], text: str, *,
+                    strict: bool = False) -> tuple[str, list[str]]:
+    """يموّه الأسماء في اللقطة ويعيد (النصّ منقّى، الأسماء).
+
+    ``strict``: فشل التمويه يُرمى بدل أن يُسجَّل ويُبتلع — فحص الخصوصية
+    (‏``core/pipeline_media``) لا يجوز أن يَسِم صورةً «مموّهة» لم تُموَّه.
+    """
     boxes, names = find_name_boxes(words)
     if boxes:
         try:
             blur_boxes(image_path, boxes)
         except Exception as exc:                     # noqa: BLE001
             logger.warning(f"تعذّر تمويه الأسماء في {image_path.name}: {exc}")
+            if strict:
+                raise
     return scrub_text(text, names), names

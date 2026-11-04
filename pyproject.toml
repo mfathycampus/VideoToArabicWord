@@ -30,8 +30,15 @@ video-to-word-doctor = "tools.doctor:main"
 # ``version`` وحدةٌ في الجذر لا حزمة — ولولا إدراجها هنا لما وجدها
 # ``attr:`` أدناه ولا شُحنت مع التوزيعة.
 py-modules = ["version"]
-packages = ["ai", "audio", "config", "core", "document", "recording",
-            "screenguide", "tools", "ui", "utils", "video"]
+
+# اكتشافٌ لا قائمة يدوية (1.20.0): القائمة نسيت ``licensing`` (يستورده
+# المزوّد المُدار) و``matching`` والحزم الفرعية ``audio.engines`` و
+# ``document.exporters`` — فكان الـwheel يُثبَّت ثم يسقط عند أول استيراد لها.
+[tool.setuptools.packages.find]
+include = ["ai*", "audio*", "config*", "core*", "document*", "licensing*",
+           "matching*", "recording*", "screenguide*", "tools*", "ui*",
+           "utils*", "video*"]
+exclude = ["tests*"]
 
 [tool.setuptools.dynamic]
 version = { attr = "version.APP_VERSION" }

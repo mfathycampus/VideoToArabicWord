@@ -153,6 +153,9 @@ class KeyframeMetadata(BaseModel):
     #: = لم تُقرأ أصلًا (Tesseract غير مثبّت، أو مهمّة قبل 1.19.1): ``sensitive``
     #: الفارغ عندها لا يعني «آمنة» بل «لم تُفحص».
     privacy_scanned: bool = False
+    #: قُرئت اللقطة ووُجد فيها ما يُطمس، لكن الطمس فشل (قراءة/كتابة الصورة).
+    #: تُحجب عن السحابة والمستند متى فُعّلت الحماية — 1.20.0.
+    redaction_failed: bool = False
 
 
 # ملاحظة: ``TimelineMatchResult`` من الإصدار 1.1 حُذف. حلّ محلّه

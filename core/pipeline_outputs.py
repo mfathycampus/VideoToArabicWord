@@ -327,9 +327,19 @@ class OutputsMixin:
             # مراجعة 1.19.0 أن هذا المسار كان صامتًا تمامًا.
             self._plan_notes.append(
                 f"privacy: لم تُفحص {len(unscanned)} من {len(keyframes)} لقطة "
-                "(Tesseract غير متاح) — لم تُكشف شاشات الدخول ولم تُطمس الأسماء "
+                "(Tesseract غير متاح أو فشلت القراءة) — لم تُكشف شاشات الدخول "
+                "ولم تُطمس الأسماء "
                 "وأرقام الهوية فيها؛ راجع الصور قبل توزيع المستند")
             logger.warning(f"{len(unscanned)} لقطة لم تمرّ بفحص الخصوصية.")
+        failed = [k for k in keyframes if getattr(k, "redaction_failed", False)]
+        if guarded and failed:
+            # وُجد فيها ما يُطمس وفشل الطمس: الصورة كما هي تحمل الاسم أو
+            # الرقم. لا تُرسل ولا تدخل المستند (1.20.0).
+            self._plan_notes.append(
+                f"privacy: فشل طمس {len(failed)} لقطة فحُجبت عن السحابة "
+                "والمستند — تبقى في مجلد المهمة")
+            keyframes = [k for k in keyframes
+                         if not getattr(k, "redaction_failed", False)]
         if not getattr(document, "withhold_sensitive_screens", True):
             return keyframes
         withheld = [k for k in keyframes if getattr(k, "sensitive", None)]
@@ -403,18 +413,27 @@ class OutputsMixin:
                 from ai.visual_author import VisualAuthor, VisualAuthorConfig
 
                 unredacted = [k for k in keyframes if not getattr(k, "redacted", False)]
-                blocked = (anonymize and unredacted and not provider.info.is_local
+                # 1.20.0: حجب شاشات الدخول وحده (بلا إخفاء أسماء) كان لا يمنع
+                # إرسال لقطاتٍ لم تُقرأ أصلًا — فشاشة الدخول التي لم يُكشف عنها
+                # تُرسل. لقطةٌ لم تُفحص لا يُفترض أنها آمنة.
+                unscanned = [k for k in keyframes
+                             if not (getattr(k, "privacy_scanned", False)
+                                     or getattr(k, "redacted", False))]
+                withhold = getattr(self.config.document,
+                                   "withhold_sensitive_screens", True)
+                blocked = (((anonymize and unredacted) or (withhold and unscanned))
+                           and not provider.info.is_local
                            and not getattr(settings, "send_unredacted_images", False))
                 if blocked and VisualAuthor.usable(provider, keyframes):
                     logger.warning(
-                        "إخفاء الأسماء مطلوب ولم تُموَّه اللقطات (Tesseract غير "
-                        "مثبَّت؟) — لن تُرسل اللقطات، والصياغة نصّية. ثبّت "
-                        "Tesseract، أو فعّل rewrite.send_unredacted_images.")
+                        "حماية اللقطات مطلوبة ولم تُفحص/تُموَّه كلّها (Tesseract غير "
+                        "مثبَّت أو فشلت القراءة) — لن تُرسل اللقطات، والصياغة نصّية. "
+                        "ثبّت Tesseract، أو فعّل rewrite.send_unredacted_images.")
                     self._plan_notes.append(
-                        "ai_visual: اللقطات لم تُموَّه فيها الأسماء فلم تُرسل — "
-                        "كُتب المستند بالصياغة النصّية")
+                        "ai_visual: لقطاتٌ لم تُفحص أو لم تُموَّه فيها الأسماء فلم "
+                        "تُرسل — كُتب المستند بالصياغة النصّية")
                     emit(Stage.MATCHING, 0.1,
-                         "اللقطات لم تُموَّه فيها الأسماء — لن تُرسل؛ صياغة نصّية")
+                         "لقطاتٌ لم تُفحص/تُموَّه — لن تُرسل؛ صياغة نصّية")
                 elif VisualAuthor.usable(provider, keyframes):
                     emit(Stage.MATCHING, 0.1, "كتابة المستند من لقطات الشاشة والكلام…")
                     try:

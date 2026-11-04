@@ -4,8 +4,9 @@
 جودة وصيغ وميزات، مربوطةً بكود التفعيل الذي يعرفه الخادم أصلًا. لا أسماء
 ملفات ولا نصوص ولا لقطات ولا مسارات.
 
-الشروط كلّها لازمة: الإعداد ``application.share_usage_stats`` (تمنعه سياسة
-الجهاز ``allow_usage_stats: false``)، ونسخةٌ بترخيص، وكودٌ مفعَّل. والإرسال
+الشروط كلّها لازمة: موافقة المستخدم (``application.share_usage_stats`` مع
+``usage_stats_asked``؛ تمنعه سياسة الجهاز ``allow_usage_stats: false``)،
+ونسخةٌ بترخيص، وكودٌ مفعَّل. والإرسال
 مرّةً كل ``MIN_INTERVAL`` على الأكثر إلا بعد مهمّة، وفي خيطٍ خلفي لا يؤخّر
 شيئًا، وفشله صامت: جهازٌ بلا إنترنت حالٌ طبيعية لا خطأ.
 """
@@ -48,10 +49,28 @@ def _remember(now: float) -> None:
 
 
 def enabled(config) -> bool:
+    """موافقةٌ صريحة لازمة: الخيار مفعّل **و** سُئل المستخدم (1.20.0)."""
     if os.environ.get("VTAD_DISABLE_USAGE_REPORT"):
         return False                      # الاختبارات وبيئات البناء
-    return bool(getattr(getattr(config, "application", None),
-                        "share_usage_stats", False))
+    app = getattr(config, "application", None)
+    return bool(getattr(app, "share_usage_stats", False)
+                and getattr(app, "usage_stats_asked", False))
+
+
+def should_ask(config) -> bool:
+    """هل يُسأل المستخدم الآن؟ نسخةٌ مرخّصة بكود مفعّل، لم تُسأل، والسياسة لا تقفله."""
+    if os.environ.get("VTAD_DISABLE_USAGE_REPORT"):
+        return False
+    app = getattr(config, "application", None)
+    if getattr(app, "usage_stats_asked", False):
+        return False
+    if "allow_usage_stats" in (getattr(config, "policy_locked", {}) or {}):
+        return False
+    try:
+        from licensing import app_gate
+        return bool(app_gate.licensing_enabled() and app_gate.current_code())
+    except Exception:                                 # noqa: BLE001
+        return False
 
 
 def maybe_report(config, *, force: bool = False, now: Optional[float] = None,

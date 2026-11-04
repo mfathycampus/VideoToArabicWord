@@ -114,9 +114,10 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
         self._refresh_profile_notice()
         self._warn_if_config_failed_to_load()
         # إبلاغٌ دوريّ مقيَّد بالوقت (مرّة كل 6 ساعات على الأكثر) — انظر
-        # ``utils/stats_report``. لا شيء إن عطّله المستخدم أو السياسة.
-        from utils import stats_report
-        stats_report.report_in_background(self.config)
+        # ``utils/stats_report``. لا شيء قبل موافقة المستخدم (1.20.0)، ولا
+        # شيء إن عطّله أو منعته السياسة. السؤال بعد ظهور النافذة.
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(0, self._ask_usage_stats_then_report)
 
     # ------------------------------------------------------------------
     def _build_ui(self) -> None:
@@ -956,7 +957,31 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
 
     def _on_share_stats_toggled(self, checked: bool) -> None:
         self.config.application.share_usage_stats = bool(checked)
+        self.config.application.usage_stats_asked = True   # قرارٌ صريح
         self._save_config()
+
+    def _ask_usage_stats_then_report(self) -> None:
+        """يسأل مرّةً واحدة قبل أول إرسال، ثم يرسل إن وافق المستخدم."""
+        from utils import stats_report
+        if stats_report.should_ask(self.config):
+            answer = QMessageBox.question(
+                self, "إحصاءات الاستخدام",
+                "هل تسمح بإرسال أعداد استخدام مجمّعة إلى مسؤول الترخيص؟\n\n"
+                "يُرسل مع كود التفعيل: عدد المهام والمكتمل منها، ودقائق الفيديو، "
+                "ومتوسط الجودة، والصيغ والميزات المستعملة. لا أسماء ملفات ولا "
+                "نصوص ولا صور ولا تسجيلات.\n\n"
+                "يمكنك تغيير ذلك في أي وقت من «الإعدادات ← الخصوصية والإحصاءات».",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No)
+            agreed = answer == QMessageBox.StandardButton.Yes
+            self.config.application.share_usage_stats = agreed
+            self.config.application.usage_stats_asked = True
+            self._save_config()
+            if hasattr(self, "share_stats_check"):
+                self.share_stats_check.blockSignals(True)
+                self.share_stats_check.setChecked(agreed)
+                self.share_stats_check.blockSignals(False)
+        stats_report.report_in_background(self.config)
 
     def _build_header(self) -> QWidget:
         """شريط علوي يحمل شعار البرنامج واسمه.
