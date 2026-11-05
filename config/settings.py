@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any, Dict
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -451,9 +452,18 @@ class DocumentConfig(BaseModel):
 class RewriteSettings(BaseModel):
     """إعادة الصياغة — معطّلة افتراضيًا (ADR-016)."""
     enabled: bool = False
-    provider: str = "anthropic"       # anthropic | ollama | openai_compatible
-    model: str = ""                   # فارغ = افتراضي المزوّد
-    base_url: str = ""
+    provider: str = "anthropic"       # anthropic | ollama | openai_compatible | azure_openai
+    model: str = ""                   # فارغ = افتراضي المزوّد؛ لـAzure: اسم النشر
+    base_url: str = ""                # لـAzure: عنوان المورد (Endpoint)
+    #: 1.21.0 — كلّها من الواجهة لا من الملف. ``preset``: مزوّدٌ شائع بواجهة
+    #: OpenAI (‏``ai.providers.COMPAT_PRESETS``) يملأ العنوان.
+    preset: str = ""
+    api_version: str = ""             # Azure وحده؛ فارغ = افتراضي المزوّد
+    #: النموذج يقرأ الصور؟ ``False`` ⇒ صياغة نصّية بلا محاولة مرئية.
+    model_supports_images: bool = True
+    #: إعداد كل مزوّد محفوظًا حين يُبدَّل إلى غيره، فيعود كما كان. الحقول
+    #: أعلاه هي النشطة وحدها. المفاتيح هنا تُشفَّر عند الحفظ كـ``api_key``.
+    saved_profiles: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
     api_key_env: str = ""             # فارغ = افتراضي المزوّد
     # بديل عن متغيّر البيئة: يُقرأ من ملف الإعداد مباشرةً فلا يحتاج
     # إعادة فتح البرنامج بعد setx. يُحفظ مشفَّرًا بمفتاح محلي — انظر
@@ -661,6 +671,9 @@ class AppConfig(BaseModel):
             if rewrite_data.get("api_key"):
                 rewrite_data["api_key"] = decrypt_field(
                     rewrite_data["api_key"], config_dir)
+            for profile in (rewrite_data.get("saved_profiles") or {}).values():
+                if isinstance(profile, dict) and profile.get("api_key"):
+                    profile["api_key"] = decrypt_field(profile["api_key"], config_dir)
             study_data = data.get("study") or {}
             if study_data.get("api_key"):
                 study_data["api_key"] = decrypt_field(
@@ -700,6 +713,9 @@ class AppConfig(BaseModel):
         if data.get("rewrite", {}).get("api_key"):
             data["rewrite"]["api_key"] = encrypt_field(
                 data["rewrite"]["api_key"], path.parent)
+        for profile in (data.get("rewrite", {}).get("saved_profiles") or {}).values():
+            if isinstance(profile, dict) and profile.get("api_key"):
+                profile["api_key"] = encrypt_field(profile["api_key"], path.parent)
         if data.get("study", {}).get("api_key"):
             data["study"]["api_key"] = encrypt_field(
                 data["study"]["api_key"], path.parent)

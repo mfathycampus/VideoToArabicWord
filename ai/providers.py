@@ -411,38 +411,67 @@ class OpenAICompatibleProvider(LLMProvider):
     def __init__(self, model: str = "gpt-4o-mini",
                  base_url: str = "https://api.openai.com/v1",
                  api_key_env: str = "OPENAI_API_KEY",
-                 api_key: str = "") -> None:
+                 api_key: str = "", vision: bool = True) -> None:
         self.model = model
         self.base_url = base_url.rstrip("/")
         self.api_key_env = api_key_env
         self._explicit_key = api_key.strip()
+        #: 1.21.0: من الواجهة («النموذج يقرأ الصور»). نموذجٌ نصّيّ كان يرفض
+        #: الطلب المرئي بخطأ؛ الآن يسقط إلى الصياغة النصّية مباشرةً.
+        self.supports_vision = bool(vision)
+        #: بعض النماذج الأحدث ترفض ``max_tokens`` وتطلب ``max_completion_tokens``
+        #: (ولا تقبل ``temperature``). يُكتشف من أوّل رفض ويُتذكَّر.
+        self._new_token_param = False
 
     @property
     def api_key(self) -> Optional[str]:
         return self._explicit_key or os.environ.get(self.api_key_env)
 
     def is_available(self) -> bool:
-        return bool(self.api_key)
+        return bool(self.api_key) and bool(self.base_url) and bool(self.model)
+
+    # -- نقاط التخصيص (Azure) -------------------------------------------
+    def _endpoint(self) -> str:
+        return f"{self.base_url}/chat/completions"
+
+    def _auth_headers(self) -> dict:
+        return {"Authorization": f"Bearer {self.api_key}"}
+
+    def _body(self, system_prompt: str, user_prompt, max_tokens: int) -> dict:
+        body = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": self._user_content(user_prompt)},
+            ],
+        }
+        if self._new_token_param:
+            body["max_completion_tokens"] = max_tokens
+        else:
+            body["temperature"] = 0.2
+            body["max_tokens"] = max_tokens
+        return body
 
     def complete(self, system_prompt: str, user_prompt: str,
                  max_tokens: int = 2048, timeout: int = 180) -> str:
         if not self.api_key:
             raise RewriteUnavailableError(
-                f"مفتاح الوصول غير مضبوط. عيّن متغيّر البيئة {self.api_key_env}.")
-        payload = json.dumps({
-            "model": self.model,
-            "temperature": 0.2,
-            "max_tokens": max_tokens,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": self._user_content(user_prompt)},
-            ],
-        }).encode("utf-8")
+                "مفتاح الوصول غير مضبوط — ألصقه في حقل «مفتاح الوصول».")
+        if not self.model:
+            raise RewriteUnavailableError("اسم النموذج فارغ — اكتبه في حقل «النموذج».")
+        try:
+            return self._send(system_prompt, user_prompt, max_tokens, timeout)
+        except _TokenParamRejected:
+            self._new_token_param = True
+            return self._send(system_prompt, user_prompt, max_tokens, timeout)
+
+    def _send(self, system_prompt, user_prompt, max_tokens, timeout) -> str:
+        payload = json.dumps(self._body(system_prompt, user_prompt, max_tokens)
+                             ).encode("utf-8")
         images = count_images(user_prompt)
         request = urllib.request.Request(
-            f"{self.base_url}/chat/completions", data=payload,
-            headers={"Content-Type": "application/json",
-                     "Authorization": f"Bearer {self.api_key}"})
+            self._endpoint(), data=payload,
+            headers={"Content-Type": "application/json", **self._auth_headers()})
         check_egress_gate()
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -459,6 +488,9 @@ class OpenAICompatibleProvider(LLMProvider):
             # ردٌّ بخطأ يعني أن الطلب **وصل** — أي أن النصّ غادر.
             record_egress(self.info.name, True, f"HTTP {exc.code}", images=images)
             detail = exc.read().decode("utf-8", "replace")[:300]
+            if (exc.code == 400 and not self._new_token_param
+                    and "max_completion_tokens" in detail):
+                raise _TokenParamRejected() from exc
             raise RewriteUnavailableError(
                 f"رفضت الخدمة الطلب ({exc.code}): {detail}",
                 retryable=exc.code == 429 or exc.code >= 500) from exc
@@ -483,12 +515,103 @@ class OpenAICompatibleProvider(LLMProvider):
         return content
 
 
+class _TokenParamRejected(Exception):
+    """داخلي: الخادم يطلب ``max_completion_tokens`` بدل ``max_tokens``."""
+
+
+class AzureOpenAIProvider(OpenAICompatibleProvider):
+    """Azure OpenAI باشتراك الجهة: عنوان المورد + اسم النشر + إصدار الواجهة.
+
+    يختلف عن واجهة OpenAI في موضعين فقط: المسار يحمل اسم النشر والإصدار،
+    والمفتاح في ترويسة ``api-key`` لا ``Authorization``.
+    """
+
+    info = ProviderInfo(
+        name="azure_openai", label_ar="Azure OpenAI (اشتراك الجهة)",
+        is_local=False,
+        privacy_note="⚠ يُرسل نص التفريغ إلى مورد Azure الخاص بالجهة.")
+
+    DEFAULT_API_VERSION = "2024-10-21"
+
+    def __init__(self, endpoint: str = "", deployment: str = "",
+                 api_version: str = "", api_key: str = "",
+                 api_key_env: str = "AZURE_OPENAI_API_KEY", vision: bool = True) -> None:
+        super().__init__(model=deployment, base_url=endpoint,
+                         api_key_env=api_key_env, api_key=api_key, vision=vision)
+        self.api_version = api_version.strip() or self.DEFAULT_API_VERSION
+
+    def _endpoint(self) -> str:
+        base = self.base_url
+        for suffix in ("/openai", "/openai/v1"):
+            if base.endswith(suffix):
+                base = base[: -len(suffix)]
+        return (f"{base}/openai/deployments/{self.model}/chat/completions"
+                f"?api-version={self.api_version}")
+
+    def _auth_headers(self) -> dict:
+        return {"api-key": self.api_key or ""}
+
+    def _body(self, system_prompt, user_prompt, max_tokens) -> dict:
+        body = super()._body(system_prompt, user_prompt, max_tokens)
+        body.pop("model", None)          # النشر في المسار
+        return body
+
+
+@dataclass(frozen=True)
+class CompatPreset:
+    """مزوّدٌ شائع بواجهة OpenAI: يملأ العنوان من الواجهة بدل ملف الإعداد."""
+    key: str
+    label: str
+    base_url: str
+    model_hint: str          # مثالٌ يظهر في الحقل الفارغ — الأسماء تتغيّر، فلا تُفرض
+    vision: bool = True
+    key_hint: str = ""
+
+
+#: 1.21.0. العنوان يُملأ تلقائيًّا، واسم النموذج من حساب الجهة.
+COMPAT_PRESETS = (
+    CompatPreset("openai", "OpenAI", "https://api.openai.com/v1",
+                 "gpt-4o-mini", True, "sk-…"),
+    CompatPreset("gemini", "Google Gemini",
+                 "https://generativelanguage.googleapis.com/v1beta/openai",
+                 "gemini-2.5-flash", True, "AIza…"),
+    CompatPreset("mistral", "Mistral", "https://api.mistral.ai/v1",
+                 "mistral-large-latest", False),
+    CompatPreset("groq", "Groq", "https://api.groq.com/openai/v1",
+                 "llama-3.3-70b-versatile", False, "gsk_…"),
+    CompatPreset("deepseek", "DeepSeek", "https://api.deepseek.com",
+                 "deepseek-chat", False, "sk-…"),
+    CompatPreset("openrouter", "OpenRouter", "https://openrouter.ai/api/v1",
+                 "openai/gpt-4o-mini", True, "sk-or-…"),
+    CompatPreset("custom", "خادم آخر (عنوان مخصّص)", "", "", True),
+)
+
+
+def compat_preset(key: str) -> Optional[CompatPreset]:
+    return next((p for p in COMPAT_PRESETS if p.key == key), None)
+
+
+def guess_preset(base_url: str) -> str:
+    """الإعداد الجاهز المطابق لعنوانٍ محفوظ — لإعدادات ما قبل 1.21.0."""
+    url = (base_url or "").rstrip("/")
+    if not url:
+        return "openai"
+    for preset in COMPAT_PRESETS:
+        if preset.base_url and preset.base_url.rstrip("/") == url:
+            return preset.key
+    return "custom"
+
+
+#: مزوّدون تُعرض لهم حقول العنوان/النموذج في الواجهة.
+CONFIGURABLE_PROVIDERS = ("openai_compatible", "azure_openai")
+
 # المزوّدون المتاحون بالترتيب المعروض في الواجهة
 PROVIDER_CHOICES = (
     ("maeen_managed", "معين المُدار — بلا مفتاح (رصيد دقائق)"),
     ("anthropic", "Claude API — أدق صياغة عربية"),
     ("ollama", "Ollama — نموذج محلي على جهازك"),
-    ("openai_compatible", "خدمة أخرى بواجهة OpenAI"),
+    ("openai_compatible", "OpenAI أو Gemini أو مزوّد آخر (مفتاح الجهة)"),
+    ("azure_openai", "Azure OpenAI (اشتراك الجهة)"),
 )
 
 
@@ -501,7 +624,8 @@ def provider_choices(managed_allowed: bool) -> tuple:
 
 def build_provider(name: str, model: str = "", base_url: str = "",
                    api_key_env: str = "", api_key: str = "",
-                   workspace_id: str = "") -> LLMProvider:
+                   workspace_id: str = "", *, api_version: str = "",
+                   vision: bool = True) -> LLMProvider:
     if name == "anthropic":
         return AnthropicProvider(model=model, base_url=base_url,
                                  api_key_env=api_key_env or "ANTHROPIC_API_KEY",
@@ -512,11 +636,19 @@ def build_provider(name: str, model: str = "", base_url: str = "",
         return OllamaProvider(model=model or "qwen2.5:7b-instruct",
                               host=base_url or "http://127.0.0.1:11434")
     if name in ("openai", "openai_compatible"):
+        # الافتراضي gpt-4o-mini لخادم OpenAI وحده: إرساله إلى Gemini أو غيره
+        # يعطي «نموذج غير موجود» بدل «اكتب اسم النموذج».
+        openai_host = not base_url or "api.openai.com" in base_url
         return OpenAICompatibleProvider(
-            model=model or "gpt-4o-mini",
+            model=model or ("gpt-4o-mini" if openai_host else ""),
             base_url=base_url or "https://api.openai.com/v1",
             api_key_env=api_key_env or "OPENAI_API_KEY",
-            api_key=api_key)
+            api_key=api_key, vision=vision)
+    if name == "azure_openai":
+        return AzureOpenAIProvider(
+            endpoint=base_url, deployment=model, api_version=api_version,
+            api_key=api_key, api_key_env=api_key_env or "AZURE_OPENAI_API_KEY",
+            vision=vision)
     raise RewriteUnavailableError(f"مزوّد غير معروف: {name}")
 
 
@@ -847,4 +979,6 @@ def provider_from_settings(settings) -> "LLMProvider":
     return build_provider(
         settings.provider, model=settings.model,
         base_url=settings.base_url, api_key_env=settings.api_key_env,
-        api_key=settings.api_key, workspace_id=settings.workspace_id)
+        api_key=settings.api_key, workspace_id=getattr(settings, "workspace_id", ""),
+        api_version=getattr(settings, "api_version", ""),
+        vision=getattr(settings, "model_supports_images", True))

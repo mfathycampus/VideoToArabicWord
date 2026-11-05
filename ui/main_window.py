@@ -399,6 +399,8 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
         key_row.addWidget(self.test_button)
         rewrite_layout.addWidget(self.key_row)
 
+        self._build_compat_box(rewrite_layout)
+
         self.workspace_row = QWidget()
         workspace_row = QHBoxLayout(self.workspace_row)
         workspace_row.setContentsMargins(0, 0, 0, 0)
@@ -1192,11 +1194,9 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
         if study is None or not getattr(study, "enabled", False):
             return None
         try:
-            from ai.providers import build_provider
+            from ai.providers import provider_from_settings
 
-            provider = build_provider(study.provider, study.model, study.base_url,
-                                      study.api_key_env, study.api_key,
-                                      getattr(study, "workspace_id", ""))
+            provider = provider_from_settings(study)
             return None if provider.info.is_local else provider.info.label_ar
         except Exception:                             # noqa: BLE001
             return None if study.provider == "ollama" else study.provider
@@ -1214,11 +1214,9 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
         cloud = False
         if rewrite.enabled:
             try:
-                from ai.providers import build_provider
+                from ai.providers import provider_from_settings
 
-                provider = build_provider(rewrite.provider, rewrite.model,
-                                          rewrite.base_url, rewrite.api_key_env,
-                                          rewrite.api_key, rewrite.workspace_id)
+                provider = provider_from_settings(rewrite)
                 cloud = not provider.info.is_local
             except Exception:                         # noqa: BLE001
                 cloud = rewrite.provider != "ollama"
@@ -1621,11 +1619,8 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
         self.config.rewrite.api_key = self.api_key_input.text().strip()
 
         if self.config.rewrite.enabled:
-            from ai.providers import build_provider
-            provider = build_provider(
-                self.config.rewrite.provider, self.config.rewrite.model,
-                self.config.rewrite.base_url, self.config.rewrite.api_key_env,
-                self.config.rewrite.api_key, self.config.rewrite.workspace_id)
+            from ai.providers import provider_from_settings
+            provider = provider_from_settings(self.config.rewrite)
             if not provider.is_available():
                 QMessageBox.warning(
                     self, "مزوّد غير مهيّأ",
