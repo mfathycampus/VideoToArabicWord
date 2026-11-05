@@ -41,7 +41,7 @@ AUDIT_FILENAME = "audit.jsonl"
 #: القائمة صريحة لا مشتقّة من ``is_local``: حقلٌ يقرأه مدقّق امتثال لا
 #: يجوز أن يعتمد على صفةٍ قد يغيّرها تعديلٌ في وحدة أخرى بلا انتباه.
 CLOUD_PROVIDERS = {"anthropic", "maeen_managed", "openai",
-                   "openai_compatible", "cohere"}
+                   "openai_compatible", "azure_openai", "cohere"}
 
 
 def default_audit_dir() -> Path:

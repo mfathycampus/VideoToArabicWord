@@ -10,7 +10,9 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMessageBox,
+    QWidget,
 )
 
 from ui.worker import (
@@ -41,6 +43,165 @@ def format_usage_rows(info: dict) -> str:
 
 
 class RewritePanelMixin:
+    # ------------------------------------------------------------------
+    # 1.21.0: مزوّدٌ بمفتاح الجهة — كل شيء من الواجهة، لا من ملف الإعداد.
+    _PROFILE_FIELDS = ("api_key", "model", "base_url", "preset", "api_version",
+                       "model_supports_images", "workspace_id")
+
+    def _build_compat_box(self, layout) -> None:
+        from PyQt6.QtWidgets import QFormLayout
+
+        from ai.providers import COMPAT_PRESETS, guess_preset
+
+        rewrite = self.config.rewrite
+        if rewrite.provider == "openai_compatible" and not rewrite.preset:
+            rewrite.preset = guess_preset(rewrite.base_url)
+
+        self.compat_box = QWidget()
+        form = QFormLayout(self.compat_box)
+        form.setContentsMargins(0, 0, 0, 0)
+
+        self.preset_combo = QComboBox()
+        for preset in COMPAT_PRESETS:
+            self.preset_combo.addItem(preset.label, preset.key)
+        index = self.preset_combo.findData(rewrite.preset or "openai")
+        self.preset_combo.setCurrentIndex(max(0, index))
+        self.preset_combo.currentIndexChanged.connect(self._on_preset_changed)
+        self.preset_label = QLabel("المزوّد:")
+        form.addRow(self.preset_label, self.preset_combo)
+
+        self.base_url_input = QLineEdit(rewrite.base_url)
+        self.base_url_input.textChanged.connect(
+            lambda t: self._set_rewrite_field("base_url", t.strip()))
+        self.base_url_label = QLabel("عنوان الخادم:")
+        form.addRow(self.base_url_label, self.base_url_input)
+
+        self.model_input = QLineEdit(rewrite.model)
+        self.model_input.textChanged.connect(
+            lambda t: self._set_rewrite_field("model", t.strip()))
+        self.model_label = QLabel("النموذج:")
+        form.addRow(self.model_label, self.model_input)
+
+        self.api_version_input = QLineEdit(rewrite.api_version)
+        self.api_version_input.setPlaceholderText("2024-10-21  (اتركه فارغًا للافتراضي)")
+        self.api_version_input.textChanged.connect(
+            lambda t: self._set_rewrite_field("api_version", t.strip()))
+        self.api_version_label = QLabel("إصدار الواجهة:")
+        form.addRow(self.api_version_label, self.api_version_input)
+
+        self.model_vision_check = QCheckBox(
+            "النموذج يقرأ الصور (يلزم للدليل المصوّر من لقطات الشاشة)")
+        self.model_vision_check.setChecked(bool(rewrite.model_supports_images))
+        self.model_vision_check.toggled.connect(
+            lambda on: self._set_rewrite_field("model_supports_images", bool(on)))
+        form.addRow("", self.model_vision_check)
+        layout.addWidget(self.compat_box)
+
+    def _set_rewrite_field(self, name: str, value) -> None:
+        if getattr(self, "_loading_profile", False):
+            return
+        setattr(self.config.rewrite, name, value)
+        self._update_rewrite_note()
+
+    def _on_preset_changed(self) -> None:
+        from ai.providers import COMPAT_PRESETS, compat_preset
+
+        preset = compat_preset(self.preset_combo.currentData())
+        if preset is None:
+            return
+        self.config.rewrite.preset = preset.key
+        if preset.base_url:
+            self.base_url_input.setText(preset.base_url)
+        elif self.base_url_input.text().strip() in {p.base_url for p in COMPAT_PRESETS}:
+            self.base_url_input.clear()          # «مخصّص»: لا يبقى عنوان مزوّدٍ آخر
+        self.model_vision_check.setChecked(preset.vision)
+        self._sync_compat_box()
+
+    def _sync_compat_box(self) -> None:
+        """يُظهر الحقول اللازمة للمزوّد المختار ويضبط تسمياتها وأمثلتها."""
+        from ai.providers import CONFIGURABLE_PROVIDERS, compat_preset
+
+        name = self.provider_combo.currentData()
+        enabled = self.rewrite_check.isChecked()
+        self.compat_box.setVisible(enabled and name in CONFIGURABLE_PROVIDERS)
+        azure = name == "azure_openai"
+        for widget in (self.preset_label, self.preset_combo):
+            widget.setVisible(not azure)
+        for widget in (self.api_version_label, self.api_version_input):
+            widget.setVisible(azure)
+        if azure:
+            self.base_url_label.setText("عنوان المورد (Endpoint):")
+            self.base_url_input.setPlaceholderText("https://اسم-المورد.openai.azure.com")
+            self.base_url_input.setReadOnly(False)
+            self.model_label.setText("اسم النشر (Deployment):")
+            self.model_input.setPlaceholderText("الاسم الذي أعطته الجهة للنموذج في Azure")
+            self.api_key_input.setPlaceholderText("مفتاح المورد من Azure  (يُحفظ مشفّرًا على جهازك)")
+            return
+        preset = compat_preset(self.preset_combo.currentData())
+        custom = preset is None or not preset.base_url
+        self.base_url_label.setText("عنوان الخادم:")
+        self.base_url_input.setReadOnly(not custom)
+        self.base_url_input.setPlaceholderText(
+            "https://خادم-الجهة/v1  (يتبع واجهة OpenAI)" if custom else "")
+        self.model_label.setText("النموذج:")
+        hint = preset.model_hint if preset else ""
+        self.model_input.setPlaceholderText(
+            f"مثال: {hint}" if hint else "اسم النموذج كما في حساب الجهة")
+        key_hint = preset.key_hint if preset else ""
+        if name == "openai_compatible":
+            self.api_key_input.setPlaceholderText(
+                f"{key_hint}  (مفتاح الجهة — يُحفظ مشفّرًا على جهازك)".strip())
+
+    def _missing_compat_fields(self) -> list:
+        from ai.providers import CONFIGURABLE_PROVIDERS
+
+        rewrite = self.config.rewrite
+        if rewrite.provider not in CONFIGURABLE_PROVIDERS:
+            return []
+        azure = rewrite.provider == "azure_openai"
+        missing = []
+        if not rewrite.base_url.strip():
+            missing.append("عنوان المورد" if azure else "عنوان الخادم")
+        openai_default = (not azure and "api.openai.com" in (rewrite.base_url or ""))
+        if not rewrite.model.strip() and not openai_default:
+            missing.append("اسم النشر" if azure else "اسم النموذج")
+        if not rewrite.api_key.strip():
+            missing.append("مفتاح الوصول")
+        return missing
+
+    def _switch_provider_profile(self, old: str, new: str) -> None:
+        """يحفظ إعداد المزوّد السابق ويستعيد إعداد الجديد (أو يبدأه نظيفًا).
+
+        الحقول مشتركة بين المزوّدين: بلا هذا كان عنوان Gemini يُرسَل إليه
+        طلب Claude، ومفتاح OpenAI يُجرَّب على Anthropic.
+        """
+        rewrite = self.config.rewrite
+        if old:
+            rewrite.saved_profiles[old] = {
+                f: getattr(rewrite, f) for f in self._PROFILE_FIELDS}
+        saved = rewrite.saved_profiles.get(new) or {}
+        defaults = type(rewrite)()
+        for field in self._PROFILE_FIELDS:
+            setattr(rewrite, field, saved.get(field, getattr(defaults, field)))
+        if new == "openai_compatible" and not rewrite.preset:
+            rewrite.preset = "openai"
+            rewrite.base_url = rewrite.base_url or "https://api.openai.com/v1"
+        self._loading_profile = True
+        try:
+            self.api_key_input.setText(rewrite.api_key)
+            self.workspace_input.setText(rewrite.workspace_id)
+            if hasattr(self, "compat_box"):
+                index = self.preset_combo.findData(rewrite.preset or "openai")
+                self.preset_combo.blockSignals(True)
+                self.preset_combo.setCurrentIndex(max(0, index))
+                self.preset_combo.blockSignals(False)
+                self.base_url_input.setText(rewrite.base_url)
+                self.model_input.setText(rewrite.model)
+                self.api_version_input.setText(rewrite.api_version)
+                self.model_vision_check.setChecked(bool(rewrite.model_supports_images))
+        finally:
+            self._loading_profile = False
+
     # ------------------------------------------------------------------
     # موافقة الخصوصية للباقة المُدارة: مرّة واحدة قبل أول إرسال. ‏v2 (1.20.1):
     # النصّ صار يذكر استثناء send_unredacted_images، فيُسأل من وافق على v1.
@@ -213,7 +374,10 @@ class RewritePanelMixin:
     def _on_rewrite_toggled(self) -> None:
         enabled = self.rewrite_check.isChecked()
         self.config.rewrite.enabled = enabled
-        self.config.rewrite.provider = self.provider_combo.currentData()
+        new_provider = self.provider_combo.currentData()
+        if new_provider != self.config.rewrite.provider:
+            self._switch_provider_profile(self.config.rewrite.provider, new_provider)
+        self.config.rewrite.provider = new_provider
         self.provider_combo.setEnabled(enabled)
         if hasattr(self, "vision_check"):
             self.vision_check.setVisible(enabled)
@@ -231,19 +395,19 @@ class RewritePanelMixin:
         فحص وجود المفتاح وحده لا يكفي: مفتاح خاطئ يبدو «جاهزًا» حتى أول
         استدعاء بعد ساعة من التفريغ. الاختبار هنا يكشفه في ثانيتين.
         """
-        from ai.providers import build_provider
+        from ai.providers import provider_from_settings
 
         self.config.rewrite.api_key = self.api_key_input.text().strip()
         self.config.rewrite.provider = self.provider_combo.currentData()
         self.config.rewrite.workspace_id = self.workspace_input.text().strip()
-        provider = build_provider(
-            self.config.rewrite.provider, self.config.rewrite.model,
-            self.config.rewrite.base_url, self.config.rewrite.api_key_env,
-            self.config.rewrite.api_key, self.config.rewrite.workspace_id)
+        provider = provider_from_settings(self.config.rewrite)
 
         if not provider.is_available():
-            QMessageBox.warning(self, "مفتاح مفقود",
-                                "ألصق المفتاح في الحقل أولًا.")
+            missing = self._missing_compat_fields()
+            QMessageBox.warning(
+                self, "إعداد ناقص",
+                ("أكمل: " + "، ".join(missing)) if missing
+                else "ألصق المفتاح في الحقل أولًا.")
             return
 
         # الاختبار على خيط خلفي: نداء الشبكة بمهلة 30 ثانية داخل معالج
@@ -294,8 +458,12 @@ class RewritePanelMixin:
             self.provider_row.setVisible(False)
             self.key_row.setVisible(False)
             self.workspace_row.setVisible(False)
+            if hasattr(self, "compat_box"):
+                self.compat_box.setVisible(False)
             return
         needs_key = self._needs_key()
+        if hasattr(self, "compat_box"):
+            self._sync_compat_box()
         self.provider_row.setVisible(True)
         self.key_row.setVisible(needs_key)
         self.workspace_row.setVisible(
@@ -305,11 +473,8 @@ class RewritePanelMixin:
         name = self.provider_combo.currentData()
         available = False
         try:
-            from ai.providers import build_provider
-            provider = build_provider(
-                name, self.config.rewrite.model, self.config.rewrite.base_url,
-                self.config.rewrite.api_key_env, self.config.rewrite.api_key,
-                self.config.rewrite.workspace_id)
+            from ai.providers import provider_from_settings
+            provider = provider_from_settings(self.config.rewrite)
             available = provider.is_available()
             status = "جاهز ✓" if available else "غير مهيّأ ✗"
             note = provider.info.privacy_note
@@ -321,8 +486,9 @@ class RewritePanelMixin:
                     hint = ("\nفعّل كودًا من باقة «مُدار» من نافذة التفعيل، "
                             "ثم أعد فتح هذه اللوحة.")
                 else:
-                    hint = ("\nألصق المفتاح في الحقل أعلاه ثم اضغط "
-                            "«اختبار وحفظ».")
+                    missing = self._missing_compat_fields()
+                    hint = (("\nأكمل: " + "، ".join(missing)) if missing else
+                            "\nألصق المفتاح في الحقل أعلاه ثم اضغط «اختبار وحفظ».")
             model = getattr(provider, "model", "")
             model_line = f"  النموذج: {model}" if model else ""
         except Exception as exc:
