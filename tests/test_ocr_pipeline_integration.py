@@ -153,8 +153,9 @@ def test_resumed_job_from_before_the_scan_is_scanned_and_its_plan_rebuilt(tmp_pa
     pipeline = make(tmp_path / "out", enable_ocr=False)
     pipeline.run(VIDEO)
     job_dir = pipeline.job_dir_for(VIDEO)
-    plan = json.loads((job_dir / "plan.json").read_text(encoding="utf-8"))
-    assert any(b.get("image_id") for s in plan["sections"] for b in s["blocks"])
+    saved = json.loads((job_dir / "keyframes.json").read_text(encoding="utf-8"))
+    assert saved["keyframes"] and not any(k["privacy_scanned"] for k in saved["keyframes"])
+    # 1.20.1: اللقطات غير المفحوصة لا تدخل المستند أصلًا (كانت تدخله بتحذير)
 
     _login_ocr(monkeypatch)
     pipeline = make(tmp_path / "out", enable_ocr=False)

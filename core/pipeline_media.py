@@ -260,7 +260,7 @@ class MediaStagesMixin:
         Tesseract أو فشل صورة بعينها لا يوقف المعالجة، فقط يترك
         ``ocr_text`` فارغًا.
         """
-        from video.ocr import extract_text, is_available
+        from video.ocr import is_available
 
         if not keyframes:
             return
@@ -300,7 +300,7 @@ class MediaStagesMixin:
                 text, words = result
                 kf.privacy_scanned = True
                 # التصنيف قبل الطمس: «Password» و«Sign in» قد تُحذف من النصّ.
-                kf.sensitive = classify_screen(text)
+                kf.sensitive = classify_screen(_privacy_text(text, words))
                 blur_ok = True
                 try:
                     kf.ocr_text, names = redact_keyframe(path, words, text, strict=True)
@@ -333,15 +333,17 @@ class MediaStagesMixin:
                     except OSError:
                         pass
             else:
+                from video.ocr import extract_text_and_words
                 from video.sensitive import classify_screen
 
-                text = extract_text(path)
-                if getattr(text, "failed", False):
+                result = extract_text_and_words(path)
+                if getattr(result, "failed", False):
                     unread.append(kf.filename)
                     continue
+                text, words = result
                 kf.privacy_scanned = True
                 kf.ocr_text = str(text)
-                kf.sensitive = classify_screen(kf.ocr_text)
+                kf.sensitive = classify_screen(_privacy_text(text, words))
         if unread:
             logger.warning(
                 f"تعذّرت قراءة {len(unread)} لقطة (مهلة/خطأ Tesseract) — تُعامل "
@@ -360,3 +362,15 @@ class MediaStagesMixin:
             logger.info("شاشات دخول: " + "، ".join(
                 f"{k.image_id}@{int(k.timestamp) // 60}:{int(k.timestamp) % 60:02d}"
                 for k in logins))
+
+
+def _privacy_text(text: str, words) -> str:
+    """نصّ فحص الخصوصية: الموثوق **وكل كلمة قُرئت** ولو بثقة منخفضة.
+
+    1.20.1: ``text`` يُسقط الأسطر الضعيفة الثقة (هو ما يُطبع في المستند)،
+    فسطر «Password» باهت كان يسقط فلا تُكشف شاشة الدخول. للعرض نريد الدقّة،
+    وللحماية نريد الشمول: كشفٌ زائد يحجب صورة، وكشفٌ ناقص يسرّب حسابًا.
+    """
+    extra = " ".join(str(w.get("text", "")) for w in (words or []))
+    return f"{text}\n{extra}" if extra else str(text)
+

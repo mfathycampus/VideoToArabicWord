@@ -322,15 +322,29 @@ class OutputsMixin:
         unscanned = [k for k in keyframes
                      if not (getattr(k, "privacy_scanned", False)
                              or getattr(k, "redacted", False))]
-        if guarded and unscanned:
-            # الحماية مفعّلة ولم تُقرأ اللقطات: لا يُفترض أنها آمنة. رُصد في
-            # مراجعة 1.19.0 أن هذا المسار كان صامتًا تمامًا.
+        org_accepts = bool(getattr(getattr(self.config, "rewrite", None),
+                                   "send_unredacted_images", False))
+        if guarded and unscanned and org_accepts:
+            # الجهة قبلت صراحةً لقطاتٍ غير مموّهة: تبقى، ويُقال ذلك.
+            self._plan_notes.append(
+                f"privacy: لم تُفحص {len(unscanned)} من {len(keyframes)} لقطة وبقيت "
+                "في المستند بإعداد الجهة (rewrite.send_unredacted_images) — راجع "
+                "الصور قبل التوزيع")
+            logger.warning(f"{len(unscanned)} لقطة لم تُفحص — أُبقيت بإعداد الجهة.")
+        elif guarded and unscanned:
+            # الحماية مفعّلة ولم تُقرأ اللقطات: لا يُفترض أنها آمنة. 1.20.1: كانت
+            # تبقى في المستند المحلي مع تحذير — والمستند يُوزَّع، وشاشة الدخول
+            # التي لم تُكشف أو الاسم الذي لم يُموَّه يُوزَّع معه. تُحجب الآن عن
+            # المستند والسحابة معًا، وتبقى في مجلد المهمة.
             self._plan_notes.append(
                 f"privacy: لم تُفحص {len(unscanned)} من {len(keyframes)} لقطة "
-                "(Tesseract غير متاح أو فشلت القراءة) — لم تُكشف شاشات الدخول "
-                "ولم تُطمس الأسماء "
-                "وأرقام الهوية فيها؛ راجع الصور قبل توزيع المستند")
-            logger.warning(f"{len(unscanned)} لقطة لم تمرّ بفحص الخصوصية.")
+                "(Tesseract غير متاح أو فشلت القراءة) فحُجبت عن المستند والسحابة — "
+                "تبقى في مجلد المهمة. ثبّت Tesseract أو شغّل tools/doctor.py ثم "
+                "أعد بناء المستند")
+            logger.warning(f"{len(unscanned)} لقطة لم تمرّ بفحص الخصوصية — حُجبت.")
+            keyframes = [k for k in keyframes
+                         if getattr(k, "privacy_scanned", False)
+                         or getattr(k, "redacted", False)]
         failed = [k for k in keyframes if getattr(k, "redaction_failed", False)]
         if guarded and failed:
             # وُجد فيها ما يُطمس وفشل الطمس: الصورة كما هي تحمل الاسم أو
@@ -435,6 +449,18 @@ class OutputsMixin:
                     emit(Stage.MATCHING, 0.1,
                          "لقطاتٌ لم تُفحص/تُموَّه — لن تُرسل؛ صياغة نصّية")
                 elif VisualAuthor.usable(provider, keyframes):
+                    unprotected = [k for k in keyframes
+                                   if not getattr(k, "redacted", False)] if anonymize else []
+                    if unprotected and not provider.info.is_local:
+                        # 1.20.1: الاستثناء ``send_unredacted_images`` كان يمرّ
+                        # صامتًا. صار يُعلَن في المستند والسجلّ في كل مرّة.
+                        logger.warning(
+                            f"rewrite.send_unredacted_images مفعّل — تُرسل "
+                            f"{len(unprotected)} لقطة لم تُموَّه فيها الأسماء إلى "
+                            f"«{provider.info.label_ar}».")
+                        self._plan_notes.append(
+                            f"privacy: أُرسلت {len(unprotected)} لقطة دون تمويه "
+                            "الأسماء بإعداد الجهة (rewrite.send_unredacted_images)")
                     emit(Stage.MATCHING, 0.1, "كتابة المستند من لقطات الشاشة والكلام…")
                     try:
                         author = VisualAuthor(provider, VisualAuthorConfig(
