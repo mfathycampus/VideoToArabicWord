@@ -168,6 +168,21 @@ def reset_egress() -> None:
     _EGRESS["images"] = 0
 
 
+#: فحصٌ يُستدعى قبل كل طلب سحابي (انظر ``utils/audit.record_job``). يرمي
+#: ``FatalProviderError`` ليمنع الإرسال. ``None`` = لا قيد.
+_EGRESS_GATE = None
+
+
+def set_egress_gate(gate) -> None:
+    global _EGRESS_GATE
+    _EGRESS_GATE = gate
+
+
+def check_egress_gate() -> None:
+    if _EGRESS_GATE is not None:
+        _EGRESS_GATE()
+
+
 def record_egress(provider: str, sent: bool, detail: str = "",
                   images: int = 0) -> None:
     """يسجّل محاولة إرسال. ``sent`` = غادرت البيانات فعلًا.
@@ -428,6 +443,7 @@ class OpenAICompatibleProvider(LLMProvider):
             f"{self.base_url}/chat/completions", data=payload,
             headers={"Content-Type": "application/json",
                      "Authorization": f"Bearer {self.api_key}"})
+        check_egress_gate()
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 # الاتصال قام والردّ وصل ⇒ النصّ غادر الجهاز يقينًا.
@@ -690,6 +706,7 @@ class AnthropicProvider(LLMProvider):
         request = urllib.request.Request(
             f"{self.base_url}/v1/messages",
             data=json.dumps(body).encode("utf-8"), headers=headers)
+        check_egress_gate()
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 record_egress(self.info.name, True, images=_body_images(body))

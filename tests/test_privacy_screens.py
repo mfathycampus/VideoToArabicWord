@@ -242,5 +242,7 @@ def test_unscanned_frames_are_reported_not_assumed_safe():
     frames = [KeyframeMetadata(image_id=1, timestamp=9.0, filename="1.jpg", scene_id=1,
                                change_score=0.5, width=10, height=10,
                                selection_reason="stable_frame")]
-    assert host._withhold_sensitive(frames) == frames
+    # 1.20.1: لا تُبقى في المستند — تُحجب، ويُقال ذلك
+    assert host._withhold_sensitive(frames) == []
     assert "لم تُفحص 1 من 1 لقطة" in host._plan_notes[0]
+    assert "حُجبت عن المستند" in host._plan_notes[0]

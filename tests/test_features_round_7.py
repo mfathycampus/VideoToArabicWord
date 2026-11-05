@@ -622,6 +622,10 @@ def test_merge_two_jobs_into_one_document(tmp_path):
 
     video = CORPUS / "h264_mp4.mp4"
     pipeline = _pipeline(tmp_path)
+    # الاختبار عن الدمج لا عن الخصوصية: بيئة CI بلا Tesseract، ومنذ 1.20.1
+    # تُحجب اللقطات غير المفحوصة عن المستند ما دامت الحماية مفعّلة.
+    pipeline.config.document.withhold_sensitive_screens = False
+    pipeline.config.document.anonymize_names = False
     first = pipeline.run(video, clip=ClipRange.parse("00:00", "00:10"))
     second = pipeline.run(video, clip=ClipRange.parse("00:10", "00:20"))
 

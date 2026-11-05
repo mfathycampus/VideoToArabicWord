@@ -196,6 +196,16 @@ def preflight(config, job_dir: Optional[Path]) -> None:
         "سجلّ. أصلح صلاحيات المجلد، أو عطّل إعادة الصياغة السحابية لهذه المهمة.")
 
 
+def _gate(targets: List[Path]) -> None:
+    """يُستدعى قبل كل طلب سحابي حين تُلزم السياسة السجلّ: لا موضع ⇒ لا إرسال."""
+    if any(_writable(d) for d in targets):
+        return
+    from ai.providers import FatalProviderError
+    raise FatalProviderError(
+        "سياسة الجهاز تُلزم سجلّ التدقيق ولم يعد ممكنًا الكتابة فيه — "
+        "أُوقف الإرسال إلى المزوّد السحابي.")
+
+
 @contextmanager
 def record_job(config, source: Path, job_dir: Optional[Path] = None,
                enabled: bool = True):
@@ -210,6 +220,11 @@ def record_job(config, source: Path, job_dir: Optional[Path] = None,
     preflight(config, job_dir)
     # الصفحة البيضاء أولًا: ما يُسجَّل بعدها هو ما جرى في هذه المهمّة.
     provider_layer.reset_egress()
+    # 1.20.1: الفحص المسبق لا يكفي — القرص قد يمتلئ أو يُنزع منتصف المهمّة.
+    # حين تُلزم السياسة السجلّ يُعاد الفحص عند حدود الشبكة قبل **كل** طلب.
+    targets = [default_audit_dir()] + ([Path(job_dir)] if job_dir else [])
+    if _required_by_policy(config):
+        provider_layer.set_egress_gate(lambda: _gate(targets))
 
     permitted = cloud_providers_in_use(config)
     record = AuditRecord(
@@ -237,6 +252,7 @@ def record_job(config, source: Path, job_dir: Optional[Path] = None,
         record.error = f"{type(exc).__name__}: {exc}"
         raise
     finally:
+        provider_layer.set_egress_gate(None)
         record.elapsed_seconds = time.monotonic() - started
         # الحقيقة تُقرأ من حدود الشبكة عند النهاية — حتى عند السقوط:
         # مهمّة أرسلت ثم سقطت **أرسلت**، وإغفال ذلك أخطر من إغفال نجاح.
@@ -249,7 +265,14 @@ def record_job(config, source: Path, job_dir: Optional[Path] = None,
             record.images_left_device = int(egress.get("images", 0))
         except Exception as exc:
             logger.warning(f"تعذّرت قراءة سجلّ الخروج: {exc}")
-            left = True                   # لا نعرف ⇒ لا نفترض أنه لم يخرج شيء
+            # لا نعرف ⇒ لا نفترض أنه لم يخرج شيء. 1.20.1: كان السطر يقول
+            # ``text_left_device: false`` في هذه الحال — شهادةٌ كاذبة. الآن
+            # «ربما خرج» متى سُمح بمزوّد سحابي، والسبب في ``error``.
+            record.text_left_device = bool(record.permitted_providers)
+            record.cloud_providers = list(record.permitted_providers)
+            note = f"egress_unknown: {type(exc).__name__}"
+            record.error = f"{record.error} | {note}" if record.error else note
+            left = True
         else:
             left = bool(record.text_left_device or record.images_left_device)
         # 1.20.0: «كل إرسال فعلي يُسجَّل» — وعدٌ لا يتوقّف على خيار السجلّ

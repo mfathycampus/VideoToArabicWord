@@ -420,7 +420,8 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
         self.vision_check.setToolTip(
             "يرى النموذج الشاشة نفسها فيسمّي القوائم والأزرار كما تظهر، ويعمل "
             "على تسجيلات بلا صوت. تُموَّه أسماء الأشخاص في اللقطات قبل "
-            "إرسالها حين يكون «إخفاء الأسماء» مفعّلًا.")
+            "إرسالها حين يكون «إخفاء الأسماء» مفعّلًا، ولا تُرسل لقطةٌ لم تُفحص "
+            "— إلا إن فعّلت الجهة rewrite.send_unredacted_images.")
         def _vision_toggled(state) -> None:
             self.config.rewrite.send_images = self.vision_check.isChecked()
             self._refresh_privacy_header()

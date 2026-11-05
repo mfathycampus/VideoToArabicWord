@@ -35,8 +35,9 @@ jobs:
       - name: تجهيز Tesseract للشحن داخل الحزمة
         # المعلّم لا يثبّت شيئًا: بلا Tesseract لا تمويه لأسماء الطلاب في
         # اللقطات ولا قصّ لشريط المتصفّح. يُنسخ ما يلزم التشغيل وحده.
-        # فشل التنزيل لا يوقف الإصدار: الحزمة تعمل بلا OCR كما كانت.
-        continue-on-error: true
+        # 1.20.1: **فشله يوقف الإصدار.** كان اختياريًّا لأن الحزمة «تعمل بلا
+        # OCR» — ومنذ 1.20.1 اللقطات غير المفحوصة لا تدخل المستند، فحزمةٌ بلا
+        # Tesseract تُنتج مستندات بلا صور لكل مستخدميها.
         shell: pwsh
         run: |
           choco install tesseract -y --no-progress
@@ -47,6 +48,16 @@ jobs:
         run: python tools/make_icon.py
       - name: البناء
         run: pyinstaller build.spec --noconfirm
+
+      - name: تأكيد شحن Tesseract وحزمة العربية
+        # build.spec يتخطّى bin/tesseract بصمت إن غاب — وحزمةٌ بلا Tesseract
+        # تُنتج منذ 1.20.1 مستندات بلا صور. يُفحص الناتج نفسه لا خطوة التجهيز.
+        shell: pwsh
+        run: |
+          $root = "dist/VideoToArabicWord/_internal/tesseract"
+          foreach ($f in @("tesseract.exe", "tessdata/ara.traineddata", "tessdata/eng.traineddata")) {
+            if (-not (Test-Path "$root/$f")) { throw "غير مشحون في الحزمة: $root/$f" }
+          }
 
       - name: فحص الحزمة — تخطيط وإقلاع فعليّان
         # الفحص السابق كان ``Test-Path`` على الملف التنفيذي فقط. الوجود

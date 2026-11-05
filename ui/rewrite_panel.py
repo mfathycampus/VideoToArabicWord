@@ -42,12 +42,13 @@ def format_usage_rows(info: dict) -> str:
 
 class RewritePanelMixin:
     # ------------------------------------------------------------------
-    # موافقة الخصوصية للباقة المُدارة: مرّة واحدة قبل أول إرسال.
+    # موافقة الخصوصية للباقة المُدارة: مرّة واحدة قبل أول إرسال. ‏v2 (1.20.1):
+    # النصّ صار يذكر استثناء send_unredacted_images، فيُسأل من وافق على v1.
     def _managed_consent_given(self) -> bool:
         from PyQt6.QtCore import QSettings
 
         return QSettings("VideoToArabicWord", "app").value(
-            "managed_consent_v1", False, type=bool)
+            "managed_consent_v2", False, type=bool)
 
     def ensure_managed_consent(self) -> bool:
         """يعرض ما يُرسَل وما لا يُرسَل ويطلب الموافقة. يعيد False عند الرفض."""
@@ -62,7 +63,10 @@ class RewritePanelMixin:
         box.setIcon(QMessageBox.Icon.Question)
         box.setText(
             "لإعادة الصياغة تُرسَل إلى خادم «معين» ثم إلى Claude:\n"
-            "• نصّ التفريغ، ولقطات الشاشة إن فُعّل الوضع المرئي.\n\n"
+            "• نصّ التفريغ، ولقطات الشاشة إن فُعّل الوضع المرئي — بعد تمويه "
+            "الأسماء وحجب شاشات الدخول؛ ولا تُرسل لقطةٌ لم تُفحص، إلا إن "
+            "فعّلت جهتك الإعداد rewrite.send_unredacted_images (ويُذكر ذلك "
+            "في تحذيرات المستند).\n\n"
             "لا يُرسَل الفيديو ولا الصوت، ولا يحفظ الخادم المحتوى؛ يسجّل "
             "فقط وقت العملية وحجمها لخصم الرصيد.\n\n"
             "إن كانت المادة سرّية فاختر النموذج المحلي (Ollama) فلا يغادر "
@@ -74,7 +78,7 @@ class RewritePanelMixin:
         box.exec()
         if box.clickedButton() is not agree:
             return False
-        QSettings("VideoToArabicWord", "app").setValue("managed_consent_v1", True)
+        QSettings("VideoToArabicWord", "app").setValue("managed_consent_v2", True)
         return True
 
     # ------------------------------------------------------------------

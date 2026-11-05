@@ -283,6 +283,50 @@ def test_actual_egress_is_audited_even_with_the_log_disabled(tmp_path, monkeypat
     assert line["text_left_device"] is True and line["images_left_device"] == 2
 
 
+def test_unknown_egress_is_never_recorded_as_no_egress(tmp_path, monkeypatch):
+    """1.20.1: تعذّر قراءة سجلّ الخروج كان يترك ``text_left_device: false``."""
+    from ai import providers
+    from utils import audit
+
+    monkeypatch.setenv("VTAD_AUDIT_DIR", str(tmp_path / "central"))
+
+    def broken():
+        raise RuntimeError("x")
+
+    monkeypatch.setattr(providers, "egress_report", broken)
+    config = AppConfig()
+    config.rewrite.enabled = True
+    config.rewrite.provider = "anthropic"
+    source = tmp_path / "د.mp4"
+    source.write_bytes(b"x")
+    with audit.record_job(config, source, tmp_path / "job", enabled=False):
+        pass
+    line = json.loads((tmp_path / "central" / audit.AUDIT_FILENAME)
+                      .read_text(encoding="utf-8").strip())
+    assert line["text_left_device"] is True and "egress_unknown" in line["error"]
+
+
+def test_required_audit_gates_every_request(tmp_path, monkeypatch):
+    """القرص يمتلئ منتصف المهمّة ⇒ الطلب التالي لا يُرسل."""
+    from ai import providers
+    from utils import audit
+
+    writable = {"ok": True}
+    monkeypatch.setattr(audit, "_writable", lambda d: writable["ok"])
+    config = AppConfig()
+    config.rewrite.enabled = True
+    config.rewrite.provider = "anthropic"
+    config.policy_locked = {"require_audit_log": "سياسة"}
+    source = tmp_path / "د.mp4"
+    source.write_bytes(b"x")
+    with pytest.raises(providers.FatalProviderError):
+        with audit.record_job(config, source, tmp_path / "job"):
+            providers.check_egress_gate()             # يمرّ
+            writable["ok"] = False
+            providers.check_egress_gate()             # يمنع
+    providers.check_egress_gate()                     # خارج المهمّة: لا قيد
+
+
 def test_required_audit_blocks_cloud_jobs_when_unwritable(tmp_path, monkeypatch):
     """السياسة تُلزم الشهادة ولا موضع لها ⇒ لا تبدأ مهمّة سحابية."""
     from core.exceptions import AuditLogUnavailableError

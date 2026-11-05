@@ -86,8 +86,10 @@ def test_unreadable_frames_stay_unscanned_without_anonymize(tmp_path, monkeypatc
     _need_corpus()
     import video.ocr as ocr
 
+    failed = ocr.OcrResult(("", []))
+    failed.failed = True
     monkeypatch.setattr(ocr, "is_available", lambda: True)
-    monkeypatch.setattr(ocr, "extract_text", lambda p, timeout_seconds=20.0: ocr._failed_text())
+    monkeypatch.setattr(ocr, "extract_text_and_words", lambda p, timeout_seconds=20.0: failed)
     pipeline = _pipeline(tmp_path / "out", anonymize_names=False)
     pipeline.run(VIDEO)
     assert not any(k["privacy_scanned"] for k in _keyframes(pipeline))
@@ -163,3 +165,78 @@ def test_withhold_only_does_not_send_unscanned_images(tmp_path, monkeypatch):
                               tmp_path / "ملف.mp4", Meta(), lambda *a: None,
                               images_dir=tmp_path)
     assert plan.generated_by.endswith("+vision")
+
+
+
+# ── 1.20.1 ───────────────────────────────────────────────────────────
+def _plan_images(pipeline):
+    plan = json.loads((pipeline.job_dir_for(VIDEO) / "plan.json").read_text(encoding="utf-8"))
+    return {b.get("image_filename") for s in plan["sections"] for b in s["blocks"]
+            if b.get("image_filename")}, plan
+
+
+def test_unscanned_frames_are_withheld_from_the_local_document(tmp_path, monkeypatch):
+    """بلا OCR وحجب الشاشات مفعّل: كانت اللقطات تبقى في المستند المحلي."""
+    _need_corpus()
+    import video.ocr as ocr
+
+    monkeypatch.setattr(ocr, "is_available", lambda: False)
+    pipeline = _pipeline(tmp_path / "out", anonymize_names=False)
+    pipeline.run(VIDEO)
+    used, plan = _plan_images(pipeline)
+    assert not used
+    assert any("فحُجبت عن المستند" in n for n in json.dumps(plan, ensure_ascii=False).split('"'))
+
+
+def test_org_override_keeps_unscanned_frames_and_says_so(tmp_path, monkeypatch):
+    _need_corpus()
+    import video.ocr as ocr
+
+    monkeypatch.setattr(ocr, "is_available", lambda: False)
+    pipeline = _pipeline(tmp_path / "out", anonymize_names=False)
+    pipeline.config.rewrite.send_unredacted_images = True
+    pipeline.run(VIDEO)
+    used, plan = _plan_images(pipeline)
+    assert used
+    assert "send_unredacted_images" in json.dumps(plan, ensure_ascii=False)
+
+
+def test_low_confidence_login_words_still_count():
+    """«Password» بثقة منخفضة يسقط من نصّ العرض — ولا يسقط من الفحص."""
+    from core.pipeline_media import _privacy_text
+    from video.sensitive import classify_screen
+
+    words = [{"text": "Password", "conf": 20.0}, {"text": "Email", "conf": 25.0}]
+    assert classify_screen("") == []
+    assert classify_screen(_privacy_text("", words)) == ["login"]
+
+
+def test_override_is_announced_when_images_are_sent(tmp_path, monkeypatch):
+    from ai import providers
+    from config.settings import AppConfig
+    from core.pipeline_outputs import OutputsMixin
+    from tests.test_visual_author import REPLY, FakeVision, _frames, _transcript
+
+    frames = _frames(tmp_path, 2)
+    for frame in frames:
+        frame.privacy_scanned = True                   # فُحصت ولم تُموَّه
+    fake = FakeVision([REPLY])
+    fake.info = ProviderInfo(name="anthropic", label_ar="Claude", is_local=False,
+                             privacy_note="")
+    monkeypatch.setattr(providers, "provider_from_settings", lambda s: fake)
+
+    class Host(OutputsMixin):
+        def __init__(self):
+            self.config = AppConfig()
+            self.config.rewrite.enabled = True
+            self.config.rewrite.send_unredacted_images = True
+
+    class Meta:
+        has_video = True
+        duration_seconds = 60.0
+
+    host = Host()
+    plan = host._build_plan(_transcript([(1.0, "نص")]), frames, tmp_path / "ملف.mp4",
+                            Meta(), lambda *a: None, images_dir=tmp_path)
+    assert plan.generated_by.endswith("+vision")
+    assert any("دون تمويه" in n for n in host._plan_notes)
