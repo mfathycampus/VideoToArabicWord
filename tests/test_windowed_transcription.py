@@ -36,6 +36,16 @@ class _WindowModel:
         return iter(segs), _Info()
 
 
+class _SpeechModel(_WindowModel):
+    """كلامٌ متّصل: مقاطع ثانيتين تغطّي النافذة حتى آخرها — آخرها مبتور."""
+
+    def transcribe(self, audio, **options):
+        self.calls.append(audio)
+        seconds = len(audio) / 16000.0
+        segs = [_Seg(t, min(t + 2.0, seconds), f"ك{t}") for t in np.arange(0, seconds, 2.0)]
+        return iter(segs), _Info()
+
+
 def _wav(path, seconds, quiet_at=()):
     rate = 16000
     t = np.arange(int(seconds * rate)) / rate
@@ -82,3 +92,26 @@ def test_short_audio_keeps_the_single_call_path(monkeypatch, tmp_path):
     audio = _wav(tmp_path / "a.wav", 6.0)
     _engine(monkeypatch, model).transcribe(audio)
     assert model.calls == [str(audio)]
+
+
+def test_cut_through_continuous_speech_reprocesses_the_edge(monkeypatch, tmp_path):
+    """مراجعة PR #37: أهدأ لحظة قد تكون كلامًا — الكلمة العابرة للحدّ لا تُبتر.
+
+    بلا صمت يُسقَط آخر مقطع في النافذة وتبدأ التالية من بدايته: لا يُكتب
+    مقطعٌ مبتور، ولا يتكرّر مقطع، ولا تبقى فجوة عند الحدّ.
+    """
+    model = _SpeechModel()
+    audio = _wav(tmp_path / "a.wav", 34.0)                 # نغمة متّصلة بلا صمت
+    engine = _engine(monkeypatch, model)
+    result = engine.transcribe(audio)
+
+    starts = [round(sg.start, 2) for sg in result.segments]
+    assert starts == sorted(set(starts))                    # لا تكرار
+    for before, after in zip(result.segments, result.segments[1:]):
+        assert abs(after.start - before.end) < 1e-6         # لا فجوة ولا تداخل
+    # النموذج المزيّف يُخرج مقطعًا كل ثانيتين من بداية كل نافذة؛ إن بدأت
+    # النافذة التالية من بداية المقطع المُسقَط بقيت الشبكة متّصلة بلا ثغرة
+    # ولا تكرار: 0، 2، 4، … حتى النهاية.
+    assert starts == [float(t) for t in range(0, int(starts[-1]) + 1, 2)]
+    assert len(model.calls) >= 3
+    assert result.segments[-1].end > 30.0

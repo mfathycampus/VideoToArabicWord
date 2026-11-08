@@ -647,27 +647,36 @@ class TranscriptionEngine:
     #: يُقطع عند أهدأ نصف ثانية في آخر هذه المدّة من النافذة — لا وسط كلمة.
     WINDOW_SEARCH_SECONDS = 30.0
 
+    #: أهدأ نصف ثانية تُعدّ صمتًا تحت هذا (RMS ≈ −40 dBFS). فوقه: الكلام
+    #: متّصل عبر الحدّ، فيُعاد آخر مقطع في النافذة التالية (انظر ``_windowed``).
+    SILENCE_RMS = 0.01
+
     _window_total = 0.0
 
-    def _quiet_cut(self, audio_path: Path, target: float) -> float:
-        """أهدأ لحظة في [target - بحث، target] — حدّ النافذة التالية."""
+    def _quiet_cut(self, audio_path: Path, target: float) -> tuple[float, bool]:
+        """أهدأ لحظة في [target - بحث، target]، وهل هي صمتٌ فعلًا."""
         import numpy as np
 
         start = max(0.0, target - self.WINDOW_SEARCH_SECONDS)
         samples, rate = self._read_wav_slice(audio_path, start, target)
         if samples is None or not rate or len(samples) < rate:
-            return target
+            return target, False
         step = rate // 2
         usable = len(samples) - len(samples) % step
-        blocks = samples[:usable].reshape(-1, step)
-        quietest = int(np.argmin((blocks ** 2).mean(axis=1)))
-        return start + quietest * 0.5 + 0.25
+        energy = (samples[:usable].reshape(-1, step) ** 2).mean(axis=1)
+        quietest = int(np.argmin(energy))
+        silent = float(np.sqrt(energy[quietest])) < self.SILENCE_RMS
+        return start + quietest * 0.5 + 0.25, silent
 
     def _windowed(self, run_one, audio_path: Path, cancel_token=None):
         """``(مولّد (مقطع، إزاحة), info)`` — نافذة واحدة أو نوافذ متتالية.
 
         النوافذ تُقرأ من WAV مباشرةً (‏``_read_wav_slice``)، فلا يُفكّ الملف
         كلّه ولا يُحسب طيفه كلّه. غير WAV (أو قصير) ⇒ الطريق القديم كما هو.
+
+        **الحدّ لا يقطع كلامًا.** يُختار عند أهدأ نصف ثانية؛ فإن لم تكن صمتًا
+        (كلامٌ متّصل) يُسقَط آخر مقطع في النافذة وتبدأ التالية من بدايته،
+        فتُفرَّغ الكلمة العابرة للحدّ كاملةً مرّةً واحدة — لا مقطوعةً ولا مكرّرة.
         """
         import wave
 
@@ -685,27 +694,53 @@ class TranscriptionEngine:
             return ((seg, 0.0) for seg in segments), info
 
         self._window_total = total
-        bounds = [0.0]
-        while total - bounds[-1] > self.WINDOW_SECONDS * 1.5:
-            cut = self._quiet_cut(audio_path, bounds[-1] + self.WINDOW_SECONDS)
-            bounds.append(max(cut, bounds[-1] + self.WINDOW_SEARCH_SECONDS))
-        bounds.append(total)
-        logger.info(f"الصوت {humanize_duration(total)} — يُفرَّغ على "
-                    f"{len(bounds) - 1} نوافذ لتوفير الذاكرة.")
+        windows = max(2, round(total / self.WINDOW_SECONDS))
+        logger.info(f"الصوت {humanize_duration(total)} — يُفرَّغ على نحو "
+                    f"{windows} نوافذ لتوفير الذاكرة.")
 
-        first_samples, _rate = self._read_wav_slice(audio_path, bounds[0], bounds[1])
-        first_segments, info = run_one(first_samples)
-        del first_samples
+        def plan(start: float) -> tuple[float, bool]:
+            """نهاية النافذة التي تبدأ عند ``start``، وهل الحدّ صمت."""
+            if total - start <= self.WINDOW_SECONDS * 1.5:
+                return total, True
+            cut, silent = self._quiet_cut(audio_path, start + self.WINDOW_SECONDS)
+            return max(cut, start + self.WINDOW_SEARCH_SECONDS), silent
+
+        def run(start: float, end: float):
+            samples, _rate = self._read_wav_slice(audio_path, start, end)
+            try:
+                return run_one(samples)
+            finally:
+                del samples
+
+        first_end, first_silent = plan(0.0)
+        first_segments, info = run(0.0, first_end)
 
         def generate():
-            yield from ((seg, bounds[0]) for seg in first_segments)
-            for start, end in zip(bounds[1:-1], bounds[2:]):
+            start, end, silent, segments = 0.0, first_end, first_silent, first_segments
+            while True:
+                held = None
+                for seg in segments:
+                    if held is not None:
+                        yield held, start
+                    held = seg
+                next_start = end
+                if held is not None:
+                    restart = start + float(held.start)
+                    # حدٌّ وسط كلام: المقطع الأخير قد يحمل كلمة مبتورة —
+                    # يُعاد مع النافذة التالية بدل أن يُكتب ناقصًا. الشرط
+                    # الثاني يضمن التقدّم (مقطعٌ يملأ النافذة كلّها يُبقى).
+                    if (end < total and not silent
+                            and restart > start + self.WINDOW_SEARCH_SECONDS):
+                        next_start = restart
+                    else:
+                        yield held, start
+                if end >= total:
+                    return
                 if cancel_token:
                     cancel_token.raise_if_cancelled()
-                samples, _rate = self._read_wav_slice(audio_path, start, end)
-                segments, _info = run_one(samples)
-                del samples
-                yield from ((seg, start) for seg in segments)
+                start = next_start
+                end, silent = plan(start)
+                segments, _info = run(start, end)
 
         return generate(), info
 
