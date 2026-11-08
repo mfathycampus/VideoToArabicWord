@@ -167,7 +167,9 @@ jobs:
   # يعمل على الدفعات وطلبات الدمج فقط؛ لا يلمس الإصدار ولا الوسوم.
   macos:
     if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
-    runs-on: macos-14
+    # macos-14 لم يعد متاحًا («The configuration 'macos-14-arm64-us-default' is
+    # not supported») فأُلغيت الوظيفة قبل أي خطوة. macos-15 مثله Apple Silicon.
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
