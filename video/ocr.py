@@ -273,9 +273,14 @@ def _ocr_tsv(image_path: Path, timeout_seconds: float) -> Optional[tuple[str, fl
         # ``tsv`` بدل النصّ الخام: يعطي إحداثيات كل كلمة **وثقتها**،
         # وهي ما يفصل السطر المقروء عن الضوضاء. الأمر نفسه والزمن نفسه.
         try:
+            # 1.21.2: ``-c tessedit_create_tsv=1`` لا ملفّ الإعداد ``tsv``. ذاك
+            # يُقرأ من ``tessdata/configs``، والمثبِّت لا يشحن هذا المجلد —
+            # فكان Tesseract يطبع «read_params_file: Can't open tsv» ويخرج
+            # ناجحًا بملفّ ``out.txt`` وحده، فتُعدّ كل لقطة غير مقروءة.
             result = subprocess.run(
                 [exe, str(source), str(out_base),
-                 "-l", ocr_languages(), "--psm", "3", "tsv"],
+                 "-l", ocr_languages(), "--psm", "3",
+                 "-c", "tessedit_create_tsv=1", "-c", "tessedit_create_txt=0"],
                 capture_output=True, text=True, encoding="utf-8",
                 errors="replace", timeout=timeout_seconds,
                 creationflags=_NO_WINDOW)
@@ -294,6 +299,10 @@ def _ocr_tsv(image_path: Path, timeout_seconds: float) -> Optional[tuple[str, fl
 
         out_file = out_base.with_suffix(".tsv")
         if not out_file.exists():
+            # لا صمت هنا: هذا الفرع أخفى عطلًا جعل 150 لقطة «غير مفحوصة».
+            logger.warning(
+                f"OCR لم يُخرج TSV على {Path(image_path).name}: "
+                f"{(result.stderr or '').strip()[:300]}")
             return None
         try:
             return out_file.read_text(encoding="utf-8", errors="replace"), scale

@@ -58,6 +58,13 @@ jobs:
           foreach ($f in @("tesseract.exe", "tessdata/ara.traineddata", "tessdata/eng.traineddata")) {
             if (-not (Test-Path "$root/$f")) { throw "غير مشحون في الحزمة: $root/$f" }
           }
+          # 1.21.2: وجود الملفات لا يكفي — قراءةٌ فعلية بالأمر نفسه الذي يستعمله
+          # البرنامج، وبحزمة اللغات المشحونة وحدها (بلا tessdata/configs).
+          python -c "from PIL import Image, ImageDraw, ImageFont; im = Image.new('RGB', (900, 200), 'white'); ImageDraw.Draw(im).text((20, 60), 'Password Login', fill='black', font=ImageFont.load_default(size=48)); im.save('ocr_probe.png')"
+          $env:TESSDATA_PREFIX = (Resolve-Path "$root/tessdata").Path
+          & "$root/tesseract.exe" ocr_probe.png ocr_probe -l eng --psm 3 -c tessedit_create_tsv=1 -c tessedit_create_txt=0
+          if (-not (Test-Path ocr_probe.tsv)) { throw "Tesseract المشحون لم يُخرج TSV" }
+          if (-not (Select-String -Path ocr_probe.tsv -Pattern "Password" -Quiet)) { throw "Tesseract المشحون لم يقرأ نصّ الاختبار" }
 
       - name: فحص الحزمة — تخطيط وإقلاع فعليّان
         # الفحص السابق كان ``Test-Path`` على الملف التنفيذي فقط. الوجود
