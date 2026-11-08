@@ -469,6 +469,11 @@ class TranscriptionEngine:
             if isinstance(exc, PipelineCancelledError):
                 raise
             if device != "cuda" or not _is_gpu_error(exc):
+                if isinstance(exc, MemoryError) or "Unable to allocate" in str(exc):
+                    raise ResourceAllocationError(
+                        "ذاكرة الجهاز لم تكفِ للتفريغ — أغلق البرامج المفتوحة "
+                        "(المتصفح وOBS خاصةً) ثم اضغط «ابدأ المعالجة»؛ يُستأنف "
+                        f"من حيث توقّف. ({exc})") from exc
                 raise ResourceAllocationError(f"فشل التفريغ الصوتي: {exc}") from exc
 
             logger.warning(f"فشل على CUDA أثناء التحميل أو التنفيذ ({exc}); السقوط إلى CPU.")
@@ -633,6 +638,78 @@ class TranscriptionEngine:
         return added
 
     # ------------------------------------------------------------------
+    #: 1.21.1: faster-whisper يحسب طيف الصوت **كلّه** دفعةً واحدة قبل أوّل
+    #: مقطع. تسجيل 77 دقيقة طلب 1.38 GiB لمصفوفة واحدة فسقط التفريغ على
+    #: جهازٍ ذاكرته مشغولة (E4001). الصوت الطويل يُفرَّغ نوافذَ متتالية.
+    WINDOW_SECONDS = 600.0
+    #: لا تقسيم تحت هذا: مقطعٌ قصير يتّسع في الذاكرة، والحدّ يكلّف قليلًا.
+    WINDOW_MIN_TOTAL = 900.0
+    #: يُقطع عند أهدأ نصف ثانية في آخر هذه المدّة من النافذة — لا وسط كلمة.
+    WINDOW_SEARCH_SECONDS = 30.0
+
+    _window_total = 0.0
+
+    def _quiet_cut(self, audio_path: Path, target: float) -> float:
+        """أهدأ لحظة في [target - بحث، target] — حدّ النافذة التالية."""
+        import numpy as np
+
+        start = max(0.0, target - self.WINDOW_SEARCH_SECONDS)
+        samples, rate = self._read_wav_slice(audio_path, start, target)
+        if samples is None or not rate or len(samples) < rate:
+            return target
+        step = rate // 2
+        usable = len(samples) - len(samples) % step
+        blocks = samples[:usable].reshape(-1, step)
+        quietest = int(np.argmin((blocks ** 2).mean(axis=1)))
+        return start + quietest * 0.5 + 0.25
+
+    def _windowed(self, run_one, audio_path: Path, cancel_token=None):
+        """``(مولّد (مقطع، إزاحة), info)`` — نافذة واحدة أو نوافذ متتالية.
+
+        النوافذ تُقرأ من WAV مباشرةً (‏``_read_wav_slice``)، فلا يُفكّ الملف
+        كلّه ولا يُحسب طيفه كلّه. غير WAV (أو قصير) ⇒ الطريق القديم كما هو.
+        """
+        import wave
+
+        self._window_total = 0.0
+        try:
+            with wave.open(str(audio_path), "rb") as handle:
+                total = handle.getnframes() / float(handle.getframerate())
+                # faster-whisper يفترض 16 kHz للمصفوفات (يُعيد عيّنة الملفّات وحدها)
+                plain = (handle.getsampwidth() == 2 and handle.getnchannels() == 1
+                         and handle.getframerate() == 16000)
+        except Exception:                               # noqa: BLE001
+            total, plain = 0.0, False
+        if not plain or total < self.WINDOW_MIN_TOTAL:
+            segments, info = run_one(str(audio_path))
+            return ((seg, 0.0) for seg in segments), info
+
+        self._window_total = total
+        bounds = [0.0]
+        while total - bounds[-1] > self.WINDOW_SECONDS * 1.5:
+            cut = self._quiet_cut(audio_path, bounds[-1] + self.WINDOW_SECONDS)
+            bounds.append(max(cut, bounds[-1] + self.WINDOW_SEARCH_SECONDS))
+        bounds.append(total)
+        logger.info(f"الصوت {humanize_duration(total)} — يُفرَّغ على "
+                    f"{len(bounds) - 1} نوافذ لتوفير الذاكرة.")
+
+        first_samples, _rate = self._read_wav_slice(audio_path, bounds[0], bounds[1])
+        first_segments, info = run_one(first_samples)
+        del first_samples
+
+        def generate():
+            yield from ((seg, bounds[0]) for seg in first_segments)
+            for start, end in zip(bounds[1:-1], bounds[2:]):
+                if cancel_token:
+                    cancel_token.raise_if_cancelled()
+                samples, _rate = self._read_wav_slice(audio_path, start, end)
+                segments, _info = run_one(samples)
+                del samples
+                yield from ((seg, start) for seg in segments)
+
+        return generate(), info
+
+    # ------------------------------------------------------------------
     def _run(
         self,
         audio_path: Path,
@@ -668,16 +745,20 @@ class TranscriptionEngine:
             batch_size = self._resolve_batch_size(device)
             if batch_size > 1:
                 transcriber = self._batched(model)
-                segments_iter, info = transcriber.transcribe(
-                    str(audio_path), batch_size=batch_size, **options)
+
+                def run_one(audio):
+                    return transcriber.transcribe(audio, batch_size=batch_size, **options)
             else:
-                segments_iter, info = model.transcribe(str(audio_path), **options)
+                def run_one(audio):
+                    return model.transcribe(audio, **options)
+            segments_iter, info = self._windowed(run_one, audio_path, cancel_token)
 
             # ``offset`` زمنُ ما فُرّغ في تشغيلٍ سابق. الصوت المُمرَّر
             # هنا بقيّةٌ تبدأ من الصفر، فتوقيتاتها تُزاح لتبقى بزمن
             # الصوت الكامل — وإلا حملت الصورُ والترجمة توقيتًا خاطئًا.
             offset = resume.resume_at if resume else 0.0
-            remaining_total = float(getattr(info, "duration", 0.0) or 0.0)
+            remaining_total = float(self._window_total
+                                    or getattr(info, "duration", 0.0) or 0.0)
             # المقام هو الصوت **الكامل**: بعد استئنافٍ عند الساعة الرابعة
             # يجب أن يبدأ الشريط من 80٪ لا من الصفر.
             total = ((resume.audio_seconds if resume else 0.0)
@@ -699,7 +780,10 @@ class TranscriptionEngine:
             last_checkpoint = time.monotonic()
 
             # استهلاك المولّد داخل try — هنا تقع أخطاء CUDA فعليًا
-            for index, seg in enumerate(segments_iter, start=len(segments) + 1):
+            for index, (seg, shift) in enumerate(segments_iter,
+                                                 start=len(segments) + 1):
+                # ``shift``: بداية النافذة داخل الصوت المُمرَّر (1.21.1).
+                base = offset + shift
                 if cancel_token:
                     cancel_token.raise_if_cancelled()
                     cancel_token.wait_if_paused()
@@ -712,13 +796,13 @@ class TranscriptionEngine:
 
                 seg_words = [
                     WordTimestamp(word=w.word.strip(),
-                                  start=w.start + offset, end=w.end + offset,
+                                  start=w.start + base, end=w.end + base,
                                   probability=getattr(w, "probability", None))
                     for w in (seg.words or [])
                 ]
                 words.extend(seg_words)
                 segments.append(AudioSegment(
-                    id=index, start=seg.start + offset, end=seg.end + offset,
+                    id=index, start=seg.start + base, end=seg.end + base,
                     text_raw=raw, text_clean=clean, words=seg_words,
                 ))
 
@@ -734,15 +818,15 @@ class TranscriptionEngine:
 
                 # خنق التحديثات: مرة كل ثانيتين من زمن الفيديو، لا كل مقطع
                 if (progress_callback and total > 0
-                        and seg.end + offset - last_emit >= 2.0):
-                    last_emit = seg.end + offset
-                    fraction = min(1.0, (seg.end + offset) / total)
+                        and seg.end + base - last_emit >= 2.0):
+                    last_emit = seg.end + base
+                    fraction = min(1.0, (seg.end + base) / total)
                     # الوقت المتبقي: بدونه تبدو النسبة الزاحفة وكأن
                     # البرنامج متجمد، والمستخدم يلغي عملًا سليمًا
                     # المعدّل من صوت **هذا التشغيل** وحده: بعد استئنافٍ عند
                     # 80٪ كانت النسبة الكلّية تُقسَم على دقائق قليلة من
                     # العمل فيخرج «متبقٍ» أقصر من الحقيقة بأضعاف.
-                    run_fraction = (min(1.0, seg.end / remaining_total)
+                    run_fraction = (min(1.0, (seg.end + shift) / remaining_total)
                                     if remaining_total > 0 else fraction)
                     remaining = estimate_remaining(
                         time.monotonic() - started_at, run_fraction)
@@ -751,7 +835,7 @@ class TranscriptionEngine:
                     progress_callback(
                         fraction,
                         f"التفريغ {fraction * 100:.1f}% "
-                        f"({(seg.end + offset) / 60:.0f} من "
+                        f"({(seg.end + base) / 60:.0f} من "
                         f"{total / 60:.0f} دقيقة){eta}")
 
             self._gap_report = []
