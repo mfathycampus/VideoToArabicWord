@@ -28,6 +28,10 @@ from typing import Optional
 
 from utils.logger import logger
 
+#: 1.21.2: بلا هذا تفتح ويندوز نافذة طرفية سوداء لكل لقطة يقرؤها Tesseract —
+#: عشرات النوافذ تومض فوق البرنامج أثناء «استخراج نص الشاشة». صفرٌ على غير ويندوز.
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
 # عربي + إنجليزي: شرائح كثيرة تخلط مصطلحات إنجليزية أو كودًا برمجيًا
 # وسط نص عربي (نفس ملاحظة قاموس المصطلحات في TranscriptionConfig).
 LANGUAGES = "ara+eng"
@@ -179,7 +183,7 @@ def languages() -> list[str]:
     try:
         result = subprocess.run([exe, "--list-langs"], capture_output=True,
                                 text=True, encoding="utf-8", errors="replace",
-                                timeout=15.0)
+                                timeout=15.0, creationflags=_NO_WINDOW)
     except (OSError, subprocess.SubprocessError):
         return []
     if result.returncode != 0:
@@ -273,7 +277,8 @@ def _ocr_tsv(image_path: Path, timeout_seconds: float) -> Optional[tuple[str, fl
                 [exe, str(source), str(out_base),
                  "-l", ocr_languages(), "--psm", "3", "tsv"],
                 capture_output=True, text=True, encoding="utf-8",
-                errors="replace", timeout=timeout_seconds)
+                errors="replace", timeout=timeout_seconds,
+                creationflags=_NO_WINDOW)
         except subprocess.TimeoutExpired:
             logger.warning(f"تجاوز OCR المهلة على {Path(image_path).name}")
             return None
