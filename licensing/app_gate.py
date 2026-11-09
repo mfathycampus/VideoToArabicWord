@@ -74,13 +74,7 @@ def current_tier() -> str:
         lease = verify(store().read().get("lease") or "")
     except Exception:                                  # noqa: BLE001
         return ""
-    tier = str((lease.extra or {}).get("tier") or "")
-    if not tier and (lease.plan or "").startswith("تجربة"):
-        tier = "trial"
-    if not tier and ((lease.extra or {}).get("managed")
-                     or (lease.plan or "").startswith("مُدار")):
-        tier = "managed"
-    return tier
+    return tier_of(lease)
 
 
 def managed_allowed() -> bool:
@@ -116,6 +110,44 @@ def activate(code: str, app_version: str = "") -> Verdict:
     """تفعيل بكود عبر الخادم."""
     lease_text = client.activate(code, device_id(), app_version)
     return _install(lease_text, app_version)
+
+
+def current_lease():
+    """العقد المثبَّت الآن (``Lease``) أو ``None``. لا شبكة ولا رمي."""
+    try:
+        return verify(store().read().get("lease") or "")
+    except Exception:                                  # noqa: BLE001
+        return None
+
+
+def fetch_lease(code: str, app_version: str = "") -> str:
+    """يفعّل الكود عند الخادم ويعيد العقد **دون تثبيته** — لتغيير الكود.
+
+    الواجهة تقارنه بالحالي أولًا (‏``describe_change``)؛ إن رفض المستخدم
+    بقي العقد الحالي كما هو.
+    """
+    lease_text = client.activate(code, device_id(), app_version)
+    lease = verify(lease_text)
+    if lease.device and lease.device != device_id():
+        raise LeaseError("هذا الترخيص صادر لجهاز آخر.")
+    return lease_text
+
+
+def install_lease(lease_text: str, app_version: str = "") -> Verdict:
+    """يثبّت عقدًا موقَّعًا مكان الحالي — يصير هو المرجع لكل شيء فورًا."""
+    return _install(lease_text, app_version)
+
+
+def tier_of(lease) -> str:
+    """طبقة عقدٍ بعينه (انظر ``current_tier``)."""
+    extra = getattr(lease, "extra", None) or {}
+    plan = getattr(lease, "plan", "") or ""
+    tier = str(extra.get("tier") or "")
+    if not tier and plan.startswith("تجربة"):
+        tier = "trial"
+    if not tier and (extra.get("managed") or plan.startswith("مُدار")):
+        tier = "managed"
+    return tier
 
 
 def activate_offline(lease_text: str, app_version: str = "") -> Verdict:

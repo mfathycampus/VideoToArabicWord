@@ -629,6 +629,9 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
 
         # --- الخصوصية والإحصاءات (الإعدادات) ---
         settings_layout.addWidget(self._build_privacy_box())
+        from licensing import app_gate as _gate
+        if _gate.licensing_enabled():
+            settings_layout.addWidget(self._build_license_box())
         settings_layout.addStretch(1)
 
         self.pages = QStackedWidget()
@@ -958,6 +961,45 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
         column.addWidget(note)
         return box
 
+    def _build_license_box(self) -> QGroupBox:
+        """تغيير كود التفعيل من الإعدادات — مثل الضغط على شريط الترخيص."""
+        box = QGroupBox("الترخيص")
+        column = QVBoxLayout(box)
+        self.license_change_button = QPushButton("تغيير كود التفعيل…")
+        self.license_change_button.clicked.connect(self.change_license_code)
+        column.addWidget(self.license_change_button)
+        hint = QLabel("الكود الجديد يحلّ محلّ الحالي فورًا وتبدأ مدّته من لحظة "
+                      "تفعيله. «معين المُدار» يظهر فقط إن كان الكود من باقة مُدارة.")
+        hint.setWordWrap(True)
+        hint.setStyleSheet(f"color: {theme.MUTED}; font-size: 11px;")
+        column.addWidget(hint)
+        return box
+
+    def change_license_code(self) -> None:
+        """يفتح حوار التفعيل في وضع الاستبدال، ثم يُلزم الواجهة بالكود الجديد."""
+        from licensing import app_gate
+        if not app_gate.licensing_enabled():
+            return
+        from ui.license_dialog import LicenseDialog
+
+        before = app_gate.current_code()
+        current = self.license_verdict or app_gate.check(APP_VERSION)
+        dialog = LicenseDialog(current, APP_VERSION, self, replacing=True)
+        dialog.exec()
+        if app_gate.current_code() == before:
+            return
+        # الباقة تغيّرت: الشريط، و«معين المُدار» (يظهر/يختفي)، والرصيد.
+        self._credit_for = None
+        self.license_verdict = app_gate.check(APP_VERSION)
+        tier = app_gate.current_tier()
+        if tier == "managed":
+            note = "الباقة مُدارة: «معين المُدار» متاح في قائمة المزوّدين."
+        else:
+            note = "الباقة ليست مُدارة: أُزيل «معين المُدار» من قائمة المزوّدين."
+        self.append_log(f"تغيّر كود التفعيل — {self.license_verdict.message} {note}")
+        if hasattr(self, "_update_rewrite_note"):
+            self._update_rewrite_note()
+
     def _on_share_stats_toggled(self, checked: bool) -> None:
         self.config.application.share_usage_stats = bool(checked)
         self.config.application.usage_stats_asked = True   # قرارٌ صريح
@@ -1042,6 +1084,10 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
         self.license_badge.setStyleSheet(
             f"color: {theme.ON_INK_MUTED}; font-size: 11px;")
         self.license_badge.setVisible(False)
+        # 1.22.0: الضغط عليه يفتح «تغيير كود التفعيل».
+        self.license_badge.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.license_badge.setToolTip("اضغط لتغيير كود التفعيل")
+        self.license_badge.mousePressEvent = lambda _e: self.change_license_code()
         row.addWidget(self.license_badge)
 
         version = QLabel(APP_VERSION)
