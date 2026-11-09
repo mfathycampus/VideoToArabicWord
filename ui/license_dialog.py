@@ -27,17 +27,50 @@ from licensing.gate import Verdict
 from licensing.lease import LeaseError
 
 
+def _date(timestamp) -> str:
+    from datetime import datetime, timezone
+
+    if not timestamp:
+        return "بلا تاريخ انتهاء"
+    return (datetime.fromtimestamp(timestamp, tz=timezone.utc)
+            .astimezone().strftime("%Y-%m-%d"))
+
+
+def _mask(code: str) -> str:
+    return f"…{code[-4:]}" if code and len(code) > 4 else (code or "")
+
+
 class LicenseDialog(QDialog):
-    def __init__(self, verdict: Verdict, app_version: str = "", parent=None) -> None:
+    """``replacing=True``: تغيير كود والبرنامج مفعّل (1.22.0).
+
+    كان الحوار يُعرض فقط والترخيص غير فعّال، فمن فعّل تجربة أسبوع ثم
+    اشترى ستة أشهر لا يجد أين يدخل الكود الجديد حتى تنتهي التجربة. الكود
+    الجديد يحلّ محلّ القديم فورًا، ومدّته من لحظة تفعيله (الخادم يحسبها
+    كذلك)، وكل ما يتبع الباقة — «معين المُدار» وعلامة التجربة — يتبعه.
+    """
+
+    def __init__(self, verdict: Verdict, app_version: str = "", parent=None,
+                 replacing: bool = False) -> None:
         super().__init__(parent)
-        self.setWindowTitle("تفعيل البرنامج")
+        self.replacing = replacing
+        self.setWindowTitle("تغيير كود التفعيل" if replacing else "تفعيل البرنامج")
         self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
         self.setMinimumWidth(560)
         self.app_version = app_version
         self.verdict = verdict
 
         layout = QVBoxLayout(self)
-        self.status = QLabel(verdict.message)
+        message = verdict.message
+        if replacing:
+            current = app_gate.current_lease()
+            if current is not None:
+                message = (f"الكود الحالي {_mask(current.code)} · {current.plan or '—'} · "
+                           f"حتى {_date(current.expires_at)}.\n")
+            else:
+                message = ""
+            message += ("أدخل الكود الجديد: يحلّ محلّ الحالي فورًا، وتبدأ مدّته "
+                        "من الآن، وينتهي الكود القديم على هذا الجهاز.")
+        self.status = QLabel(message)
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
 
@@ -112,7 +145,10 @@ class LicenseDialog(QDialog):
         self.activate_button.setText("جارٍ التفعيل…")
         QApplication.processEvents()
         try:
-            self._finish(app_gate.activate(code, self.app_version))
+            if self.replacing:
+                self._replace(app_gate.fetch_lease(code, self.app_version))
+            else:
+                self._finish(app_gate.activate(code, self.app_version))
         except (ActivationError, LeaseError) as exc:
             self.status.setText(str(exc))
         finally:
@@ -134,9 +170,36 @@ class LicenseDialog(QDialog):
                 "المزوّد، والصق ما يردّه هنا ثم اضغط «تفعيل بلا إنترنت».")
             return
         try:
-            self._finish(app_gate.activate_offline(text, self.app_version))
+            if self.replacing:
+                from licensing.signing import verify
+                verify(text)                             # يرفع LeaseError إن فسد
+                self._replace(text)
+            else:
+                self._finish(app_gate.activate_offline(text, self.app_version))
         except LeaseError as exc:
             self.status.setText(f"عقدٌ غير صالح: {exc}")
+
+    def _replace(self, lease_text: str) -> None:
+        """يثبّت العقد الجديد مكان الحالي — بعد تأكيدٍ إن كان أقصر."""
+        from licensing.signing import verify
+
+        new = verify(lease_text)
+        old = app_gate.current_lease()
+        if old is not None and new.code == old.code:
+            self.status.setText("هذا هو الكود المفعّل حاليًا — لم يتغيّر شيء.")
+            return
+        if (old is not None and old.expires_at and new.expires_at
+                and new.expires_at < old.expires_at):
+            answer = QMessageBox.question(
+                self, "الكود الجديد أقصر",
+                f"الكود الجديد ينتهي في {_date(new.expires_at)}، والحالي في "
+                f"{_date(old.expires_at)}.\nاستبدال الحالي به على أي حال؟",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No)
+            if answer != QMessageBox.StandardButton.Yes:
+                self.status.setText("أُبقي الكود الحالي.")
+                return
+        self._finish(app_gate.install_lease(lease_text, self.app_version))
 
 
 def ensure_licensed(app_version: str, parent=None) -> Verdict:
