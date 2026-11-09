@@ -17,5 +17,5 @@ SERVER_URL = "https://vtaw-license.mfathyy.workers.dev"
 #:      (الكود وبصمة الجهاز) — العميل يضغط «إرسال» فقط.
 #:   2. ``TOPUP_URL``: صفحة دفع/شحن إن وُجدت.
 #:   3. لا شيء ⇒ «نسخ طلب الشحن» ينسخ الرسالة نفسها ليرسلها العميل بنفسه.
-TOPUP_WHATSAPP = ""
+TOPUP_WHATSAPP = "966568323752"
 TOPUP_URL = ""
