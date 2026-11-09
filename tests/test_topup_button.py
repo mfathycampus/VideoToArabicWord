@@ -67,6 +67,7 @@ def test_managed_without_topup_page_copies_a_request(qapp, monkeypatch, tmp_path
     from licensing import app_gate
 
     monkeypatch.setattr("licensing.keys.TOPUP_URL", "")
+    monkeypatch.setattr("licensing.keys.TOPUP_WHATSAPP", "")
     monkeypatch.setattr(app_gate, "current_code", lambda: "VTAW-M")
     monkeypatch.setattr(app_gate, "device_id", lambda: "DEV")
     monkeypatch.setattr(QMessageBox, "information", lambda *a, **k: None)
@@ -86,4 +87,28 @@ def test_other_errors_keep_the_plain_dialog(qapp, monkeypatch, tmp_path):
     window = _window(tmp_path)
     window.on_failed("[E4001] فشل التفريغ")
     assert seen == ["[E4001] فشل التفريغ"]
+    window.close()
+
+
+def test_managed_with_whatsapp_opens_a_ready_request(qapp, monkeypatch, tmp_path):
+    """الأسهل للعميل: محادثة واتساب فيها طلب الشحن جاهزًا — يضغط «إرسال» فقط."""
+    from urllib.parse import unquote
+
+    from PyQt6.QtGui import QDesktopServices
+
+    from ai.providers import CreditExhaustedError
+    from licensing import app_gate
+
+    monkeypatch.setattr("licensing.keys.TOPUP_WHATSAPP", "+966 5 0000 0000")
+    monkeypatch.setattr(app_gate, "current_code", lambda: "VTAW-M")
+    monkeypatch.setattr(app_gate, "device_id", lambda: "DEV")
+    opened = []
+    monkeypatch.setattr(QDesktopServices, "openUrl", lambda url: opened.append(url.toString(
+        url.ComponentFormattingOption.FullyDecoded)))
+    window = _window(tmp_path)
+    shown = _click(monkeypatch, "طلب الشحن عبر واتساب")
+    window.on_failed(format_error_for_user(CreditExhaustedError()))
+    assert "طلب الشحن عبر واتساب" in shown["buttons"]
+    assert opened and opened[0].startswith("https://wa.me/966500000000?text=")
+    assert "VTAW-M" in unquote(opened[0]) and "DEV" in unquote(opened[0])
     window.close()

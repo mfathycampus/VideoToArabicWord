@@ -1832,9 +1832,24 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
             url = billing_url(self.config.rewrite)
             return ("شحن الرصيد", url) if url else None
         if "[E5402]" in error:
-            from licensing.keys import TOPUP_URL
-            return ("شحن الرصيد", TOPUP_URL) if TOPUP_URL else ("نسخ طلب الشحن", "")
+            from licensing.keys import TOPUP_URL, TOPUP_WHATSAPP
+            if TOPUP_WHATSAPP:
+                from urllib.parse import quote
+                number = "".join(ch for ch in TOPUP_WHATSAPP if ch.isdigit())
+                return ("طلب الشحن عبر واتساب",
+                        f"https://wa.me/{number}?text={quote(self._topup_request())}")
+            if TOPUP_URL:
+                return ("شحن الرصيد", TOPUP_URL)
+            return ("نسخ طلب الشحن", "")
         return None
+
+    @staticmethod
+    def _topup_request() -> str:
+        """رسالة طلب الشحن: ما يحتاجه المزوّد ليشحن الكود الصحيح بلا أسئلة."""
+        from licensing import app_gate
+        return ("السلام عليكم، أرغب في شحن رصيد «معين المُدار».\n"
+                f"الكود: {app_gate.current_code() or '—'}\n"
+                f"بصمة الجهاز: {app_gate.device_id()}")
 
     def _open_topup(self, url: str) -> None:
         if url:
@@ -1845,11 +1860,7 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
             return
         from PyQt6.QtWidgets import QApplication
 
-        from licensing import app_gate
-        QApplication.clipboard().setText(
-            "طلب شحن رصيد «معين المُدار»\n"
-            f"الكود: {app_gate.current_code() or '—'}\n"
-            f"بصمة الجهاز: {app_gate.device_id()}")
+        QApplication.clipboard().setText(self._topup_request())
         QMessageBox.information(
             self, "نُسخ طلب الشحن",
             "نُسخ طلب الشحن (الكود وبصمة الجهاز). أرسله إلى مزوّد البرنامج، "
