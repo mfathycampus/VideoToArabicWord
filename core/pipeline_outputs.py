@@ -339,8 +339,8 @@ class OutputsMixin:
             self._plan_notes.append(
                 f"privacy: لم تُفحص {len(unscanned)} من {len(keyframes)} لقطة "
                 "(Tesseract غير متاح أو فشلت القراءة) فحُجبت عن المستند والسحابة — "
-                "تبقى في مجلد المهمة. ثبّت Tesseract أو شغّل tools/doctor.py ثم "
-                "أعد بناء المستند")
+                "تبقى في مجلد المهمة. بعد إصلاح Tesseract شغّل «ابدأ المعالجة» على "
+                "الملف نفسه: يُعاد الفحص والخطة ويُستعمل التفريغ المحفوظ")
             logger.warning(f"{len(unscanned)} لقطة لم تمرّ بفحص الخصوصية — حُجبت.")
             keyframes = [k for k in keyframes
                          if getattr(k, "privacy_scanned", False)

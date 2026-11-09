@@ -51,7 +51,8 @@ class ObsProcess:
             if sys.platform.startswith("win"):
                 # بلا /F: يرسل WM_CLOSE فيُغلق OBS إغلاقًا نظيفًا.
                 subprocess.run(["taskkill", "/PID", str(proc.pid)],
-                               capture_output=True, timeout=10)
+                               capture_output=True, timeout=10,
+                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             else:
                 proc.terminate()
         except Exception as exc:  # noqa: BLE001
