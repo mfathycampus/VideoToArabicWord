@@ -1808,7 +1808,63 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
         self.report_job_usage()
         self._set_log_visible(True)
         self._after_job()
-        QMessageBox.critical(self, "خطأ", error)
+        target = self._topup_target(error)
+        if target is None:
+            QMessageBox.critical(self, "خطأ", error)
+            return
+        label, url = target
+        box = QMessageBox(QMessageBox.Icon.Critical, "الرصيد لا يكفي", error,
+                          parent=self)
+        topup = box.addButton(label, QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("إغلاق", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if box.clickedButton() is topup:
+            self._open_topup(url)
+
+    def _topup_target(self, error: str):
+        """(نصّ الزرّ، الرابط أو ``""``) إن كان الفشل نفاد رصيد — 1.22.1.
+
+        ‏E5403 رصيد حساب المزوّد (مفتاح الجهة): صفحة فوترته. ‏E5402 رصيد باقة
+        «معين المُدار»: صفحة الشحن إن ضُبطت، وإلا رسالة جاهزة تُنسخ للمزوّد.
+        """
+        if "[E5403]" in error:
+            from ai.providers import billing_url
+            url = billing_url(self.config.rewrite)
+            return ("شحن الرصيد", url) if url else None
+        if "[E5402]" in error:
+            from licensing.keys import TOPUP_URL, TOPUP_WHATSAPP
+            if TOPUP_WHATSAPP:
+                from urllib.parse import quote
+                number = "".join(ch for ch in TOPUP_WHATSAPP if ch.isdigit())
+                return ("طلب الشحن عبر واتساب",
+                        f"https://wa.me/{number}?text={quote(self._topup_request())}")
+            if TOPUP_URL:
+                return ("شحن الرصيد", TOPUP_URL)
+            return ("نسخ طلب الشحن", "")
+        return None
+
+    @staticmethod
+    def _topup_request() -> str:
+        """رسالة طلب الشحن: ما يحتاجه المزوّد ليشحن الكود الصحيح بلا أسئلة."""
+        from licensing import app_gate
+        return ("السلام عليكم، أرغب في شحن رصيد «معين المُدار».\n"
+                f"الكود: {app_gate.current_code() or '—'}\n"
+                f"بصمة الجهاز: {app_gate.device_id()}")
+
+    def _open_topup(self, url: str) -> None:
+        if url:
+            from PyQt6.QtCore import QUrl
+            from PyQt6.QtGui import QDesktopServices
+            QDesktopServices.openUrl(QUrl(url))
+            self.append_log(f"فُتحت صفحة شحن الرصيد: {url}")
+            return
+        from PyQt6.QtWidgets import QApplication
+
+        QApplication.clipboard().setText(self._topup_request())
+        QMessageBox.information(
+            self, "نُسخ طلب الشحن",
+            "نُسخ طلب الشحن (الكود وبصمة الجهاز). أرسله إلى مزوّد البرنامج، "
+            "وبعد الشحن اضغط «ابدأ المعالجة» على الملف نفسه.")
 
     def on_cancelled(self) -> None:
         self.status_label.setText("أُلغيت المعالجة. يمكن استئنافها لاحقًا.")
