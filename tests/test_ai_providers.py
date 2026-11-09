@@ -526,3 +526,37 @@ def test_cloudflare_block_is_explained_and_fatal(managed):
     with pytest.raises(FatalProviderError, match="حجبت حمايةُ الشبكة") as info:
         managed.complete("s", "u")
     assert "1010" in str(info.value) and "لم يُستهلك شيء" in str(info.value)
+
+
+def test_anthropic_low_credit_stops_the_job(server, monkeypatch):
+    """1.22.1: «credit balance is too low» عُزل عند كل دفعة فخرج مستندٌ خام
+    بلا عناوين ولا ملخّصات بصمت. الآن يوقف المهمّة برسالة واضحة."""
+    from ai.providers import ProviderBillingError
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    Handler.status = 400
+    Handler.body = {"type": "error", "error": {
+        "type": "invalid_request_error",
+        "message": "Your credit balance is too low to access the Anthropic API. "
+                   "Please go to Plans & Billing to upgrade or purchase credits."}}
+    try:
+        with pytest.raises(ProviderBillingError) as info:
+            AnthropicProvider(base_url=server).complete("s", "u")
+        assert "نفد رصيد" in str(info.value) and "ابدأ المعالجة" in str(info.value)
+    finally:
+        Handler.status = 200
+        Handler.body = {"content": [{"type": "text", "text": '{"title":"عنوان"}'}]}
+
+
+def test_openai_compatible_quota_stops_the_job(server, monkeypatch):
+    from ai.providers import OpenAICompatibleProvider, ProviderBillingError
+
+    Handler.status = 429
+    Handler.body = {"error": {"type": "insufficient_quota",
+                              "message": "You exceeded your current quota"}}
+    try:
+        with pytest.raises(ProviderBillingError):
+            OpenAICompatibleProvider(base_url=server, api_key="k").complete("s", "u")
+    finally:
+        Handler.status = 200
+        Handler.body = {"content": [{"type": "text", "text": '{"title":"عنوان"}'}]}

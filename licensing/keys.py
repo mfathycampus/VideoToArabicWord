@@ -10,3 +10,7 @@ PUBLIC_KEY_B64 = "QXOoLWm0hPkfkSX6oL4E6ry96XblWlNIL0NabFXQMOI="
 #: عنوان خادم التفعيل (Cloudflare Worker). يكتبه ``make_license.py init``
 #: أو يُضبط بمتغيّر البيئة ``VTAW_LICENSE_SERVER`` أثناء التطوير.
 SERVER_URL = "https://vtaw-license.mfathyy.workers.dev"
+
+#: 1.22.1: صفحة شحن رصيد «معين المُدار» (أو رابط تواصل مع المزوّد). فارغ ⇒
+#: زرّ «طلب شحن» ينسخ رسالة جاهزة (الكود والبصمة) يرسلها المستخدم للمزوّد.
+TOPUP_URL = ""

@@ -652,7 +652,8 @@ class RewritePanelMixin:
         self._emit_job_usage(minutes)
         self._refresh_header_credit()
         if minutes <= 0:
-            text = "الرصيد المتبقي: نفد ✗ — اطلب شحن الرصيد من المزوّد."
+            text = ("الرصيد المتبقي: نفد ✗ — اشحن الرصيد (يظهر زرّ «شحن الرصيد» "
+                    "عند بدء معالجة بلا رصيد).")
         elif minutes < LOW_CREDIT_MINUTES:
             text = f"الرصيد المتبقي: {minutes:g} دقيقة ⚠ يوشك على النفاد."
         else:

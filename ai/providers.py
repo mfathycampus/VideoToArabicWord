@@ -68,6 +68,38 @@ class CreditExhaustedError(FatalProviderError):
         super().__init__(message)
 
 
+class ProviderBillingError(FatalProviderError):
+    """رصيد حساب المزوّد (مفتاح الجهة أو المستخدم) نفد — 1.22.1.
+
+    غير ``CreditExhaustedError`` (باقة معين المُدار): هنا الشحن عند المزوّد
+    نفسه. الواجهة تعرض زر «شحن الرصيد» إلى صفحة الفوترة (‏``billing_url``).
+    """
+
+    error_code = "E5403"
+    category = "NETWORK_ERROR"
+
+
+#: صفحات الفوترة حيث يُشحن الرصيد — زر «شحن الرصيد» في رسالة الفشل.
+BILLING_URLS = {
+    "anthropic": "https://console.anthropic.com/settings/billing",
+    "openai": "https://platform.openai.com/settings/organization/billing",
+    "gemini": "https://aistudio.google.com/",
+    "mistral": "https://console.mistral.ai/",
+    "groq": "https://console.groq.com/",
+    "deepseek": "https://platform.deepseek.com/",
+    "openrouter": "https://openrouter.ai/settings/credits",
+    "azure_openai": "https://portal.azure.com/",
+}
+
+
+def billing_url(settings) -> str:
+    """صفحة شحن رصيد المزوّد المختار في الإعداد، أو ``""``."""
+    provider = getattr(settings, "provider", "")
+    if provider == "openai_compatible":
+        return BILLING_URLS.get(getattr(settings, "preset", "") or "openai", "")
+    return BILLING_URLS.get(provider, "")
+
+
 class ResponseTruncatedError(RewriteUnavailableError):
     """الردّ قُطع عند سقف الرموز (``max_tokens``) قبل أن يكتمل.
 
@@ -491,6 +523,18 @@ class OpenAICompatibleProvider(LLMProvider):
             if (exc.code == 400 and not self._new_token_param
                     and "max_completion_tokens" in detail):
                 raise _TokenParamRejected() from exc
+            low = detail.lower()
+            if (exc.code == 402 or "insufficient_quota" in low
+                    or "credit balance" in low or "billing" in low):
+                raise ProviderBillingError(
+                    f"نفد رصيد حساب «{self.info.label_ar}» ({exc.code}): "
+                    f"{detail[:200]}\n\nاشحن الرصيد ثم اضغط «ابدأ المعالجة» على "
+                    "الملف نفسه: يُستأنف من الصياغة.") from exc
+            if exc.code == 401:
+                # مفتاح مرفوض: كل دفعة تالية ستُرفض كذلك.
+                raise FatalProviderError(
+                    f"رفض «{self.info.label_ar}» المفتاح (401): {detail[:200]}\n\n"
+                    "صحّح المفتاح ثم اضغط «ابدأ المعالجة» على الملف نفسه.") from exc
             raise RewriteUnavailableError(
                 f"رفضت الخدمة الطلب ({exc.code}): {detail}",
                 retryable=exc.code == 429 or exc.code >= 500) from exc
@@ -766,10 +810,21 @@ class AnthropicProvider(LLMProvider):
                     detail = retry_exc.read().decode("utf-8", "replace")[:400]
                     exc = retry_exc
 
+            if exc.code == 400 and "credit balance" in detail.lower():
+                # 1.22.1: كل دفعة تالية تُرفض بالسبب نفسه. كان يُعزل عند
+                # حدود الدفعة فخرج مستندٌ خام بلا عناوين ولا ملخّصات
+                # والمستخدم لا يعرف لماذا. الآن تتوقّف المهمّة برسالة،
+                # والتفريغ واللقطات محفوظة للاستئناف بعد الشحن.
+                raise ProviderBillingError(
+                    "نفد رصيد حساب Anthropic (Claude API).\n\n"
+                    "اشحن الرصيد من console.anthropic.com ← Plans & Billing، ثم "
+                    "اضغط «ابدأ المعالجة» على الملف نفسه: يُستأنف من الصياغة "
+                    "ويُستعمل التفريغ واللقطات المحفوظة.") from exc
             if exc.code == 401:
                 # مفاتيح Anthropic لها تاريخ انتهاء اختياري، ومفتاح
-                # منتهٍ يرفض بنفس الرمز — فنذكر الاحتمالين.
-                raise RewriteUnavailableError(
+                # منتهٍ يرفض بنفس الرمز — فنذكر الاحتمالين. وكل دفعة تالية
+                # تُرفض بالمفتاح نفسه، فتتوقّف المهمّة (1.22.1).
+                raise FatalProviderError(
                     "رفضت Anthropic المفتاح (401).\n\n"
                     "الأسباب المحتملة:\n"
                     "  • المفتاح غير صحيح أو نُسخ ناقصًا\n"
