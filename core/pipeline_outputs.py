@@ -234,8 +234,19 @@ class OutputsMixin:
                 logger.info(
                     f"مزوّد الترجمة «{settings.provider}» غير متاح — "
                     "تُخطّى الترجمة.")
+                self._note_output_failure(
+                    f"output: لم تُكتب الترجمة ({'، '.join(targets)}) — مزوّد "
+                    f"«{settings.provider}» غير متاح. المستند كُتب كاملًا")
                 return
-            for target in targets:
+        except Exception as exc:
+            logger.warning(f"تعذّرت الترجمة: {exc}")
+            self._note_output_failure(
+                f"output: تعذّرت الترجمة ({'، '.join(targets)}) — "
+                f"{str(exc)[:120]}. المستند كُتب كاملًا")
+            return
+        failed: list = []
+        for target in targets:
+            try:
                 for path in translate_subtitles(
                         transcript, output_docx, provider,
                         TranslationConfig(
@@ -243,8 +254,26 @@ class OutputsMixin:
                             timeout_seconds=settings.timeout_seconds),
                         self.config.document.subtitle_formats):
                     job.register_artifact(f"translation_{target}", path)
-        except Exception as exc:
-            logger.warning(f"تعذّرت الترجمة: {exc}")
+            except Exception as exc:
+                # FatalProviderError (رصيد/مفتاح) يُصيب كل لغة تالية: لا نكرّره.
+                logger.warning(f"تعذّرت الترجمة إلى «{target}»: {exc}")
+                failed.append(target)
+                from ai.providers import FatalProviderError
+                if isinstance(exc, FatalProviderError):
+                    failed.extend(t for t in targets[targets.index(target) + 1:])
+                    break
+        if failed:
+            # 1.22.3: كان الفشل في السجلّ التقني وحده، فيظنّ المستخدم أن
+            # المهمّة أخرجت كل ما اختاره.
+            self._note_output_failure(
+                f"output: تعذّرت الترجمة إلى: {'، '.join(failed)} — المستند "
+                "كُتب كاملًا؛ التفاصيل في السجلّ")
+
+    def _note_output_failure(self, note: str) -> None:
+        """مخرجٌ اختاره المستخدم ولم يُكتب: يصل إليه في ملاحظات النهاية."""
+        notes = list(getattr(self, "last_notes", []) or [])
+        notes.append(note)
+        self.last_notes = notes
 
     def _write_exports(self, plan, metadata, images_dir: Path,
                        base_path: Path, job,
@@ -261,6 +290,7 @@ class OutputsMixin:
         formats = list(getattr(self.config.document, "export_formats", []) or [])
         if not formats:
             return []
+        failures: List[str] = []
         try:
             from document.exporters import ExportContext, write_exports
 
@@ -280,10 +310,17 @@ class OutputsMixin:
                             self.config.document, "scorm_mastery", 70),
                     },
                 ),
-                formats)
+                formats, failures=failures)
         except Exception as exc:
             logger.warning(f"تعذّرت الصيغ الإضافية: {exc}")
+            self._note_output_failure(
+                f"output: تعذّرت الصيغ الإضافية ({'، '.join(formats)}) — المستند "
+                "كُتب كاملًا؛ التفاصيل في السجلّ")
             return []
+        if failures:
+            self._note_output_failure(
+                f"output: تعذّر إخراج: {'، '.join(f.upper() for f in failures)} — "
+                "المستند كُتب كاملًا؛ التفاصيل في السجلّ")
 
         if job is not None:
             for path in written:

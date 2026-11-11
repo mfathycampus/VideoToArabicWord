@@ -130,6 +130,19 @@ jobs:
             /DAppVersion=$version packaging\installer.iss
         shell: pwsh
 
+      # 1.22.3: المثبِّت غير موقَّع، فبصمته المنشورة هي ما يتحقّق به المعلّم
+      # أن الملف الذي نزّله هو نفسه الذي بُني هنا.
+      - name: بصمة SHA-256 للمثبِّت
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $lines = Get-ChildItem dist\*-setup.exe | ForEach-Object {
+            $h = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
+            "$h  $($_.Name)"
+          }
+          $lines | Set-Content -Encoding ascii dist\SHA256SUMS.txt
+          $lines | Write-Host
+
       - name: رفع المثبِّت
         if: startsWith(github.ref, 'refs/tags/v')
         uses: actions/upload-artifact@v4
@@ -153,7 +166,9 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*-setup.exe
+          files: |
+            dist/*-setup.exe
+            dist/SHA256SUMS.txt
           name: ${{ github.ref_name }}
           # ``make_latest`` هو ما يجعل ``/releases/latest`` يشير إليه.
           make_latest: true
@@ -166,6 +181,10 @@ jobs:
 
             > ويندوز سيعرض تحذير SmartScreen لأن المثبِّت غير موقَّع
             > رقميًّا بعد. اختر **مزيد من المعلومات ← تشغيل على أي حال**.
+
+            **للتحقّق من الملف قبل تشغيله:** بصمته في `SHA256SUMS.txt` أدناه.
+            في PowerShell: `Get-FileHash .\VideoToArabicWord-*-setup.exe` — يجب أن
+            تطابق البصمة الظاهرة البصمة في الملف.
 
             تفاصيل ما تغيّر في
             [`CHANGELOG.md`](https://github.com/mfathycampus/VideoToArabicWord/blob/main/CHANGELOG.md).

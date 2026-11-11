@@ -215,6 +215,40 @@ def check_egress_gate() -> None:
         _EGRESS_GATE()
 
 
+#: مضيفات الجهاز نفسه: HTTP إليها لا يعبر الشبكة (Ollama وخوادم التطوير).
+_LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
+
+
+def require_secure_endpoint(url: str) -> None:
+    """يمنع إرسال المفتاح أو النص بلا تشفير قبل أيّ طلب سحابي (1.22.3).
+
+    عنوان الخادم يُكتب من الواجهة منذ 1.21.0؛ ``http://`` إلى خادم خارجي
+    كان يُرسل ترويسة ``Authorization`` ونصّ التفريغ مكشوفين على الشبكة.
+    HTTPS مطلوب، إلا لمضيف الجهاز نفسه. ويُرفض اسم مستخدم/كلمة مرور
+    داخل الرابط: يُرسل مع كل طلب ويظهر في السجلّات.
+    """
+    from urllib.parse import urlsplit
+
+    try:
+        parts = urlsplit((url or "").strip())
+        host = (parts.hostname or "").lower()
+    except ValueError as exc:
+        raise FatalProviderError(
+            "عنوان الخادم غير صالح — راجع حقل «عنوان الخادم».") from exc
+    if not host or parts.scheme not in ("https", "http"):
+        raise FatalProviderError(
+            "عنوان الخادم غير صالح — يجب أن يبدأ بـ https:// (راجع حقل «عنوان الخادم»).")
+    if parts.username or parts.password:
+        raise FatalProviderError(
+            "عنوان الخادم يحوي اسم مستخدم أو كلمة مرور — احذفهما وضع المفتاح "
+            "في حقل «مفتاح الوصول».")
+    if parts.scheme == "http" and not (host in _LOOPBACK_HOSTS
+                                       or host.startswith("127.")):
+        raise FatalProviderError(
+            f"عنوان الخادم «{host}» بلا تشفير (http://) — لن يُرسل المفتاح ولا "
+            "النص. استعمل https://، أو Ollama على هذا الجهاز.")
+
+
 def record_egress(provider: str, sent: bool, detail: str = "",
                   images: int = 0) -> None:
     """يسجّل محاولة إرسال. ``sent`` = غادرت البيانات فعلًا.
@@ -504,6 +538,7 @@ class OpenAICompatibleProvider(LLMProvider):
         request = urllib.request.Request(
             self._endpoint(), data=payload,
             headers={"Content-Type": "application/json", **self._auth_headers()})
+        require_secure_endpoint(self._endpoint())
         check_egress_gate()
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -893,6 +928,7 @@ class AnthropicProvider(LLMProvider):
         request = urllib.request.Request(
             f"{self.base_url}/v1/messages",
             data=json.dumps(body).encode("utf-8"), headers=headers)
+        require_secure_endpoint(self.base_url)
         check_egress_gate()
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
