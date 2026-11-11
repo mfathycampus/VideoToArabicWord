@@ -34,7 +34,7 @@ def test_pipeline_passes_the_configured_mastery_to_the_exporters(tmp_path, monke
     seen = {}
     import document.exporters as exporters
 
-    def fake_write(ctx, formats):
+    def fake_write(ctx, formats, **_kwargs):
         seen["options"] = dict(ctx.options)
         return []
 

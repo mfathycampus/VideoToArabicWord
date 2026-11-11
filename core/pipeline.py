@@ -375,6 +375,8 @@ class VideoToDocPipeline(MediaStagesMixin, OutputsMixin):
         """
         cancel_token = cancel_token or CancellationToken()
         clip = clip or ClipRange()
+        # ملاحظات هذه المهمّة وحدها (يقرؤها العامل بعد الانتهاء).
+        self.last_notes = []
         job_dir = self.job_dir_for(video_path, clip)
         job = JobManager.create_or_resume(job_dir, video_path)
         emit = self._make_emitter(progress_callback)

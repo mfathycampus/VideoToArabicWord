@@ -329,6 +329,18 @@ class JobManager:
                 f"الناتج «{key}» غير مسجّل في حالة المهمة. "
                 "احذف مجلد المهمة وأعد التشغيل.")
         path = self.job_dir / ref.filename
+        # 1.22.3: ما يُحمَّل هنا JSON تكتبه ``save_artifact`` داخل مجلد المهمة
+        # دائمًا. ملف حالة معدَّل أو منقول (‏``..`` أو مسار مطلق) كان يجعل
+        # الاستئناف يقرأ ملفًا آخر من الجهاز. (المستند والترجمات تُسجَّل
+        # بمسار مطلق عمدًا — خارج المجلد — ولا تُحمَّل بهذه الدالة.)
+        try:
+            inside = path.resolve().is_relative_to(self.job_dir.resolve())
+        except (OSError, RuntimeError):
+            inside = False
+        if not inside:
+            raise ArtifactMissingError(
+                f"الناتج «{key}» يشير إلى خارج مجلد المهمة — احذف مجلد المهمة "
+                "وأعد التشغيل.")
         if not path.exists():
             raise ArtifactMissingError(f"ملف الناتج مفقود: {path.name}")
         return json.loads(path.read_text(encoding="utf-8"))

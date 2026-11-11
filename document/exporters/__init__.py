@@ -94,11 +94,13 @@ def _load_builtins() -> None:
 
 
 def write_exports(ctx: ExportContext,
-                  formats: List[str]) -> List[Path]:
+                  formats: List[str],
+                  failures: Optional[List[str]] = None) -> List[Path]:
     """يشغّل المُصيِّرات المطلوبة ويعيد مسارات ما كُتب فعلًا.
 
     كل مُصيِّر معزول: استثناؤه يُسجَّل ولا يتسرّب. الترتيب محفوظ كما
-    طلبه المستخدم، والتكرار يُسقَط.
+    طلبه المستخدم، والتكرار يُسقَط. ``failures`` (اختياري) يُجمَع فيه اسم
+    كل صيغة تعذّرت، فيُقال للمستخدم بدل أن يبقى في السجلّ التقني وحده.
     """
     _load_builtins()
     written: List[Path] = []
@@ -117,6 +119,8 @@ def write_exports(ctx: ExportContext,
         except Exception as exc:
             # مخرج إضافي لا شرط نجاح — انظر عقد الفشل في مقدّمة الوحدة.
             logger.warning(f"تعذّر إخراج «{name}»: {exc}")
+            if failures is not None:
+                failures.append(name)
             continue
         if path is not None:
             from document.trial_mark import mark_file

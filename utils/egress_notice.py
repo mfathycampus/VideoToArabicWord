@@ -35,6 +35,10 @@ def describe_egress(config, rewrite_label: str,
             lines.append("  دون طمس — «إخفاء الأسماء» معطّل.")
         if withhold:
             lines.append("  شاشات تسجيل الدخول لا تُرسل ولا تدخل المستند.")
+        if getattr(rewrite, "send_unredacted_images", False):
+            # 1.22.3: الاستثناء كان يُذكر في موافقة «معين المُدار» وحدها.
+            lines.append("  ⚠ إعداد جهتك (send_unredacted_images) مفعّل: اللقطات التي "
+                         "لم تُفحص أو لم تُطمس تُرسل كما هي وتبقى في المستند.")
     if study_label:
         lines.append(f"• نصّ التفريغ أيضًا إلى «{study_label}» لبناء الحزمة التعليمية.")
     lines.append("")

@@ -140,9 +140,7 @@ class MediaStagesMixin:
         except Exception as exc:
             logger.warning(f"تعذّر التحقق المسبق من فك الترميز: {exc}")
 
-        free = shutil.disk_usage(self.output_base_dir.parent
-                                 if self.output_base_dir.exists()
-                                 else Path.home()).free
+        free = shutil.disk_usage(_nearest_existing(self.output_base_dir)).free
         if free < _MIN_FREE_BYTES:
             raise InsufficientDiskSpaceError(
                 f"المساحة الحرة غير كافية: {free / 1024**3:.1f}GB "
@@ -374,3 +372,21 @@ def _privacy_text(text: str, words) -> str:
     extra = " ".join(str(w.get("text", "")) for w in (words or []))
     return f"{text}\n{extra}" if extra else str(text)
 
+
+def _nearest_existing(path: Path) -> Path:
+    """أقرب مجلد موجود في مسار الإخراج — فيُفحص قرص الإخراج نفسه (1.22.3).
+
+    مجلد إخراج جديد على ``D:`` كان يُفحص بدلًا منه مجلد المنزل على ``C:``.
+    """
+    current = Path(path)
+    try:
+        current = current.expanduser().absolute()
+    except (OSError, RuntimeError):
+        return Path.home()
+    for candidate in (current, *current.parents):
+        try:
+            if candidate.exists():
+                return candidate
+        except OSError:
+            continue
+    return Path.home()
