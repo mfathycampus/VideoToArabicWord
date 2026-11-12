@@ -1,0 +1,13 @@
+# مدخل ملف القفل الذي تُبنى منه الحزمة التنفيذية (1.22.5).
+#
+# لا يُثبَّت منه مباشرة. يولَّد منه ``requirements.lock.txt`` (إصدارات مثبّتة
+# بتجزئات SHA-256) بالأمر:
+#
+#     python tools/lock_requirements.py
+#
+# والبناء (‎.github/workflows/build.yml) يثبّت من ملف القفل وحده بـ
+# ``--require-hashes``. الاختبارات (ci.yml) تبقى على ``requirements-dev.txt``
+# بلا قفل عمدًا: هي التي تكشف أن إصدارًا جديدًا من تبعيةٍ ما يكسر شيئًا، قبل
+# أن يدخل ذلك الإصدار ملف القفل.
+-r requirements-export.txt
+pyinstaller>=6.0
