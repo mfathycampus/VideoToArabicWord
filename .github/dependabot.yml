@@ -1,0 +1,10 @@
+# 1.22.5: إجراءات GitHub مثبّتة بتجزئة الالتزام لا بالوسم (وسمٌ يُعاد توجيهه
+# يغيّر ما يُشغَّل بصلاحية الكتابة على الإصدارات). Dependabot يفتح طلب دمج حين
+# يصدر جديد، فلا يشيخ التثبيت بصمت.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3

@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import platform
 import shutil
 import subprocess
@@ -25,16 +26,36 @@ from typing import Iterable, Optional
 ROOT = Path(__file__).resolve().parents[1]
 BIN = ROOT / "bin"
 
+#: 1.22.5 — إصدار محدّد وتجزئة، لا «latest». ‏ffmpeg.exe و ffprobe.exe يُشحنان
+#: داخل المثبِّت ويشغّلهما البرنامج على جهاز كل معلّم؛ وكانا يُنزَّلان عند كل
+#: بناء من رابطٍ يتغيّر محتواه بلا إشعار وبلا أي تحقّق — عكس ``obs_installer``
+#: الذي يتحقّق من SHA-256. المصدران يحملان الملف نفسه (التجزئة واحدة، وهي
+#: المنشورة في ``…essentials_build.zip.sha256`` على gyan.dev)، فأيّهما أجاب
+#: يُقبل، وما لا يطابق يُحذف ولا يُستعمل.
+#:
+#: للترقية: غيّر الرقم، ثم انسخ التجزئة من صفحة الإصدار في
+#: github.com/GyanD/codexffmpeg/releases وطابقها بملف ‎.sha256 على gyan.dev.
+FFMPEG_VERSION = "9.0.2"
+FFMPEG_SHA256 = "60f467265b1e312373dbcd92200c2618a74850f98d3d078e94296bb3fa2047ba"
+_FFMPEG_ARCHIVE = f"ffmpeg-{FFMPEG_VERSION}-essentials_build.zip"
+
 WINDOWS_SOURCES = (
+    ("GitHub · GyanD/codexffmpeg",
+     "https://github.com/GyanD/codexffmpeg/releases/download/"
+     f"{FFMPEG_VERSION}/{_FFMPEG_ARCHIVE}", FFMPEG_SHA256),
     ("gyan.dev (essentials)",
-     "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"),
-    ("BtbN (win64-gpl)",
-     "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/"
-     "ffmpeg-master-latest-win64-gpl.zip"),
+     f"https://www.gyan.dev/ffmpeg/builds/packages/{_FFMPEG_ARCHIVE}",
+     FFMPEG_SHA256),
 )
+
+
+class ChecksumMismatchError(OSError):
+    """الملف المنزَّل ليس الملف المتوقَّع — حُذف ولم يُستعمل."""
 
 #: ماك (arm64): بناءان ساكنان (بلا dylib خارجية) — ``brew`` يثبّت ffmpeg
 #: مرتبطًا بمكتبات Homebrew فلا يصلح نسخه داخل حزمة.
+#: ⚠ غير مثبَّت بتجزئة: المصدر لا ينشر إلا رابط «latest». بناء ماك لا يُنشر
+#: للمستخدمين بعد (انظر build.yml)؛ يُثبَّت قبل أول إصدار له.
 MACOS_SOURCES = (
     ("martin-riedl.de (arm64 static)",
      {"ffmpeg": "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip",
@@ -56,8 +77,10 @@ def found_on_path() -> dict[str, Optional[str]]:
     return {name: shutil.which(name) for name in NEEDED}
 
 
-def _download(url: str, destination: Path) -> None:
+def _download(url: str, destination: Path, sha256: Optional[str] = None) -> None:
+    """ينزّل الملف، ويتحقّق من تجزئته إن أُعطيت — وما لا يطابق يُحذف."""
     request = urllib.request.Request(url, headers={"User-Agent": "video-ai-doc-setup"})
+    digest = hashlib.sha256()
     with urllib.request.urlopen(request, timeout=120) as response:
         total = int(response.headers.get("content-length") or 0)
         downloaded = 0
@@ -67,6 +90,7 @@ def _download(url: str, destination: Path) -> None:
                 if not chunk:
                     break
                 handle.write(chunk)
+                digest.update(chunk)
                 downloaded += len(chunk)
                 if total:
                     percent = downloaded / total * 100
@@ -74,6 +98,13 @@ def _download(url: str, destination: Path) -> None:
                           f"({downloaded / 1e6:.0f}/{total / 1e6:.0f} MB)",
                           end="", flush=True)
     print()
+    if sha256 and digest.hexdigest() != sha256.lower():
+        destination.unlink(missing_ok=True)
+        raise ChecksumMismatchError(
+            f"تجزئة SHA-256 لا تطابق المتوقَّع — حُذف الملف ولم يُستعمل "
+            f"(وُجد {digest.hexdigest()}).")
+    if sha256:
+        print("    ✓ طابقت التجزئة SHA-256")
 
 
 def _extract(archive: Path, targets: Iterable[str]) -> list[str]:
@@ -135,6 +166,7 @@ def main() -> int:
     if platform.system() == "Darwin":
         for label, urls in MACOS_SOURCES:
             print(f"\nالمصدر: {label}")
+            print("    ⚠ بلا تحقّق من التجزئة (المصدر ينشر «latest» فقط).")
             try:
                 with tempfile.TemporaryDirectory() as tmp:
                     for name, url in urls.items():
@@ -156,12 +188,12 @@ def main() -> int:
         return 1
 
     last_error: Optional[Exception] = None
-    for label, url in WINDOWS_SOURCES:
-        print(f"\nالمصدر: {label}")
+    for label, url, sha256 in WINDOWS_SOURCES:
+        print(f"\nالمصدر: {label} — ffmpeg {FFMPEG_VERSION}")
         try:
             with tempfile.TemporaryDirectory() as tmp:
                 archive = Path(tmp) / "ffmpeg.zip"
-                _download(url, archive)
+                _download(url, archive, sha256)
                 extracted = _extract(archive, NEEDED)
             if len(extracted) >= len(NEEDED):
                 print(f"\nاستُخرج: {', '.join(sorted(extracted))}")

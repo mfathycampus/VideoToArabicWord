@@ -22,14 +22,15 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
           cache: pip
       - run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements-export.txt pyinstaller
+          # 1.22.5: من ملف القفل وحده — إصدارات مثبّتة بتجزئات (tools/lock_requirements.py).
+          python -m pip install --require-hashes -r requirements.lock.txt
       - name: تعبئة bin/ بـ ffmpeg و ffprobe
         run: python tools/setup_ffmpeg.py
       - name: تجهيز Tesseract للشحن داخل الحزمة
@@ -40,7 +41,8 @@ jobs:
         # Tesseract تُنتج مستندات بلا صور لكل مستخدميها.
         shell: pwsh
         run: |
-          choco install tesseract -y --no-progress
+          # 1.22.5: إصدار محدّد — ما يُشحن للمعلّمين لا يتغيّر بلا التزام في المستودع.
+          choco install tesseract --version=5.5.3.20260724 -y --no-progress
           python tools/setup_tesseract.py --source "$env:ProgramFiles\Tesseract-OCR"
       - name: توليد أيقونة ويندوز
         # مُشتقّة من الشعار ومستبعَدة من المستودع. بلا هذه الخطوة يخرج
@@ -94,7 +96,7 @@ jobs:
           }
           & $python tools/build_smoke.py dist/VideoToArabicWord
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         # ‏1.12.0: «Artifact storage quota has been hit» أسقط الوظيفة هنا
         # فلم يُبنَ المثبِّت ولم يُنشر الإصدار. الحزمة المفكوكة نسخةُ فحصٍ
         # لا مُخرَج: فشل رفعها لا يوقف النشر، وتُحذف بعد 3 أيام.
@@ -145,7 +147,7 @@ jobs:
 
       - name: رفع المثبِّت
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         # المثبِّت يُرفق بالإصدار نفسه في الخطوة التالية؛ هذه نسخة إضافية
         continue-on-error: true
         with:
@@ -164,7 +166,7 @@ jobs:
       # (‏``utils/updater.py``).
       - name: نشر الإصدار
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           files: |
             dist/*-setup.exe
@@ -197,14 +199,15 @@ jobs:
     # not supported») فأُلغيت الوظيفة قبل أي خطوة. macos-15 مثله Apple Silicon.
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
           cache: pip
       - run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements-export.txt pyinstaller
+          # 1.22.5: من ملف القفل وحده — إصدارات مثبّتة بتجزئات (tools/lock_requirements.py).
+          python -m pip install --require-hashes -r requirements.lock.txt
       - name: تعبئة bin/ بـ ffmpeg و ffprobe (بناءان ساكنان)
         run: python tools/setup_ffmpeg.py
       - name: توليد أيقونة ماك
@@ -221,7 +224,7 @@ jobs:
           hdiutil create -volname VideoToArabicWord \
             -srcfolder dist/VideoToArabicWord.app -ov -format UDZO \
             dist/VideoToArabicWord-macos-arm64.dmg
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         continue-on-error: true
         with:
           name: VideoToArabicWord-macos

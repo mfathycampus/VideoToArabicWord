@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 from PyQt6.QtCore import Qt, QThread
+from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -111,6 +112,7 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
         self._update_thread: Optional[QThread] = None
         self._update_worker: Optional[UpdateCheckWorker] = None
         self._build_ui()
+        self._apply_accessibility()
         self._refresh_profile_notice()
         self._warn_if_config_failed_to_load()
         # إبلاغٌ دوريّ مقيَّد بالوقت (مرّة كل 6 ساعات على الأكثر) — انظر
@@ -118,6 +120,61 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
         # شيء إن عطّله أو منعته السياسة. السؤال بعد ظهور النافذة.
         from PyQt6.QtCore import QTimer
         QTimer.singleShot(0, self._ask_usage_stats_then_report)
+
+    # ------------------------------------------------------------------
+    #: 1.22.5 — الاسم الذي ينطقه قارئ الشاشة لكل حقل بلا نصّ عليه. تسميةٌ
+    #: (``QLabel``) تجاور الحقل ولا تُربط به لا يقرؤها القارئ: كان 17 حقلًا من
+    #: 59 عنصرًا تفاعليًّا تُنطق «مربّع تحرير» أو «قائمة» بلا اسم. الاسم هنا
+    #: نصّ التسمية الظاهرة نفسه، و``test_release_1_22_5`` يفشل إن أُضيف حقل
+    #: جديد بلا اسم.
+    ACCESSIBLE_NAMES = {
+        "profile_combo": "نوع التسجيل",
+        "model_combo": "نموذج التفريغ",
+        "beam_combo": "فكّ التشفير",
+        "hf_token_input": "رمز HuggingFace",
+        "provider_combo": "مزوّد إعادة الصياغة",
+        "api_key_input": "مفتاح الوصول",
+        "preset_combo": "المزوّد المتوافق",
+        "base_url_input": "عنوان الخادم",
+        "model_input": "اسم النموذج لدى المزوّد",
+        "api_version_input": "إصدار الواجهة",
+        "workspace_input": "معرّف مساحة العمل",
+        "logo_combo": "شعار المستندات والمخرجات",
+        "clip_start_input": "عالج من (بداية المقطع)",
+        "clip_end_input": "عالج إلى (نهاية المقطع)",
+        "glossary_input": "مصطلحات المادة وأسماء الأعلام",
+        "study_provider": "مزوّد الحزمة التعليمية",
+        "log": "سجلّ المعالجة",
+    }
+
+    #: اختصارات المسار الأساسي: اختر ← ابدأ ← افتح. «إلغاء» بلا اختصار عمدًا —
+    #: ضغطةٌ بالخطأ تُضيع ساعات معالجة.
+    SHORTCUTS = (
+        ("browse_button", "Ctrl+O"),
+        ("start_button", "Ctrl+Return"),
+        ("pause_button", "Ctrl+P"),
+        ("open_button", "Ctrl+Shift+O"),
+        ("log_toggle", "Ctrl+L"),
+    )
+
+    def _apply_accessibility(self) -> None:
+        for attr, name in self.ACCESSIBLE_NAMES.items():
+            widget = getattr(self, attr, None)
+            if widget is not None and not widget.accessibleName():
+                widget.setAccessibleName(name)
+        for attr, keys in self.SHORTCUTS:
+            button = getattr(self, attr, None)
+            if button is None:
+                continue
+            # ``QShortcut`` على النافذة لا ``setShortcut`` على الزرّ: أزرارٌ هنا
+            # يتبدّل نصّها («إيقاف مؤقت»/«استئناف»)، وتبديل النصّ قد يمسح
+            # اختصار الزرّ. و``click`` لا يفعل شيئًا والزرّ معطَّل.
+            sequence = QKeySequence(keys)
+            shortcut = QShortcut(sequence, self)
+            shortcut.activated.connect(button.click)
+            hint = sequence.toString(QKeySequence.SequenceFormat.NativeText)
+            tip = button.toolTip()
+            button.setToolTip(f"{tip}\n({hint})" if tip else f"({hint})")
 
     # ------------------------------------------------------------------
     def _build_ui(self) -> None:
@@ -158,6 +215,7 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
         self.file_label.setWordWrap(True)
         browse = QPushButton("اختيار فيديو…")
         browse.clicked.connect(self.choose_file)
+        self.browse_button = browse
         # الصوت مسار كامل لا حالة حدّية: محاضرة مسجَّلة صوتيًا، مقابلة،
         # حلقة بودكاست. المستند يخرج منسّقًا كاملًا بلا لقطات فقط.
         browse_audio = QPushButton("اختيار ملف صوتي…")
