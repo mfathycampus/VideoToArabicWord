@@ -25,6 +25,11 @@
  *   GET  /managed/balance (x-api-key = الكود، x-device)  ← الرصيد بلا استهلاك
  *   GET  /admin/codes                                  (Bearer ADMIN_TOKEN)
  *   POST /stats        {code, device, stats}  ← أعداد استخدام مجمّعة من التطبيق
+ *
+ * التخزين (KV ``LICENSES``):
+ *   <الكود>                  سجلّ الترخيص. يكتبه المشرف، والتطبيق **مرّة واحدة**
+ *                            لكل جهاز جديد يُربط — لا عند إعادة التحقّق.
+ *   usage:<الكود>:<الجهاز>   إحصاءات جهاز واحد. يكتبها ``/stats`` وحدها (1.22.4).
  */
 
 const PREFIX = "VTAW1";
@@ -198,6 +203,12 @@ const fmt = (t) => t ? new Date(t * 1000).toLocaleDateString("ar-EG",
   {year:"numeric",month:"short",day:"numeric"}) : "—";
 const token = () => localStorage.getItem("vtaw_admin") || "";
 
+// 1.22.4: كل قيمة تدخل innerHTML تمرّ من هنا. الملاحظة والخطة يكتبهما المشرف،
+// لكن app_version يأتي من جهاز العميل — ورمز الإدارة يسكن هذه الصفحة.
+// (لا علامات اقتباس مائلة في تعليقات هذا السكربت: هو داخل قالبٍ نصّي.)
+const ESC = {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"};
+const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (ch) => ESC[ch]);
+
 async function api(path, payload) {
   const options = {
     method: payload ? "POST" : "GET",
@@ -336,18 +347,18 @@ function renderUsage(rows, totals) {
     [totals.questions || 0, "أسئلة مولّدة"],
   ];
   document.getElementById("usageTotals").innerHTML = tiles.map(([v, l]) =>
-    \`<div class="stat"><b>\${v}</b><span>\${l}</span></div>\`).join("");
+    \`<div class="stat"><b>\${esc(v)}</b><span>\${esc(l)}</span></div>\`).join("");
   const used = rows.map((row) => [row, usageOf(row)]).filter(([, u]) => u.devices)
     .sort((a, b) => b[1].jobs_total - a[1].jobs_total);
   document.getElementById("usageRows").innerHTML = used.length ? used.map(([row, u]) => \`<tr>
-      <td>\${row.note || "<code>" + row.code + "</code>"}</td>
+      <td>\${row.note ? esc(row.note) : "<code>" + esc(row.code) + "</code>"}</td>
       <td>\${u.devices}</td><td>\${u.jobs_total}</td><td>\${u.completed}</td>
       <td>\${pct(u.completed, u.completed + u.failed)}</td>
       <td>\${(u.video_minutes / 60).toFixed(1)}</td>
       <td>\${u.q_n ? (u.q_sum / u.q_n).toFixed(1) : "—"}</td>
       <td>\${u.this_month_jobs}</td><td>\${u.recordings}</td>
       <td>\${u.rewrite} / \${u.vision} / \${u.study}</td>
-      <td>\${u.last_job_day || "—"}</td><td>\${fmt(u.reported_at)}</td><td>\${u.app_version || "—"}</td>
+      <td>\${esc(u.last_job_day || "—")}</td><td>\${esc(fmt(u.reported_at))}</td><td>\${esc(u.app_version || "—")}</td>
     </tr>\`).join("")
     : '<tr><td colspan="13">لم يُبلغ أي جهاز بعد.</td></tr>';
 }
@@ -364,26 +375,28 @@ async function loadCodes() {
     document.getElementById("rows").innerHTML = rows.map((row) => {
       const [label, css] = statusOf(row);
       const ends = row.activated_at ? fmt(row.activated_at + row.days * 86400) : "—";
+      const code = esc(row.code);
       return \`<tr>
-        <td><code>\${row.code}</code></td>
-        <td>\${row.plan || "—"}</td>
-        <td>\${row.days} يومًا</td>
+        <td><code>\${code}</code></td>
+        <td>\${esc(row.plan || "—")}</td>
+        <td>\${esc(row.days)} يومًا</td>
         <td><span class="pill \${css}">\${label}</span></td>
-        <td>\${deviceList(row).length}/\${row.max_devices || 1}</td>
-        <td>\${row.managed ? ((row.credit_minutes ?? "؟") + " د") : "—"}</td>
-        <td>\${row.managed ? ((row.calls || 0) + " نداء · " + (row.cost_sar || 0) + " ر.س") : "—"}</td>
-        <td>\${fmt(row.activated_at)}</td>
-        <td>\${ends}</td>
-        <td>\${row.note || ""}</td>
+        <td>\${deviceList(row).length}/\${esc(row.max_devices || 1)}</td>
+        <td>\${row.managed ? (esc(row.credit_minutes ?? "؟") + " د") : "—"}</td>
+        <td>\${row.managed ? (esc(row.calls || 0) + " نداء · " + esc(row.cost_sar || 0) + " ر.س") : "—"}</td>
+        <td>\${esc(fmt(row.activated_at))}</td>
+        <td>\${esc(ends)}</td>
+        <td>\${esc(row.note || "")}</td>
         <td>
-          <button class="ghost" onclick="copyCode('\${row.code}')">نسخ</button>
+          <button class="ghost" data-act="copy" data-code="\${code}">نسخ</button>
           \${row.managed ?
-            \`<button class="ghost" onclick="topup('\${row.code}')">شحن</button>
-             <button class="ghost" onclick="calibrate('\${row.code}', \${row.units_used || 0}, \${row.cost_sar || 0})">معايرة</button>\` : ""}
+            \`<button class="ghost" data-act="topup" data-code="\${code}">شحن</button>
+             <button class="ghost" data-act="calibrate" data-code="\${code}"
+               data-units="\${esc(+row.units_used || 0)}" data-cost="\${esc(+row.cost_sar || 0)}">معايرة</button>\` : ""}
           \${deviceList(row).length ?
-            \`<button class="ghost" onclick="resetDevice('\${row.code}')">تصفير الجهاز</button>\` : ""}
+            \`<button class="ghost" data-act="reset" data-code="\${code}">تصفير الجهاز</button>\` : ""}
           \${row.revoked ? "" :
-            \`<button class="danger" onclick="revoke('\${row.code}')">إلغاء</button>\`}
+            \`<button class="danger" data-act="revoke" data-code="\${code}">إلغاء</button>\`}
         </td></tr>\`;
     }).join("");
     renderUsage(rows, data.usage_totals || {});
@@ -509,6 +522,20 @@ async function revoke(code) {
   loadCodes();
 }
 
+// مستمع واحد لأزرار الجدول: الكود يُقرأ من data-code نصًّا، ولا يُركَّب
+// أبدًا داخل شيفرة onclick — هناك يكفي حرفٌ واحد ليصير الكود أمرًا.
+document.getElementById("rows").addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-act]");
+  if (!button) return;
+  const code = button.dataset.code;
+  const act = button.dataset.act;
+  if (act === "copy") copyCode(code);
+  else if (act === "topup") topup(code);
+  else if (act === "calibrate") calibrate(code, +button.dataset.units, +button.dataset.cost);
+  else if (act === "reset") resetDevice(code);
+  else if (act === "revoke") revoke(code);
+});
+
 if (token()) loadCodes();
 </script></body></html>`;
 
@@ -564,11 +591,23 @@ const TERMS_PAGE = `<!doctype html><html lang="ar" dir="rtl"><meta charset="utf-
 المستند قبل اعتماده. قد تتوقف الخدمة المُدارة مؤقتًا للصيانة أو لحدود الإنفاق.</p>
 </body></html>`;
 
+// 1.22.4: لا إطارات ولا صور ولا سكربتات خارجية ولا تضمين في موقع آخر. حتى إن
+// فات تهريبُ قيمةٍ يومًا، لا يستطيع عنصرٌ محقون أن يحمّل شيئًا من الخارج.
+const HTML_HEADERS = {
+  "content-type": "text/html; charset=utf-8",
+  "content-security-policy": "default-src 'none'; script-src 'unsafe-inline'; "
+    + "style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; "
+    + "form-action 'none'; frame-ancestors 'none'",
+  "x-frame-options": "DENY",
+  "x-content-type-options": "nosniff",
+  "referrer-policy": "no-referrer",
+};
+
 function page(html, env) {
   const contact = (env.CONTACT_INFO || "").trim();
-  return new Response(html.replace("\${CONTACT}", contact ? " " + contact : ""), {
-    headers: { "content-type": "text/html; charset=utf-8" },
-  });
+  const safe = contact.replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`);
+  return new Response(html.replace("\${CONTACT}", safe ? " " + safe : ""),
+                      { headers: HTML_HEADERS });
 }
 
 const b64url = (bytes) =>
@@ -654,13 +693,46 @@ const json = (data, status = 200) =>
     status, headers: { "content-type": "application/json; charset=utf-8" },
   });
 
+// 1.22.4: شكل ما يُقبل من الخارج. الكود مفتاحٌ في KV والجهاز جزء من مفتاح —
+// فلا يدخل أيٌّ منهما قبل أن يُعرف شكله (ولا «:» فيهما، فلا يلتبس كودٌ بمفتاح
+// ``usage:``).
+const CODE_RE = /^[A-Z0-9][A-Z0-9-]{3,63}$/;
+const DEVICE_RE = /^[A-Za-z0-9._-]{6,64}$/;
+const VERSION_RE = /^[0-9A-Za-z.+_-]{1,20}$/;
+const normCode = (value) => (typeof value === "string" ? value.trim().toUpperCase() : "");
+const validCode = (value) => typeof value === "string" && CODE_RE.test(value);
+const validDevice = (value) => typeof value === "string" && DEVICE_RE.test(value);
+const usageKey = (code, device) => `usage:${code}:${String(device).slice(0, 12)}`;
+const clampInt = (value, low, high, fallback) => {
+  const parsed = Math.floor(Number(value));
+  return Number.isFinite(parsed) ? Math.min(high, Math.max(low, parsed)) : fallback;
+};
+
+async function readJson(request) {
+  try {
+    const body = await request.json();
+    return body && typeof body === "object" ? body : null;
+  } catch (err) {
+    return null;
+  }
+}
+
+// زمنٌ ثابت: مقارنة ``===`` تتوقف عند أول حرف مختلف، فيُقاس الرمز حرفًا حرفًا.
+function safeEqual(a, b) {
+  let diff = a.length ^ b.length;
+  for (let i = 0; i < Math.max(a.length, b.length); i += 1) {
+    diff |= (a.charCodeAt(i) || 0) ^ (b.charCodeAt(i) || 0);
+  }
+  return diff === 0;
+}
+
 // المقارنة بعد trim: لصق السرّ من ملف أو طرفية يُلحق به سطرًا جديدًا
 // فيفشل التطابق بلا سببٍ ظاهر.
 const isAdmin = (request, env) => {
   const secret = (env.ADMIN_TOKEN || "").trim();
   if (!secret) return false;
   const header = (request.headers.get("authorization") || "").trim();
-  return header.replace(/^Bearer\s+/i, "").trim() === secret;
+  return safeEqual(header.replace(/^Bearer\s+/i, "").trim(), secret);
 };
 
 const deviceListOf = (stored) =>
@@ -668,8 +740,12 @@ const deviceListOf = (stored) =>
     : (stored.device ? [stored.device] : []);
 
 async function activate(request, env, renew) {
-  const { code, device } = await request.json();
-  if (!code || !device) return json({ error: "طلبٌ ناقص." }, 400);
+  const body = await readJson(request);
+  const code = normCode(body && body.code);
+  const device = body && body.device;
+  if (!validCode(code) || !validDevice(device)) {
+    return json({ error: "طلبٌ ناقص." }, 400);
+  }
 
   const stored = await env.LICENSES.get(code, "json");
   if (!stored) return json({ error: "كود التفعيل غير معروف." }, 404);
@@ -703,14 +779,17 @@ async function activate(request, env, renew) {
   const expires = started + (stored.days || 7) * 86400;
   if (now > expires) return json({ error: "انتهت مدّة هذا الكود." }, 403);
 
+  // 1.22.4: السجلّ يُكتب عند ربط جهازٍ **جديد** فقط. كان يُكتب كاملًا عند كل
+  // إعادة تحقّق (لتحديث ``last_seen``)، و KV قد يعيد نسخةً قديمة لثوانٍ: إعادة
+  // تحقّقٍ تقرأ السجلّ قبل إلغائك وتكتبه بعده كانت تمحو الإلغاء بصمت.
   if (!known) {
     devices.push(device);
+    stored.devices = devices;
+    stored.device = devices[0];        // توافقٌ مع ما يقرؤه سواك
+    stored.activated_at = started;
+    stored.last_seen = now;
+    await env.LICENSES.put(code, JSON.stringify(stored));
   }
-  stored.devices = devices;
-  stored.device = devices[0];          // توافقٌ مع ما يقرؤه سواك
-  stored.activated_at = started;
-  stored.last_seen = now;
-  await env.LICENSES.put(code, JSON.stringify(stored));
 
   const recheckDays = stored.recheck_days ?? 7;
   return json({
@@ -744,6 +823,15 @@ const MANAGED_KEYS = ["system", "messages", "temperature", "top_p", "top_k",
                       "stop_sequences"];
 const MAX_BODY_BYTES = 25 * 1024 * 1024;
 const OUTPUT_WEIGHT = 5;
+// 1.22.4 — ميزانية النداء الواحد **شاملةً الإعادات**. كان كل محاولة تنتظر 290
+// ثانية وتُعاد ثلاثًا، والتطبيق ينتظر 180 فيقطع أولًا — وانقطاعه يُلغي هذا
+// الطلب قبل التسوية. الآن الخادم ينتهي دائمًا قبل مهلة التطبيق
+// (``MaeenManagedProvider.MIN_TIMEOUT_SECONDS`` = 320 ثانية؛ اختبارٌ يربط الرقمين).
+const MANAGED_BUDGET_MS = 280000;
+// أقل ما يستحق محاولةً جديدة: دونه نعيد الخطأ العابر للتطبيق ليعيد هو.
+const MIN_ATTEMPT_MS = 30000;
+// حجزٌ لم يُسوَّ بعد هذه المدة نداؤه مات (الميزانية أقصر منها بكثير).
+const STALE_HOLD_MS = 600000;
 
 const num = (value, fallback) => {
   const parsed = Number(value);
@@ -788,9 +876,35 @@ const managedError = (status, type, message, headers = {}) =>
     headers: { "content-type": "application/json; charset=utf-8", ...headers },
   });
 
+// الحجز يُخزَّن ``{t, take}``. قبل 1.22.4 كان وقتًا مجرّدًا (رقمًا) فلا يُعرف
+// كم حُجز — ونداءٌ يموت قبل التسوية كان يأخذ رصيده معه إلى الأبد.
+const holdStarted = (entry) =>
+  (typeof entry === "number" ? entry : (entry && entry.t) || 0);
+const holdAmount = (entry) =>
+  (entry && typeof entry === "object" ? Number(entry.take) || 0 : 0);
+
 export class Wallet {
   constructor(state) {
     this.state = state;
+  }
+
+  // يردّ إلى الرصيد كل حجزٍ عالق ثم يعيد الحالة. «الطلب الفاشل لا يُخصم»
+  // وعدٌ في شروط الاستخدام؛ هنا يُوفى به حين يموت النداء دون أن يُسوّى.
+  async sweep(now) {
+    const store = this.state.storage;
+    const values = await store.get(["units", "inflight"]);
+    let units = values.get("units") || 0;
+    const inflight = values.get("inflight") || {};
+    let removed = 0;
+    for (const [id, entry] of Object.entries(inflight)) {
+      if (now - holdStarted(entry) > STALE_HOLD_MS) {
+        units += holdAmount(entry);
+        delete inflight[id];
+        removed += 1;
+      }
+    }
+    if (removed) await store.put({ units, inflight });
+    return { units, inflight };
   }
 
   async fetch(request) {
@@ -800,9 +914,10 @@ export class Wallet {
     let result;
 
     if (body.op === "get") {
-      const values = await store.get(["units", "calls", "in", "out"]);
+      const swept = await this.sweep(now);
+      const values = await store.get(["calls", "in", "out"]);
       result = {
-        units: values.get("units") || 0, calls: values.get("calls") || 0,
+        units: swept.units, calls: values.get("calls") || 0,
         in_tokens: values.get("in") || 0, out_tokens: values.get("out") || 0,
       };
     } else if (body.op === "add") {
@@ -811,12 +926,9 @@ export class Wallet {
       result = { units };
     } else if (body.op === "reserve") {
       // يحجز من الرصيد قبل النداء: يحدّ التجاوز حين تتزامن نداءات كثيرة.
-      const values = await store.get(["units", "inflight"]);
-      let units = values.get("units") || 0;
-      const inflight = values.get("inflight") || {};
-      for (const [id, started] of Object.entries(inflight)) {
-        if (now - started > 600000) delete inflight[id];     // نداءٌ عالق
-      }
+      const swept = await this.sweep(now);                   // يردّ العالق أولًا
+      let units = swept.units;
+      const inflight = swept.inflight;
       if (Object.keys(inflight).length >= (body.max_concurrent || 3)) {
         result = { ok: false, reason: "busy" };
       } else if (units <= 0) {
@@ -825,7 +937,7 @@ export class Wallet {
         const take = Math.min(Math.max(1, Math.ceil(body.want)), units);
         const id = crypto.randomUUID();
         units -= take;
-        inflight[id] = now;
+        inflight[id] = { t: now, take };
         await store.put({ units, inflight });
         result = { ok: true, id, take, units };
       }
@@ -834,9 +946,14 @@ export class Wallet {
       const values = await store.get(
         ["units", "inflight", "calls", "in", "out", "log", "hour"]);
       const inflight = values.get("inflight") || {};
+      // المحجوز يُردّ **من السجلّ** لا من قول المنادي، ومرّة واحدة: حجزٌ عُدّ
+      // عالقًا ورُدّ ثم وصلت تسويته متأخرةً يُخصم منه الفعلي فقط.
+      const entry = inflight[body.id];
+      const held = entry === undefined ? 0
+        : (typeof entry === "object" ? holdAmount(entry) : (body.take || 0));
       delete inflight[body.id];
       const units = Math.round((values.get("units") || 0)
-                               + (body.take || 0) - (body.actual || 0));
+                               + held - (body.actual || 0));
       // سجلّ استهلاك مختصر (بلا أي محتوى): وقت وعدد نقاط فقط، آخر 150 نداء.
       const log = values.get("log") || [];
       const hour = values.get("hour") || { start: now, units: 0 };
@@ -855,12 +972,12 @@ export class Wallet {
       result = { units, hour_units: hour.units };
     } else if (body.op === "get_log") {
       result = { log: (await store.get("log")) || [],
-                 units: (await store.get("units")) || 0 };
+                 units: (await this.sweep(now)).units };
     } else if (body.op === "g_enter") {
       // بوّابة عامة لكل الأكواد: تحمي حدود Claude حين يتزامن عملاء كثيرون.
       const inflight = (await store.get("ginflight")) || {};
       for (const [id, started] of Object.entries(inflight)) {
-        if (now - started > 600000) delete inflight[id];
+        if (now - started > STALE_HOLD_MS) delete inflight[id];
       }
       const month = (await store.get("spend:" + body.month)) || 0;
       const balance = await store.get("balance_usd");
@@ -1002,7 +1119,7 @@ async function managedAuth(request, env) {
     ({ error: managedError(status, type, message) });
   const code = (request.headers.get("x-api-key") || "").trim().toUpperCase();
   const device = (request.headers.get("x-device") || "").trim();
-  if (!code || !device) {
+  if (!validCode(code) || !validDevice(device)) {
     return fail(401, "authentication_error",
       "كود التفعيل أو معرّف الجهاز ناقص.");
   }
@@ -1158,17 +1275,22 @@ async function managedMessages(request, env, ctx) {
   }
 
   let upstream, text;
+  const budget = Math.min(MANAGED_BUDGET_MS, num(env.MANAGED_BUDGET_MS, MANAGED_BUDGET_MS));
+  const deadline = Date.now() + budget;
   try {
     const payload = JSON.stringify(outgoing);
     for (let attempt = 0; ; attempt++) {
       upstream = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST", headers, body: payload,
-        signal: AbortSignal.timeout(290000),
+        signal: AbortSignal.timeout(Math.max(1000, deadline - Date.now())),
       });
       text = await upstream.text();
       // ازدحام عند Claude: ننتظر ونعيد بدل أن يرى العميل خطأً عابرًا.
       if (![429, 503, 529].includes(upstream.status) || attempt >= 3) break;
       const wait = Math.min(15, Number(upstream.headers.get("retry-after")) || (2 ** attempt) * 2);
+      // لا إعادة إن لم يبقَ من الميزانية ما يكفي نداءً ذا معنى: يعود الخطأ
+      // العابر للتطبيق (وهو يعيد المحاولة) بدل أن ننتظر حتى يقطع هو.
+      if (deadline - Date.now() < wait * 1000 + MIN_ATTEMPT_MS) break;
       await new Promise((resolve) => setTimeout(resolve, wait * 1000));
     }
   } catch (err) {
@@ -1261,26 +1383,50 @@ function cleanUsage(stats) {
 }
 
 async function reportStats(request, env) {
-  let body;
-  try { body = await request.json(); } catch (err) { return json({ error: "طلبٌ غير مفهوم." }, 400); }
-  const { code, device, stats } = body || {};
-  if (!code || !device || !stats) return json({ error: "طلبٌ ناقص." }, 400);
+  const body = await readJson(request);
+  if (!body) return json({ error: "طلبٌ غير مفهوم." }, 400);
+  const code = normCode(body.code);
+  const { device, stats } = body;
+  if (!validCode(code) || !validDevice(device) || !stats || typeof stats !== "object") {
+    return json({ error: "طلبٌ ناقص." }, 400);
+  }
   const stored = await env.LICENSES.get(code, "json");
   if (!stored) return json({ error: "كود التفعيل غير معروف." }, 404);
   if (!deviceListOf(stored).includes(device)) {
     return json({ error: "هذا الجهاز غير مربوط بالكود." }, 403);
   }
-  const now = Math.floor(Date.now() / 1000);
+  // 1.22.4: في مفتاحٍ مستقل، وسجلّ الترخيص **لا يُمسّ**. كانت الإحصاءات تُحفظ
+  // داخله فيُعاد كتابته كاملًا بعد كل مهمّة — بنسخةٍ قد تسبق إلغاءً أو تصفيرًا.
   // المفتاح طرفٌ من بصمة الجهاز: يكفي للتمييز ولا يُظهر البصمة كاملة.
-  const usage = (stored.usage && typeof stored.usage === "object") ? stored.usage : {};
-  usage[String(device).slice(0, 12)] = {
-    ...cleanUsage(stats), reported_at: now,
-    app_version: String(body.app_version || "").slice(0, 20),
-  };
-  stored.usage = usage;
-  stored.last_seen = now;
-  await env.LICENSES.put(code, JSON.stringify(stored));
+  const version = String(body.app_version || "");
+  await env.LICENSES.put(usageKey(code, device), JSON.stringify({
+    ...cleanUsage(stats), reported_at: Math.floor(Date.now() / 1000),
+    // نصٌّ من جهاز العميل يُعرض في صفحة الإدارة: شكل رقم إصدار أو لا شيء.
+    app_version: VERSION_RE.test(version) ? version : "",
+  }));
   return json({ ok: true });
+}
+
+// كل مفاتيح مساحة KV، صفحةً صفحة. ``list`` يعيد 1000 على الأكثر في النداء.
+async function listAllKeys(env, prefix) {
+  const names = [];
+  let cursor;
+  do {
+    const batch = await env.LICENSES.list({ limit: 1000, cursor, prefix });
+    for (const key of batch.keys) names.push(key.name);
+    cursor = batch.list_complete ? undefined : batch.cursor;
+  } while (cursor);
+  return names;
+}
+
+// قراءات متوازية على دفعات: نداءٌ لكل مفتاح بالتتابع كان يجعل زمن فتح صفحة
+// الإدارة يكبر خطّيًّا مع عدد الأكواد.
+async function mapInBatches(items, size, worker) {
+  const out = [];
+  for (let i = 0; i < items.length; i += size) {
+    out.push(...await Promise.all(items.slice(i, i + size).map(worker)));
+  }
+  return out;
 }
 
 function usageTotals(rows) {
@@ -1324,7 +1470,11 @@ async function route(request, env, ctx) {
     }
 
     if (request.method === "POST" && path === "/v1/messages") {
-      return withGate(request, env, ctx, () => managedMessages(request, env, ctx));
+      // 1.22.4: إن قطع العميل اتصاله تُلغى مهام الطلب فورًا. ``waitUntil``
+      // يمهل النداء 30 ثانية ليكتمل ويُسوّى بدل أن يبقى حجزه عالقًا.
+      const task = withGate(request, env, ctx, () => managedMessages(request, env, ctx));
+      if (ctx && ctx.waitUntil) ctx.waitUntil(task.then(() => {}, () => {}));
+      return task;
     }
     if (request.method === "GET" && path === "/managed/balance") {
       return managedBalance(request, env);
@@ -1343,18 +1493,24 @@ async function route(request, env, ctx) {
     // ويُرسَل مع كل نداء. فصلها عن الـAPI يجعل فتحها من الجوال ممكنًا.
     if (request.method === "GET" && path === "/admin") {
       return new Response(ADMIN_PAGE, {
-        headers: { "content-type": "text/html; charset=utf-8" },
+        headers: { ...HTML_HEADERS, "cache-control": "no-store" },
       });
     }
 
-    // تشخيصٌ بلا أسرار: يقول إن كان السرّ مضبوطًا أصلًا على الخادم.
+    // تشخيصٌ بلا أسرار: يقول إن كان السرّ مضبوطًا أصلًا على الخادم. بلا رمز
+    // (1.22.4) لا يعود إلا ما تحتاجه أدوات النشر لتعرف أن الإعداد اكتمل؛
+    // النموذج والتسعير والتنبيهات للمشرف وحده.
     if (request.method === "GET" && path === "/admin/status") {
-      return json({
+      const status = {
         admin_token_set: Boolean((env.ADMIN_TOKEN || "").trim()),
         signing_key_set: Boolean(env.LICENSE_PRIVATE_KEY),
         kv_bound: Boolean(env.LICENSES),
         wallet_bound: Boolean(env.WALLET),
         anthropic_key_set: Boolean(env.ANTHROPIC_API_KEY),
+      };
+      if (!isAdmin(request, env)) return json(status);
+      return json({
+        ...status,
         managed_model: env.MANAGED_MODEL || "claude-sonnet-5",
         alerts_configured: Boolean(env.ALERT_NTFY_TOPIC || env.ALERT_WEBHOOK_URL),
         units_per_minute: (env.WALLET ? await globalConfig(env)
@@ -1372,19 +1528,33 @@ async function route(request, env, ctx) {
       }
 
       if (request.method === "POST" && path === "/admin/codes") {
-        const body = await request.json();
+        const body = (await readJson(request)) || {};
         if (body.managed && !env.WALLET) {
           return json({ error: "المحفظة غير مربوطة بعد — انشر الخادم بالإعداد الجديد." }, 500);
         }
-        const count = Math.min(50, Math.max(1, body.count || 1));
-        const codes = body.code ? [body.code] : newCodes(count);
+        const count = clampInt(body.count, 1, 50, 1);
+        let codes;
+        if (body.code) {
+          // كودٌ مخصّص: شكله يُفحص، ولا يُكتب فوق كودٍ قائم (كان يمحو تفعيله بصمت).
+          const custom = normCode(body.code);
+          if (!validCode(custom)) return json({ error: "صيغة الكود غير صالحة." }, 400);
+          if (await env.LICENSES.get(custom)) {
+            return json({ error: "هذا الكود موجود من قبل." }, 409);
+          }
+          codes = [custom];
+        } else {
+          codes = newCodes(count);
+        }
+        const days = clampInt(body.days, 1, 36500, 7);
         const record = {
-          days: body.days || 7, max_days: body.max_days || body.days || 7,
-          recheck_days: body.recheck_days ?? 7, grace_days: body.grace_days ?? 3,
-          plan: body.plan || "", note: body.note || "",
+          days, max_days: clampInt(body.max_days, 1, 36500, days),
+          recheck_days: clampInt(body.recheck_days, 0, 365, 7),
+          grace_days: clampInt(body.grace_days, 0, 90, 3),
+          plan: String(body.plan || "").slice(0, 80),
+          note: String(body.note || "").slice(0, 120),
           ...(["trial", "solo", "team", "managed"].includes(body.tier)
               ? { tier: body.tier } : {}),
-          max_devices: Math.min(50, Math.max(1, body.max_devices || 1)),
+          max_devices: clampInt(body.max_devices, 1, 50, 1),
           ...(body.managed ? { managed: true } : {}),
           created_at: Math.floor(Date.now() / 1000),
         };
@@ -1402,8 +1572,12 @@ async function route(request, env, ctx) {
       }
 
       if (request.method === "POST" && path === "/admin/delete") {
-        const { code } = await request.json();
+        const code = normCode(((await readJson(request)) || {}).code);
+        if (!validCode(code)) return json({ error: "صيغة الكود غير صالحة." }, 400);
         await env.LICENSES.delete(code);
+        for (const name of await listAllKeys(env, `usage:${code}:`)) {
+          await env.LICENSES.delete(name);
+        }
         return json({ ok: true });
       }
 
@@ -1501,11 +1675,22 @@ async function route(request, env, ctx) {
       }
 
       if (request.method === "GET" && path === "/admin/codes") {
-        const list = await env.LICENSES.list({ limit: 1000 });
-        const rows = [];
-        for (const key of list.keys) {
-          rows.push({ code: key.name, ...(await env.LICENSES.get(key.name, "json")) });
+        // 1.22.4: كل الصفحات (كان الكود الـ1001 لا يظهر)، وقراءات متوازية،
+        // وإحصاءات كل جهاز من مفتاحها المستقل ``usage:<الكود>:<الجهاز>``.
+        const names = await listAllKeys(env);
+        const read = async (name) => [name, await env.LICENSES.get(name, "json")];
+        const rows = (await mapInBatches(
+          names.filter((name) => !name.startsWith("usage:")), 40, read))
+          .filter(([, record]) => record)
+          .map(([name, record]) => ({ code: name, ...record }));
+        const usage = {};
+        for (const [name, record] of await mapInBatches(
+          names.filter((name) => name.startsWith("usage:")), 40, read)) {
+          const [, owner, device] = name.split(":");
+          if (record && owner && device) (usage[owner] ||= {})[device] = record;
         }
+        // ما حُفظ داخل السجلّ قبل 1.22.4 يبقى ظاهرًا، والأحدث يتقدّم عليه.
+        for (const row of rows) row.usage = { ...(row.usage || {}), ...(usage[row.code] || {}) };
         let cfg = { enabled: true, ...resolveConfig(env) };
         const totals = { calls: 0, in_tokens: 0, out_tokens: 0, units_used: 0,
                          cost_sar: 0, minutes_used: 0, balance_minutes: 0 };
@@ -1565,7 +1750,12 @@ export default {
       }
       return await route(request, env, ctx);
     } catch (err) {
-      return json({ error: `عطل في الخادم: ${err && err.message}` }, 500);
+      // 1.22.4: التفصيل للسجلّ وللمشرف. العميل يأخذ مرجعًا يُبحث به في السجلّ،
+      // لا نصّ استثناءٍ يصف ما في داخل الخادم.
+      const ref = crypto.randomUUID().slice(0, 8);
+      console.error("server error", ref, err && (err.stack || err.message));
+      const detail = isAdmin(request, env) ? `: ${err && err.message}` : "";
+      return json({ error: `عطل في الخادم${detail} (مرجع ${ref}).` }, 500);
     }
   },
 };

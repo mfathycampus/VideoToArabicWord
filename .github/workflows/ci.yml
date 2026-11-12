@@ -89,3 +89,17 @@ jobs:
           python-version: "3.12"
       - run: python -m pip install ruff
       - run: ruff check .
+
+  # 1.22.4: الخادم يدير الترخيص ورصيد «المُدار» وكان بلا أي اختبار يشغّله.
+  # ``node:test`` وحده — لا تبعيات ولا تثبيت.
+  server:
+    name: اختبارات الخادم
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: اختبارات worker.js
+        working-directory: server
+        run: node --test test/*.test.mjs
