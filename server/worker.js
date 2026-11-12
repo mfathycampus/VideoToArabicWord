@@ -30,6 +30,11 @@
  *   <الكود>                  سجلّ الترخيص. يكتبه المشرف، والتطبيق **مرّة واحدة**
  *                            لكل جهاز جديد يُربط — لا عند إعادة التحقّق.
  *   usage:<الكود>:<الجهاز>   إحصاءات جهاز واحد. يكتبها ``/stats`` وحدها (1.22.4).
+ *
+ * حالة الترخيص المتغيّرة (1.22.6) — الأجهزة المربوطة، بدء المدّة، الإلغاء،
+ * التصفير — مصدرها الكائن الدائم للكود (``Wallet``، مفتاح ``lic``): قراءتها
+ * وتعديلها هناك ذرّيان. نسختها في سجلّ KV **مرآة** لصفحة الإدارة تُكتب من
+ * الكائن، ولا يُبنى عليها قرار ما دامت المحفظة مربوطة.
  */
 
 const PREFIX = "VTAW1";
@@ -739,6 +744,74 @@ const deviceListOf = (stored) =>
   Array.isArray(stored.devices) ? [...stored.devices]
     : (stored.device ? [stored.device] : []);
 
+// ── حالة الترخيص المتغيّرة ────────────────────────────────────────────
+// 1.22.6: كانت تُقرأ من KV وتُكتب إليه — و KV لا يضمن أن القراءة ترى آخر كتابة
+// ولا أن «اقرأ ثم اكتب» ذرّي. فجهازان يفعّلان كودًا بجهاز واحد في اللحظة نفسها
+// كانا يمرّان معًا، وجهازٌ جديد يُربط بنسخةٍ تسبق الإلغاء كان يمحو الإلغاء.
+// القرار الآن دالّة واحدة تُنفَّذ داخل الكائن الدائم للكود، حيث التنفيذ ذرّي.
+const licenseStateOf = (stored) => ({
+  devices: deviceListOf(stored || {}),
+  activated_at: (stored && stored.activated_at) || 0,
+  revoked: Boolean(stored && stored.revoked),
+  resets: (stored && stored.resets) || 0,
+  last_reset: (stored && stored.last_reset) || 0,
+});
+
+// يقرّر ربط جهاز: ``{ error }`` أو ``{ ok, changed, state }``. بلا أي I/O.
+function bindDevice(state, { device, max_devices: maxDevices, renew, days, now }) {
+  if (state.revoked) return { error: "revoked" };
+  // الأجهزة الأولى حتى ``max_devices`` تملك الكود، وما بعدها يُرفض.
+  const known = state.devices.includes(device);
+  if (!known && state.devices.length >= Math.max(1, maxDevices || 1)) {
+    return { error: "limit" };
+  }
+  if (!known && renew) {
+    // بعد التصفير: الجهاز القديم يُرفض برسالة واضحة، لا «لم يُفعَّل بعد».
+    return { error: state.devices.length || state.resets ? "reset" : "not_activated" };
+  }
+  // المدّة تبدأ من **أول تفعيل** لا من كل تجديد: إعادة التحقّق لا تمدّد.
+  const started = state.activated_at || now;
+  if (now > started + (days || 7) * 86400) return { error: "expired" };
+  if (known) return { ok: true, changed: false, state };
+  return { ok: true, changed: true,
+           state: { ...state, devices: [...state.devices, device], activated_at: started } };
+}
+
+// التصفير يفكّ الربط فقط: ``activated_at`` يبقى فلا تتجدّد المدّة.
+const resetDevices = (state, now) => ({
+  ...state, devices: [], resets: (state.resets || 0) + 1, last_reset: now });
+
+function bindError(kind, maxDevices) {
+  const max = Math.max(1, maxDevices || 1);
+  if (kind === "revoked") return json({ error: "أُلغي هذا الكود. راجع المزوّد." }, 403);
+  if (kind === "limit") {
+    return json({
+      error: max === 1
+        ? "هذا الكود مُفعَّل على جهاز آخر. اطلب من المزوّد تصفير الجهاز."
+        : `بلغ هذا الكود حدّ الأجهزة (${max}). اطلب من المزوّد تصفير الأجهزة.`,
+    }, 403);
+  }
+  if (kind === "reset") {
+    return json({
+      error: "أُعيد ضبط أجهزة هذا الكود. فعِّله من جديد على هذا الجهاز." }, 403);
+  }
+  if (kind === "not_activated") return json({ error: "كودٌ لم يُفعَّل بعد." }, 409);
+  return json({ error: "انتهت مدّة هذا الكود." }, 403);
+}
+
+// سجلّ KV بعد أن تُنسخ إليه الحالة — مرآةٌ لصفحة الإدارة.
+function withLicenseState(stored, state) {
+  const next = { ...stored, devices: [...state.devices] };
+  if (state.devices.length) next.device = state.devices[0];   // توافقٌ مع ما يقرؤه سواك
+  else delete next.device;
+  if (state.activated_at) next.activated_at = state.activated_at;
+  if (state.revoked) next.revoked = true;
+  if (state.resets) { next.resets = state.resets; next.last_reset = state.last_reset; }
+  return next;
+}
+const sameLicenseState = (stored, state) =>
+  JSON.stringify(licenseStateOf(stored)) === JSON.stringify(licenseStateOf(state));
+
 async function activate(request, env, renew) {
   const body = await readJson(request);
   const code = normCode(body && body.code);
@@ -749,47 +822,24 @@ async function activate(request, env, renew) {
 
   const stored = await env.LICENSES.get(code, "json");
   if (!stored) return json({ error: "كود التفعيل غير معروف." }, 404);
-  if (stored.revoked) return json({ error: "أُلغي هذا الكود. راجع المزوّد." }, 403);
-
-  // الربط بالأجهزة: الأجهزة الأولى حتى ``max_devices`` تملك الكود، وما
-  // بعدها يُرفض. السجلات القديمة تحمل ``device`` واحدًا فتُعامَل كقائمة.
-  const devices = deviceListOf(stored);
-  const maxDevices = Math.max(1, stored.max_devices || 1);
-  const known = devices.includes(device);
-  if (!known && devices.length >= maxDevices) {
-    return json({
-      error: maxDevices === 1
-        ? "هذا الكود مُفعَّل على جهاز آخر. اطلب من المزوّد تصفير الجهاز."
-        : `بلغ هذا الكود حدّ الأجهزة (${maxDevices}). اطلب من المزوّد تصفير الأجهزة.`,
-    }, 403);
-  }
-  if (!known && renew) {
-    // بعد التصفير: الجهاز القديم يُرفض برسالة واضحة، لا «لم يُفعَّل بعد».
-    if (devices.length || stored.resets) {
-      return json({
-        error: "أُعيد ضبط أجهزة هذا الكود. فعِّله من جديد على هذا الجهاز.",
-      }, 403);
-    }
-    return json({ error: "كودٌ لم يُفعَّل بعد." }, 409);
-  }
 
   const now = Math.floor(Date.now() / 1000);
-  // المدّة تبدأ من **أول تفعيل** لا من كل تجديد: إعادة التحقّق لا تمدّد.
-  const started = stored.activated_at || now;
-  const expires = started + (stored.days || 7) * 86400;
-  if (now > expires) return json({ error: "انتهت مدّة هذا الكود." }, 403);
+  const asked = { device, max_devices: stored.max_devices, renew, days: stored.days, now };
+  // مع المحفظة: القرار داخل كائن الكود (ذرّي). ``seed`` حالة السجلّ القديم،
+  // تُؤخذ مرّة واحدة لكودٍ لم يُرَ هناك بعد. بلا محفظة: KV وحده كما كان.
+  const outcome = env.WALLET
+    ? await wallet(env, code, { op: "lic_bind", ...asked, seed: licenseStateOf(stored) })
+    : bindDevice(licenseStateOf(stored), asked);
+  if (outcome.error) return bindError(outcome.error, stored.max_devices);
+  const state = outcome.state;
 
-  // 1.22.4: السجلّ يُكتب عند ربط جهازٍ **جديد** فقط. كان يُكتب كاملًا عند كل
-  // إعادة تحقّق (لتحديث ``last_seen``)، و KV قد يعيد نسخةً قديمة لثوانٍ: إعادة
-  // تحقّقٍ تقرأ السجلّ قبل إلغائك وتكتبه بعده كانت تمحو الإلغاء بصمت.
-  if (!known) {
-    devices.push(device);
-    stored.devices = devices;
-    stored.device = devices[0];        // توافقٌ مع ما يقرؤه سواك
-    stored.activated_at = started;
-    stored.last_seen = now;
-    await env.LICENSES.put(code, JSON.stringify(stored));
+  // المرآة في KV تُكتب عند التغيّر، أو إن وُجدت متأخرة عن الكائن (كتابة سابقة
+  // لم تكتمل). إعادة تحقّقٍ لجهاز معروف والمرآة سليمة لا تكتب شيئًا (1.22.4).
+  if (outcome.changed || !sameLicenseState(stored, state)) {
+    await env.LICENSES.put(code, JSON.stringify(
+      { ...withLicenseState(stored, state), last_seen: now }));
   }
+  const expires = state.activated_at + (stored.days || 7) * 86400;
 
   const recheckDays = stored.recheck_days ?? 7;
   return json({
@@ -907,11 +957,51 @@ export class Wallet {
     return { units, inflight };
   }
 
+  // حالة الترخيص. أول وصول لكودٍ قديم يأخذها من ``seed`` (سجلّ KV) ويثبّتها؛
+  // بعدها الكائن هو المصدر. والإلغاء لا يُمحى: إن قاله أيّ المصدرين فهو ملغى.
+  async license(seed) {
+    const store = this.state.storage;
+    const saved = await store.get("lic");
+    const state = licenseStateOf(saved || seed);
+    const revoked = state.revoked || Boolean(seed && seed.revoked);
+    const fresh = !saved || revoked !== state.revoked;
+    return { state: { ...state, revoked }, fresh };
+  }
+
   async fetch(request) {
     const body = await request.json();
     const store = this.state.storage;
     const now = Date.now();
     let result;
+
+    if (typeof body.op === "string" && body.op.startsWith("lic_")) {
+      // لا ``await`` هنا إلا على التخزين: فلا يتخلّل طلبٌ آخر بين القراءة والكتابة.
+      if (body.op === "lic_clear") {
+        await store.delete("lic");
+        result = { ok: true };
+      } else {
+        const { state, fresh } = await this.license(body.seed);
+        if (body.op === "lic_bind") {
+          result = bindDevice(state, body);
+          if (result.ok ? (result.changed || fresh) : fresh) {
+            await store.put("lic", result.ok ? result.state : state);
+          }
+        } else if (body.op === "lic_revoke") {
+          result = { ...state, revoked: true };
+          await store.put("lic", result);
+        } else if (body.op === "lic_reset") {
+          result = resetDevices(state, Math.floor(now / 1000));
+          await store.put("lic", result);
+        } else if (body.op === "lic_state") {
+          if (fresh) await store.put("lic", state);
+          result = state;
+        } else {
+          result = { error: "عملية غير معروفة." };
+        }
+      }
+      return new Response(JSON.stringify(result),
+        { headers: { "content-type": "application/json" } });
+    }
 
     if (body.op === "get") {
       const swept = await this.sweep(now);
@@ -1127,24 +1217,29 @@ async function managedAuth(request, env) {
   if (!stored) {
     return fail(401, "authentication_error", "كود التفعيل غير معروف.");
   }
-  if (stored.revoked) {
-    return fail(403, "permission_error", "أُلغي هذا الكود. راجع المزوّد.");
-  }
   if (!stored.managed) {
     return fail(403, "permission_error",
       "هذا الكود ليس من باقة «مُدار». استخدم مفتاحك الخاص أو اطلب باقة مُدار.");
   }
-  if (!stored.activated_at) {
+  // 1.22.6: الإلغاء والأجهزة من كائن الكود لا من مرآة KV — كودٌ أُلغي للتوّ
+  // لا يواصل الاستهلاك حتى تلحق المرآة.
+  const state = env.WALLET
+    ? await wallet(env, code, { op: "lic_state", seed: licenseStateOf(stored) })
+    : licenseStateOf(stored);
+  if (state.revoked) {
+    return fail(403, "permission_error", "أُلغي هذا الكود. راجع المزوّد.");
+  }
+  if (!state.activated_at) {
     return fail(403, "permission_error", "فعّل الكود أولًا من نافذة التفعيل.");
   }
   const now = Math.floor(Date.now() / 1000);
-  if (now > stored.activated_at + (stored.days || 7) * 86400) {
+  if (now > state.activated_at + (stored.days || 7) * 86400) {
     return fail(403, "permission_error", "انتهت مدّة هذا الكود.");
   }
-  if (!deviceListOf(stored).includes(device)) {
+  if (!state.devices.includes(device)) {
     return fail(403, "permission_error", "هذا الجهاز غير مرتبط بالكود.");
   }
-  return { code, stored };
+  return { code, stored: { ...stored, activated_at: state.activated_at } };
 }
 
 // رصيد الكود دون استهلاك: يستعمله التطبيق ليعرضه للمستخدم.
@@ -1541,6 +1636,7 @@ async function route(request, env, ctx) {
           if (await env.LICENSES.get(custom)) {
             return json({ error: "هذا الكود موجود من قبل." }, 409);
           }
+          if (env.WALLET) await wallet(env, custom, { op: "lic_clear" });
           codes = [custom];
         } else {
           codes = newCodes(count);
@@ -1578,6 +1674,8 @@ async function route(request, env, ctx) {
         for (const name of await listAllKeys(env, `usage:${code}:`)) {
           await env.LICENSES.delete(name);
         }
+        // وحالته في الكائن: كودٌ يُعاد إصداره بالاسم نفسه يبدأ بلا أجهزة.
+        if (env.WALLET) await wallet(env, code, { op: "lic_clear" });
         return json({ ok: true });
       }
 
@@ -1654,23 +1752,27 @@ async function route(request, env, ctx) {
       // تصفير الأجهزة: يفكّ الربط فقط. ``activated_at`` يبقى، فلا تتجدّد
       // المدّة، ويُحصى عدد المرّات ليظهر من يكرّر الطلب.
       if (request.method === "POST" && path === "/admin/reset-device") {
-        const { code } = await request.json();
-        const stored = await env.LICENSES.get(code, "json");
+        const code = normCode(((await readJson(request)) || {}).code);
+        const stored = validCode(code) ? await env.LICENSES.get(code, "json") : null;
         if (!stored) return json({ error: "كود غير معروف." }, 404);
-        stored.devices = [];
-        delete stored.device;
-        stored.resets = (stored.resets || 0) + 1;
-        stored.last_reset = Math.floor(Date.now() / 1000);
-        await env.LICENSES.put(code, JSON.stringify(stored));
-        return json({ ok: true, resets: stored.resets });
+        const seed = licenseStateOf(stored);
+        const state = env.WALLET
+          ? await wallet(env, code, { op: "lic_reset", seed })
+          : resetDevices(seed, Math.floor(Date.now() / 1000));
+        await env.LICENSES.put(code, JSON.stringify(withLicenseState(stored, state)));
+        return json({ ok: true, resets: state.resets });
       }
 
       if (request.method === "POST" && path === "/admin/revoke") {
-        const { code } = await request.json();
-        const stored = await env.LICENSES.get(code, "json");
+        const code = normCode(((await readJson(request)) || {}).code);
+        const stored = validCode(code) ? await env.LICENSES.get(code, "json") : null;
         if (!stored) return json({ error: "كود غير معروف." }, 404);
-        stored.revoked = true;
-        await env.LICENSES.put(code, JSON.stringify(stored));
+        const seed = licenseStateOf(stored);
+        // الكائن أولًا: منذ هذه اللحظة يُرفض الكود، والمرآة تلحق.
+        const state = env.WALLET
+          ? await wallet(env, code, { op: "lic_revoke", seed })
+          : { ...seed, revoked: true };
+        await env.LICENSES.put(code, JSON.stringify(withLicenseState(stored, state)));
         return json({ ok: true });
       }
 
