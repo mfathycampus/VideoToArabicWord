@@ -62,13 +62,23 @@ class FakeStorage {                  // ينسخ القيم كما يفعل تخ
   async delete(key) { this.map.delete(key); }
 }
 
+// الكائن الدائم لا يسلّم حدثًا جديدًا وعمليةُ تخزينٍ جارية («بوّابة الدخل»)، فمعالجٌ
+// لا ينتظر إلا التخزين يُنفَّذ ذرّيًّا. البديل يحاكي ذلك بطابور لكل كائن — وبدونه
+// تتداخل الطلبات المتزامنة هنا بما لا يحدث على المنصّة.
 class FakeWallets {
-  constructor() { this.objects = new Map(); }
+  constructor() { this.objects = new Map(); this.queues = new Map(); }
   idFromName(name) { return name; }
   get(id) {
     if (!this.objects.has(id)) this.objects.set(id, new Wallet({ storage: new FakeStorage() }));
     const object = this.objects.get(id);
-    return { fetch: (url, init) => object.fetch(new Request(url, init)) };
+    return {
+      fetch: (url, init) => {
+        const run = () => object.fetch(new Request(url, init));
+        const next = (this.queues.get(id) || Promise.resolve()).then(run, run);
+        this.queues.set(id, next.then(() => {}, () => {}));
+        return next;
+      },
+    };
   }
 }
 
@@ -543,4 +553,175 @@ test("سكربت صفحة الإدارة يُحلَّل ويعرض القيم ا
   const button = { dataset: { act: "copy", code: "VTAW-AAAA-BBBB-CCCC-DDDD" } };
   element("rows").listeners.click({ target: { closest: () => button } });
   assert.deepEqual(copied, ["VTAW-AAAA-BBBB-CCCC-DDDD"]);
+});
+
+// ══ 1.22.6: حالة الترخيص في كائن الكود — ذرّية، و KV مرآة ═════════════
+const activate = (env, code, device, path = "/activate") =>
+  call(env, "POST", path, { body: { code, device } });
+const licState = (env, code) => walletOp(env, code, { op: "lic_state" });
+
+test("جهازان يفعّلان كودًا بجهاز واحد في اللحظة نفسها: واحد فقط ينجح", async () => {
+  const env = makeEnv();
+  const code = await newCode(env, { max_devices: 1 });
+  const replies = await Promise.all([activate(env, code, DEVICE), activate(env, code, OTHER)]);
+  assert.deepEqual(replies.map((r) => r.status).sort(), [200, 403]);
+  assert.equal((await licState(env, code)).devices.length, 1);
+  assert.equal(env.LICENSES.record(code).devices.length, 1);
+});
+
+test("عشرة أجهزة تتسابق على كود بثلاثة: ثلاثة فقط", async () => {
+  const env = makeEnv();
+  const code = await newCode(env, { max_devices: 3 });
+  const devices = Array.from({ length: 10 }, (_, i) => `device-number-${i}`);
+  const replies = await Promise.all(devices.map((d) => activate(env, code, d)));
+  assert.equal(replies.filter((r) => r.status === 200).length, 3);
+  assert.equal((await licState(env, code)).devices.length, 3);
+});
+
+test("جهازٌ جديد يُربط بنسخةٍ من KV تسبق الإلغاء: يُرفض ولا يُمحى الإلغاء", async () => {
+  const env = makeEnv();
+  const code = await newCode(env, { max_devices: 2 });
+  await activate(env, code, DEVICE);
+  const stale = env.LICENSES.map.get(code);                  // غير ملغى، وفيه مكان لجهاز ثانٍ
+  await call(env, "POST", "/admin/revoke", { admin: true, body: { code } });
+
+  env.LICENSES.stale.set(code, stale);
+  const reply = await activate(env, code, OTHER);
+  env.LICENSES.stale.clear();
+
+  assert.equal(reply.status, 403);
+  assert.match(reply.data.error, /أُلغي/);
+  assert.equal(env.LICENSES.record(code).revoked, true);
+  assert.deepEqual((await licState(env, code)).devices, [DEVICE]);
+});
+
+test("كودٌ أُلغي للتوّ لا يواصل استهلاك «المُدار» ولو تأخرت مرآة KV", async () => {
+  const env = makeEnv();
+  const code = await managedCode(env, 10);
+  const stale = env.LICENSES.map.get(code);
+  await call(env, "POST", "/admin/revoke", { admin: true, body: { code } });
+  env.LICENSES.stale.set(code, stale);
+  let upstreamCalls = 0;
+  globalThis.fetch = async () => { upstreamCalls += 1; return upstreamOk(); };
+  const reply = await messages(env, code);
+  assert.equal(reply.status, 403);
+  assert.equal(upstreamCalls, 0);
+  assert.equal((await walletOp(env, code, { op: "get" })).units, 80000);
+});
+
+test("التصفير يفكّ الأجهزة ولا يجدّد المدّة، والجهاز القديم يُرفض برسالته", async () => {
+  const env = makeEnv();
+  const code = await newCode(env, { days: 30 });
+  await activate(env, code, DEVICE);
+  const started = (await licState(env, code)).activated_at;
+  now += 10 * 86400 * 1000;
+  const reset = await call(env, "POST", "/admin/reset-device", { admin: true, body: { code } });
+  assert.equal(reset.data.resets, 1);
+
+  const old = await activate(env, code, DEVICE, "/recheck");
+  assert.equal(old.status, 403);
+  assert.match(old.data.error, /أُعيد ضبط/);
+
+  assert.equal((await activate(env, code, OTHER)).status, 200);
+  const state = await licState(env, code);
+  assert.deepEqual(state.devices, [OTHER]);
+  assert.equal(state.activated_at, started);                 // المدّة من أول تفعيل
+  const record = env.LICENSES.record(code);
+  assert.deepEqual(record.devices, [OTHER]);
+  assert.equal(record.device, OTHER);
+  assert.equal(record.resets, 1);
+});
+
+test("المدّة تنتهي من أول تفعيل ولو أُعيد التحقّق أو صُفّر الجهاز", async () => {
+  const env = makeEnv();
+  const code = await newCode(env, { days: 7 });
+  await activate(env, code, DEVICE);
+  now += 8 * 86400 * 1000;
+  assert.equal((await activate(env, code, DEVICE, "/recheck")).status, 403);
+  await call(env, "POST", "/admin/reset-device", { admin: true, body: { code } });
+  const again = await activate(env, code, OTHER);
+  assert.equal(again.status, 403);
+  assert.match(again.data.error, /انتهت/);
+});
+
+test("كودٌ من قبل الترقية: حالته في KV تُعتمد عند أول وصول ولا يُطلب تفعيل جديد", async () => {
+  const env = makeEnv();
+  const started = Math.floor(now / 1000) - 5 * 86400;
+  env.LICENSES.map.set("VTAW-OLD1-OLD1-OLD1-OLD1", JSON.stringify({
+    days: 30, max_days: 30, max_devices: 1, plan: "شهر",
+    device: DEVICE, activated_at: started }));                // صيغة قديمة: device مفرد
+  env.LICENSES.puts.length = 0;
+
+  const recheck = await activate(env, "VTAW-OLD1-OLD1-OLD1-OLD1", DEVICE, "/recheck");
+  assert.equal(recheck.status, 200, recheck.text);
+  assert.deepEqual(env.LICENSES.puts, []);                    // المرآة مطابقة: لا كتابة
+  const state = await licState(env, "VTAW-OLD1-OLD1-OLD1-OLD1");
+  assert.deepEqual(state.devices, [DEVICE]);
+  assert.equal(state.activated_at, started);
+  assert.equal((await activate(env, "VTAW-OLD1-OLD1-OLD1-OLD1", OTHER)).status, 403);
+});
+
+test("كودٌ ملغى من قبل الترقية يبقى ملغى", async () => {
+  const env = makeEnv();
+  env.LICENSES.map.set("VTAW-DEAD-DEAD-DEAD-DEAD", JSON.stringify({
+    days: 30, max_devices: 1, devices: [DEVICE], activated_at: 1, revoked: true }));
+  const reply = await activate(env, "VTAW-DEAD-DEAD-DEAD-DEAD", DEVICE, "/recheck");
+  assert.equal(reply.status, 403);
+  assert.equal((await licState(env, "VTAW-DEAD-DEAD-DEAD-DEAD")).revoked, true);
+});
+
+test("الإلغاء لا يُمحى: حالةٌ في الكائن غير ملغاة و KV يقول ملغى ⇒ ملغى", async () => {
+  const env = makeEnv();
+  const code = await newCode(env);
+  await activate(env, code, DEVICE);
+  const record = env.LICENSES.record(code);
+  env.LICENSES.map.set(code, JSON.stringify({ ...record, revoked: true }));   // إلغاء بنسخة أقدم من الخادم
+  assert.equal((await activate(env, code, DEVICE, "/recheck")).status, 403);
+  assert.equal((await licState(env, code)).revoked, true);
+});
+
+test("مرآة KV التي فاتتها كتابة تُصلَح عند أول إعادة تحقّق", async () => {
+  const env = makeEnv();
+  const code = await newCode(env, { max_devices: 2 });
+  const before = env.LICENSES.map.get(code);
+  await activate(env, code, DEVICE);
+  env.LICENSES.map.set(code, before);                         // كأن الكتابة لم تكتمل
+  const recheck = await activate(env, code, DEVICE, "/recheck");
+  assert.equal(recheck.status, 200);
+  assert.deepEqual(env.LICENSES.record(code).devices, [DEVICE]);
+});
+
+test("حذف كودٍ يمسح حالته: الاسم نفسه يُصدر من جديد بلا أجهزة", async () => {
+  const env = makeEnv();
+  const code = await newCode(env, { code: "VTAW-CUST-CUST-CUST-CUST" });
+  await activate(env, code, DEVICE);
+  await call(env, "POST", "/admin/delete", { admin: true, body: { code } });
+  await newCode(env, { code });
+  assert.equal((await activate(env, code, OTHER)).status, 200);
+  assert.deepEqual((await licState(env, code)).devices, [OTHER]);
+});
+
+test("بلا محفظة مربوطة: التفعيل والإلغاء يعملان على KV كما كانا", async () => {
+  const env = makeEnv({ WALLET: undefined });
+  const code = await newCode(env);
+  assert.equal((await activate(env, code, DEVICE)).status, 200);
+  assert.equal((await activate(env, code, OTHER)).status, 403);
+  assert.equal((await activate(env, code, DEVICE, "/recheck")).status, 200);
+  await call(env, "POST", "/admin/reset-device", { admin: true, body: { code } });
+  assert.equal((await activate(env, code, OTHER)).status, 200);
+  await call(env, "POST", "/admin/revoke", { admin: true, body: { code } });
+  assert.equal((await activate(env, code, OTHER, "/recheck")).status, 403);
+  assert.equal(env.LICENSES.record(code).revoked, true);
+});
+
+test("عقد التفعيل يحمل نهاية المدّة من حالة الكائن", async () => {
+  const env = makeEnv();
+  const code = await newCode(env, { days: 30 });
+  const first = await activate(env, code, DEVICE);
+  now += 3 * 86400 * 1000;
+  const second = await activate(env, code, DEVICE, "/recheck");
+  const payload = (lease) => JSON.parse(Buffer.from(lease.split(".")[1], "base64url").toString());
+  assert.equal(payload(first.data.lease).expires_at, payload(second.data.lease).expires_at);
+  assert.equal(payload(second.data.lease).expires_at,
+    (await licState(env, code)).activated_at + 30 * 86400);
 });
