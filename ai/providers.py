@@ -9,6 +9,7 @@ ADR-005 محفوظ: النص الخام لا يُمسّ أبدًا. الصياغ
 """
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import re
@@ -267,6 +268,24 @@ def record_egress(provider: str, sent: bool, detail: str = "",
             _EGRESS["providers"].append(name)
 
 
+#: 1.22.4 — ما يرفعه ``urlopen`` **بعد** أن يُرسَل الطلب كاملًا. مهلة القراءة
+#: ترفع ``TimeoutError`` خامًا لا ``URLError`` (الأخير يغلّف أخطاء الاتصال
+#: والإرسال وحدها)، ومثلها انقطاع الخادم قبل الردّ. كانت تمرّ من المزوّدين
+#: كلهم بلا التقاط: لا رسالة مفهومة، ولا إعادة محاولة، ولا سطر في سجلّ
+#: الإرسال — مع أن النصّ غادر الجهاز فعلًا.
+_NO_RESPONSE_ERRORS = (OSError, http.client.HTTPException)
+
+
+def _no_response_error(label: str, timeout, exc) -> "RewriteUnavailableError":
+    if isinstance(exc, TimeoutError):
+        reason = f"لم يصل ردّ «{label}» خلال {int(timeout)} ثانية."
+    else:
+        reason = f"انقطع الاتصال بـ«{label}» قبل وصول الردّ."
+    return RewriteUnavailableError(
+        reason + " أُرسل الطلب فعلًا، فقد يُحتسب عند المزوّد.",
+        retryable=True)
+
+
 def _body_images(body: dict) -> int:
     """عدد الصور في جسم طلب Messages أو Chat Completions."""
     total = 0
@@ -444,6 +463,10 @@ class OllamaProvider(LLMProvider):
         except urllib.error.URLError as exc:
             raise RewriteUnavailableError(
                 f"تعذر الوصول إلى Ollama: {exc}", retryable=True) from exc
+        except _NO_RESPONSE_ERRORS as exc:
+            # محلي: لا شيء يُسجَّل في الإرسال. نموذج كبير على معالج بطيء
+            # يتجاوز المهلة — يُقال ذلك بدل ``TimeoutError`` خام.
+            raise _no_response_error("Ollama", timeout, exc) from exc
 
     def _user_message(self, user_prompt) -> dict:
         if not _is_parts(user_prompt):
@@ -540,10 +563,12 @@ class OpenAICompatibleProvider(LLMProvider):
             headers={"Content-Type": "application/json", **self._auth_headers()})
         require_secure_endpoint(self._endpoint())
         check_egress_gate()
+        recorded = False
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 # الاتصال قام والردّ وصل ⇒ النصّ غادر الجهاز يقينًا.
                 record_egress(self.info.name, True, images=images)
+                recorded = True
                 data = json.loads(response.read())
             choice = data["choices"][0]
             text = choice["message"]["content"] or ""
@@ -578,6 +603,13 @@ class OpenAICompatibleProvider(LLMProvider):
             record_egress(self.info.name, False, str(exc))
             raise RewriteUnavailableError(
                 f"تعذر الاتصال بالخدمة: {exc}", retryable=True) from exc
+        except _NO_RESPONSE_ERRORS as exc:
+            # 1.22.4: الطلب أُرسل كاملًا ثم انتهت المهلة أو انقطع الردّ ⇒ النصّ
+            # غادر. ``recorded`` يمنع عدّ اللقطات مرّتين إن انقطع أثناء القراءة.
+            if not recorded:
+                record_egress(self.info.name, True,
+                              f"بلا ردّ: {type(exc).__name__}", images=images)
+            raise _no_response_error(self.info.label_ar, timeout, exc) from exc
 
     @staticmethod
     def _user_content(user_prompt):
@@ -897,6 +929,8 @@ class AnthropicProvider(LLMProvider):
                 "تعذر الاتصال بـ Anthropic: "
                 + re.sub(r"https?://\S+", "[الخادم]", str(exc)),
                 retryable=True) from exc
+        except _NO_RESPONSE_ERRORS as exc:
+            raise _no_response_error(self.info.label_ar, timeout, exc) from exc
 
         return self._extract_text(data)
 
@@ -930,9 +964,11 @@ class AnthropicProvider(LLMProvider):
             data=json.dumps(body).encode("utf-8"), headers=headers)
         require_secure_endpoint(self.base_url)
         check_egress_gate()
+        recorded = False
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 record_egress(self.info.name, True, images=_body_images(body))
+                recorded = True
                 self._on_response_headers(getattr(response, "headers", None) or {})
                 return json.loads(response.read())
         except urllib.error.HTTPError as exc:
@@ -942,6 +978,14 @@ class AnthropicProvider(LLMProvider):
             raise
         except urllib.error.URLError as exc:
             record_egress(self.info.name, False, str(exc))
+            raise
+        except _NO_RESPONSE_ERRORS as exc:
+            # 1.22.4: مهلة القراءة ليست ``URLError``. الطلب أُرسل كاملًا ⇒ النصّ
+            # غادر الجهاز، ويُسجَّل كذلك ولو لم يصل ردّ.
+            if not recorded:
+                record_egress(self.info.name, True,
+                              f"بلا ردّ: {type(exc).__name__}",
+                              images=_body_images(body))
             raise
 
     @staticmethod
@@ -998,6 +1042,18 @@ class MaeenManagedProvider(AnthropicProvider):
         privacy_note="⚠ يُرسل نص التفريغ — ولقطات الشاشة إن فُعّل الوضع "
                      "المرئي — إلى خادم معين ثم إلى Claude. الفيديو والصوت "
                      "لا يُرسلان، ولا يحفظ الخادم المحتوى.")
+
+    #: 1.22.4 — الخادم يمنح النداء ميزانية 280 ثانية (``MANAGED_BUDGET_MS`` في
+    #: ``server/worker.js``). مهلة العميل يجب أن تتجاوزها: كانت 180 ثانية
+    #: والخادم ينتظر 290، فكان العميل يقطع أولًا — وانقطاعه يُلغي الطلب عند
+    #: الخادم قبل التسوية، فيبقى المحجوز من الرصيد مخصومًا بلا ناتج.
+    MIN_TIMEOUT_SECONDS = 320
+
+    def complete(self, system_prompt: str, user_prompt: str,
+                 max_tokens: int = 2048, timeout: int = 180) -> str:
+        return super().complete(
+            system_prompt, user_prompt, max_tokens=max_tokens,
+            timeout=max(int(timeout or 0), self.MIN_TIMEOUT_SECONDS))
 
     def __init__(self, *args, **kwargs) -> None:
         from licensing.client import server_url
