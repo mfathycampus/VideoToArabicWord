@@ -78,8 +78,12 @@ class StateStore:
 
     def __init__(self, device: str,
                  paths: Optional[Iterable[Path]] = None,
-                 use_registry: Optional[bool] = None) -> None:
+                 use_registry: Optional[bool] = None,
+                 legacy_devices: Iterable[str] = ()) -> None:
         self.device = device
+        #: 1.22.7 — بصمات سابقة لهذا الجهاز: تُقرأ بها حالةٌ خُتمت قبل تغيّر
+        #: البصمة، ثم يعيد ``write`` ختمها بالحالية. الكتابة بالحالية وحدها.
+        self.legacy_devices = [d for d in legacy_devices if d and d != device]
         self.paths = list(paths) if paths is not None else [
             config_state_path(), shadow_state_path()]
         self.use_registry = (sys.platform.startswith("win")
@@ -93,10 +97,16 @@ class StateStore:
             import winreg
 
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _REGISTRY_PATH) as key:
-                return _open(str(winreg.QueryValueEx(key, _REGISTRY_VALUE)[0]),
-                             self.device)
+                return self._open_any(str(winreg.QueryValueEx(key, _REGISTRY_VALUE)[0]))
         except Exception:                              # noqa: BLE001
             return None
+
+    def _open_any(self, text: str) -> Optional[dict]:
+        for device in (self.device, *self.legacy_devices):
+            data = _open(text, device)
+            if data is not None:
+                return data
+        return None
 
     def _write_registry(self, sealed: str) -> None:
         if not self.use_registry:
@@ -115,7 +125,7 @@ class StateStore:
         found = [self._read_registry()]
         for path in self.paths:
             try:
-                found.append(_open(path.read_text(encoding="utf-8"), self.device))
+                found.append(self._open_any(path.read_text(encoding="utf-8")))
             except Exception:                          # noqa: BLE001
                 found.append(None)
         states = [s for s in found if isinstance(s, dict)]

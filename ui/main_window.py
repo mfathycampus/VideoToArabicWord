@@ -22,6 +22,7 @@ from PyQt6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QScrollArea,
+    QSpinBox,
     QStackedWidget,
     QTextEdit,
     QVBoxLayout,
@@ -144,6 +145,7 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
         "clip_end_input": "عالج إلى (نهاية المقطع)",
         "glossary_input": "مصطلحات المادة وأسماء الأعلام",
         "study_provider": "مزوّد الحزمة التعليمية",
+        "timeout_spin": "مهلة انتظار ردّ النموذج",
         "log": "سجلّ المعالجة",
     }
 
@@ -472,6 +474,26 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
         workspace_row.addWidget(self.workspace_input, 1)
         rewrite_layout.addWidget(self.workspace_row)
 
+        # 1.22.7: كانت في ملف الإعداد وحده — وكل إعداد من الواجهة. نموذج محلّي
+        # كبير على معالج بطيء يتجاوز ثلاث دقائق للدفعة فيفشل بلا سبيل للتعديل.
+        timeout_row = QHBoxLayout()
+        timeout_row.addWidget(QLabel("مهلة انتظار ردّ النموذج:"))
+        self.timeout_spin = QSpinBox()
+        self.timeout_spin.setRange(self.TIMEOUT_RANGE[0], self.TIMEOUT_RANGE[1])
+        self.timeout_spin.setSingleStep(30)
+        self.timeout_spin.setSuffix(" ثانية")
+        self.timeout_spin.setValue(max(self.TIMEOUT_RANGE[0], min(
+            self.TIMEOUT_RANGE[1], int(self.config.rewrite.timeout_seconds or 180))))
+        self.timeout_spin.setToolTip(
+            "كم ينتظر البرنامج ردّ النموذج على الدفعة الواحدة قبل أن يعيد المحاولة.\n"
+            "ارفعها إن كان النموذج محلّيًّا (Ollama) على جهاز بلا كرت شاشة.\n"
+            "تسري على إعادة الصياغة والحزمة التعليمية. «معين المُدار» لا ينتظر\n"
+            "أقل من 320 ثانية أيًّا كانت القيمة.")
+        self.timeout_spin.valueChanged.connect(self._on_timeout_changed)
+        timeout_row.addWidget(self.timeout_spin)
+        timeout_row.addStretch(1)
+        rewrite_layout.addLayout(timeout_row)
+
         # الوضع المرئي: اللقطات صورًا مع الكلام — دليلٌ بخطوات مرقّمة.
         self.vision_check = QCheckBox(
             "كتابة المستند من لقطات الشاشة والكلام معًا (دليل مصوّر بخطوات) — "
@@ -788,6 +810,14 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
             if self.export_checks[key].isChecked()]
         self._save_config()
 
+
+    #: حدود «مهلة انتظار ردّ النموذج» بالثواني.
+    TIMEOUT_RANGE = (60, 1800)
+
+    def _on_timeout_changed(self, seconds: int) -> None:
+        self.config.rewrite.timeout_seconds = int(seconds)
+        self.config.study.timeout_seconds = int(seconds)
+        self._save_config()
 
     def _save_config(self) -> None:
         try:

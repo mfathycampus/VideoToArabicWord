@@ -7,6 +7,13 @@
 
 **ولا نستعمل عنوان MAC:** يتغيّر بتبديل شبكة أو بطاقة، ويمكن انتحاله
 بأمرٍ واحد — فيعاقب المستخدم الصادق ولا يوقف المتحايل.
+
+**ولا اسم الجهاز ولا اسم المستخدم (1.22.7):** كانا في البصمة، فإعادة تسمية
+الجهاز أو الدخول بحساب ويندوز آخر كانت تغيّر البصمة — فيُرفض الترخيص على
+الجهاز نفسه ويطلب المعلّم «تصفير الجهاز» من المزوّد. البصمة الآن من معرّفات
+الجهاز وحدها (``device_fingerprint``). والقديمة (``legacy_fingerprint``) تُحسب
+أيضًا ليُقبل ما صدر لها وينتقل إلى الجديدة عند أول إعادة تحقّق — انظر
+``licensing/app_gate.machine_ids``.
 """
 from __future__ import annotations
 
@@ -80,16 +87,30 @@ def _windows_volume_serial() -> str:
     return ""
 
 
-def device_fingerprint() -> str:
-    """‏20 حرفًا سِتّ عشريًّا تُمثّل هذا الجهاز."""
-    parts = [
-        _windows_machine_guid(),
-        _windows_volume_serial(),
-        _macos_platform_uuid(),
-        _linux_machine_id(),
-        platform.node(),
-        os.environ.get("USERNAME") or os.environ.get("USER") or "",
-        platform.machine(),
-    ]
+def _hash(parts) -> str:
     raw = "|".join(p.strip().lower() for p in parts if p)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:20]
+
+
+def _hardware_ids() -> list:
+    return [_windows_machine_guid(), _windows_volume_serial(),
+            _macos_platform_uuid(), _linux_machine_id()]
+
+
+def legacy_fingerprint() -> str:
+    """بصمة ما قبل 1.22.7: معرّفات الجهاز + اسمه + اسم المستخدم."""
+    return _hash([*_hardware_ids(), platform.node(),
+                  os.environ.get("USERNAME") or os.environ.get("USER") or "",
+                  platform.machine()])
+
+
+def device_fingerprint() -> str:
+    """‏20 حرفًا سِتّ عشريًّا تُمثّل هذا الجهاز — لا تتغيّر بإعادة تسميته.
+
+    جهازٌ لا يُقرأ منه أيّ معرّف (بيئة مقيّدة) يبقى على البصمة القديمة: بلا
+    اسم الجهاز والمستخدم لكانت بصمته واحدة لكل جهاز مثله.
+    """
+    hardware = [part for part in _hardware_ids() if part and part.strip()]
+    if not hardware:
+        return legacy_fingerprint()
+    return _hash([*hardware, platform.machine()])
