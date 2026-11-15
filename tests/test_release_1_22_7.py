@@ -219,3 +219,16 @@ def test_timeout_is_bounded(window):
     assert window.config.rewrite.timeout_seconds == window.TIMEOUT_RANGE[0]
     window.timeout_spin.setValue(10 ** 6)
     assert window.config.rewrite.timeout_seconds == window.TIMEOUT_RANGE[1]
+
+
+def test_build_ui_stays_split_into_sections():
+    """``_build_ui`` كان 574 سطرًا في دالّة واحدة. قُسّم أقسامًا بأسماء؛ هذا يمنع عودته."""
+    import inspect
+
+    from ui.main_window import MainWindow
+
+    assert len(inspect.getsource(MainWindow._build_ui).splitlines()) < 120
+    for name in ("_build_source_section", "_build_model_section", "_build_rewrite_section",
+                 "_build_advanced_section", "_build_run_section"):
+        method = getattr(MainWindow, name)
+        assert len(inspect.getsource(method).splitlines()) < 160, name
