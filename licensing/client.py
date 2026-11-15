@@ -192,16 +192,26 @@ def managed_usage(code: str, device: str,
     return _get("/managed/usage", code, device, timeout)
 
 
-def activate(code: str, device: str, app_version: str = "") -> str:
+def _binding(code: str, device: str, app_version: str, previous: str) -> dict:
+    payload = {"code": code.strip().upper(), "device": device,
+               "app_version": app_version}
+    if previous and previous != device:
+        # 1.22.7: بصمة هذا الجهاز السابقة. الخادم يستبدلها بالحالية إن كانت
+        # مربوطة بالكود — فلا يُعدّ الجهاز نفسه جهازًا ثانيًا.
+        payload["previous"] = previous
+    return payload
+
+
+def activate(code: str, device: str, app_version: str = "",
+             previous: str = "") -> str:
     """يُفعّل كودًا ويعيد نصّ العقد الموقَّع."""
-    return _post("/activate", {"code": code.strip().upper(), "device": device,
-                               "app_version": app_version})["lease"]
+    return _post("/activate", _binding(code, device, app_version, previous))["lease"]
 
 
-def recheck(code: str, device: str, app_version: str = "") -> str:
+def recheck(code: str, device: str, app_version: str = "",
+            previous: str = "") -> str:
     """يجدّد عقدًا قائمًا — يفشل إن أُلغي الكود."""
-    return _post("/recheck", {"code": code.strip().upper(), "device": device,
-                              "app_version": app_version})["lease"]
+    return _post("/recheck", _binding(code, device, app_version, previous))["lease"]
 
 
 def report_usage(code: str, device: str, stats: dict, app_version: str = "",

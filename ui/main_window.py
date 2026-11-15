@@ -22,6 +22,7 @@ from PyQt6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QScrollArea,
+    QSpinBox,
     QStackedWidget,
     QTextEdit,
     QVBoxLayout,
@@ -144,6 +145,7 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
         "clip_end_input": "عالج إلى (نهاية المقطع)",
         "glossary_input": "مصطلحات المادة وأسماء الأعلام",
         "study_provider": "مزوّد الحزمة التعليمية",
+        "timeout_spin": "مهلة انتظار ردّ النموذج",
         "log": "سجلّ المعالجة",
     }
 
@@ -205,6 +207,59 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
         settings_layout.setContentsMargins(18, 18, 18, 18)
         settings_layout.setSpacing(12)
 
+        self._build_source_section(layout)
+
+        self._build_model_section(settings_layout)
+
+        self._build_rewrite_section(settings_layout)
+
+        self._build_advanced_section(settings_layout)
+
+        self._build_run_section(layout)
+
+        # --- الإحصاءات ---
+        from ui.dashboard import StatsDashboard
+        self.dashboard = StatsDashboard(self._collect_stats, self.show_jobs)
+        layout.addWidget(self.dashboard)
+        layout.addStretch(1)
+
+        # --- الخصوصية والإحصاءات (الإعدادات) ---
+        settings_layout.addWidget(self._build_privacy_box())
+        from licensing import app_gate as _gate
+        if _gate.licensing_enabled():
+            settings_layout.addWidget(self._build_license_box())
+        settings_layout.addStretch(1)
+
+        self.pages = QStackedWidget()
+        for page in (root, settings_root):
+            scroll = QScrollArea()
+            scroll.setWidget(page)
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QFrame.Shape.NoFrame)
+            scroll.setHorizontalScrollBarPolicy(
+                Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            self.pages.addWidget(scroll)
+
+        shell = QWidget()
+        shell_layout = QVBoxLayout(shell)
+        shell_layout.setContentsMargins(18, 14, 18, 0)
+        shell_layout.setSpacing(0)
+        shell_layout.addWidget(self._build_header())
+        body = QHBoxLayout()
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(0)
+        body.addWidget(self._build_sidebar())
+        body.addWidget(self.pages, 1)
+        shell_layout.addLayout(body, 1)
+        self.setCentralWidget(shell)
+        self.show_page(0)
+        self.dashboard.refresh()
+
+        # Initialize UI state after all widgets are created
+        self._on_engine_changed()
+
+    def _build_source_section(self, layout: QVBoxLayout) -> None:
+        """قسم «المصدر ومجلد الحفظ» — جزء من ``_build_ui`` (1.22.7)."""
         # --- اختيار الملف ---
         file_box = QGroupBox("المصدر ومجلد الحفظ")
         file_box_layout = QVBoxLayout(file_box)
@@ -287,6 +342,8 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
 
         layout.addWidget(file_box)
 
+    def _build_model_section(self, settings_layout: QVBoxLayout) -> None:
+        """قسم «نموذج التفريغ» — جزء من ``_build_ui`` (1.22.7)."""
         # --- النموذج ---
         model_box = QGroupBox("نموذج التفريغ")
         model_layout = QVBoxLayout(model_box)
@@ -406,6 +463,8 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
         model_layout.addWidget(self.engine_note)
         settings_layout.addWidget(model_box)
 
+    def _build_rewrite_section(self, settings_layout: QVBoxLayout) -> None:
+        """قسم «صياغة النص» — جزء من ``_build_ui`` (1.22.7)."""
         # --- صياغة النص ---
         rewrite_box = QGroupBox("صياغة النص (اختياري)")
         rewrite_layout = QVBoxLayout(rewrite_box)
@@ -472,6 +531,26 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
         workspace_row.addWidget(self.workspace_input, 1)
         rewrite_layout.addWidget(self.workspace_row)
 
+        # 1.22.7: كانت في ملف الإعداد وحده — وكل إعداد من الواجهة. نموذج محلّي
+        # كبير على معالج بطيء يتجاوز ثلاث دقائق للدفعة فيفشل بلا سبيل للتعديل.
+        timeout_row = QHBoxLayout()
+        timeout_row.addWidget(QLabel("مهلة انتظار ردّ النموذج:"))
+        self.timeout_spin = QSpinBox()
+        self.timeout_spin.setRange(self.TIMEOUT_RANGE[0], self.TIMEOUT_RANGE[1])
+        self.timeout_spin.setSingleStep(30)
+        self.timeout_spin.setSuffix(" ثانية")
+        self.timeout_spin.setValue(max(self.TIMEOUT_RANGE[0], min(
+            self.TIMEOUT_RANGE[1], int(self.config.rewrite.timeout_seconds or 180))))
+        self.timeout_spin.setToolTip(
+            "كم ينتظر البرنامج ردّ النموذج على الدفعة الواحدة قبل أن يعيد المحاولة.\n"
+            "ارفعها إن كان النموذج محلّيًّا (Ollama) على جهاز بلا كرت شاشة.\n"
+            "تسري على إعادة الصياغة والحزمة التعليمية. «معين المُدار» لا ينتظر\n"
+            "أقل من 320 ثانية أيًّا كانت القيمة.")
+        self.timeout_spin.valueChanged.connect(self._on_timeout_changed)
+        timeout_row.addWidget(self.timeout_spin)
+        timeout_row.addStretch(1)
+        rewrite_layout.addLayout(timeout_row)
+
         # الوضع المرئي: اللقطات صورًا مع الكلام — دليلٌ بخطوات مرقّمة.
         self.vision_check = QCheckBox(
             "كتابة المستند من لقطات الشاشة والكلام معًا (دليل مصوّر بخطوات) — "
@@ -502,6 +581,8 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
         from PyQt6.QtCore import QTimer
         QTimer.singleShot(800, self._auto_pick_managed)
 
+    def _build_advanced_section(self, settings_layout: QVBoxLayout) -> None:
+        """قسم «خيارات متقدّمة» — جزء من ``_build_ui`` (1.22.7)."""
         # --- خيارات متقدّمة ---
         advanced = QGroupBox("خيارات متقدّمة")
         advanced_layout = QVBoxLayout(advanced)
@@ -602,6 +683,8 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
         settings_layout.addWidget(self._build_logo_box())
         settings_layout.addWidget(advanced)
 
+    def _build_run_section(self, layout: QVBoxLayout) -> None:
+        """قسم «المعالجة والسجلّ» — جزء من ``_build_ui`` (1.22.7)."""
         # --- التشغيل ---
         run_box = QGroupBox("المعالجة")
         run_layout = QVBoxLayout(run_box)
@@ -679,47 +762,6 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
         run_layout.addWidget(self.log)
         self.log.setVisible(False)
 
-        # --- الإحصاءات ---
-        from ui.dashboard import StatsDashboard
-        self.dashboard = StatsDashboard(self._collect_stats, self.show_jobs)
-        layout.addWidget(self.dashboard)
-        layout.addStretch(1)
-
-        # --- الخصوصية والإحصاءات (الإعدادات) ---
-        settings_layout.addWidget(self._build_privacy_box())
-        from licensing import app_gate as _gate
-        if _gate.licensing_enabled():
-            settings_layout.addWidget(self._build_license_box())
-        settings_layout.addStretch(1)
-
-        self.pages = QStackedWidget()
-        for page in (root, settings_root):
-            scroll = QScrollArea()
-            scroll.setWidget(page)
-            scroll.setWidgetResizable(True)
-            scroll.setFrameShape(QFrame.Shape.NoFrame)
-            scroll.setHorizontalScrollBarPolicy(
-                Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-            self.pages.addWidget(scroll)
-
-        shell = QWidget()
-        shell_layout = QVBoxLayout(shell)
-        shell_layout.setContentsMargins(18, 14, 18, 0)
-        shell_layout.setSpacing(0)
-        shell_layout.addWidget(self._build_header())
-        body = QHBoxLayout()
-        body.setContentsMargins(0, 0, 0, 0)
-        body.setSpacing(0)
-        body.addWidget(self._build_sidebar())
-        body.addWidget(self.pages, 1)
-        shell_layout.addLayout(body, 1)
-        self.setCentralWidget(shell)
-        self.show_page(0)
-        self.dashboard.refresh()
-
-        # Initialize UI state after all widgets are created
-        self._on_engine_changed()
-
     # ------------------------------------------------------------------
     #: ``مفتاح الصيغة: (التسمية، التلميح)``. التلميح يقول الاعتماد
     #: الخارجي صراحةً: مربّعٌ يُفعَّل ثم لا يُنتج شيئًا بلا سبب ظاهر
@@ -788,6 +830,14 @@ class MainWindow(RewritePanelMixin, JobsPanelMixin, QMainWindow):
             if self.export_checks[key].isChecked()]
         self._save_config()
 
+
+    #: حدود «مهلة انتظار ردّ النموذج» بالثواني.
+    TIMEOUT_RANGE = (60, 1800)
+
+    def _on_timeout_changed(self, seconds: int) -> None:
+        self.config.rewrite.timeout_seconds = int(seconds)
+        self.config.study.timeout_seconds = int(seconds)
+        self._save_config()
 
     def _save_config(self) -> None:
         try:

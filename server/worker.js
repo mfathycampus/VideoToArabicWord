@@ -191,6 +191,14 @@ code{font-family:ui-monospace,Consolas,monospace;font-size:14px}
   <div class="msg" id="listMsg"></div>
 </div>
 
+<div class="card" id="logCard" style="display:none">
+  <h2 style="font-size:17px;margin:0 0 6px">سجلّ العمليات</h2>
+  <p class="sub" style="margin:0 0 12px">آخر ما نُفّذ من هذه الصفحة: إصدار، شحن، تصفير، إلغاء، تسعير.</p>
+  <div style="overflow-x:auto"><table><thead><tr>
+    <th>الوقت</th><th>العملية</th><th>الكود</th><th>التفصيل</th>
+  </tr></thead><tbody id="logRows"></tbody></table></div>
+</div>
+
 <div class="card" id="usageCard" style="display:none">
   <h2 style="font-size:17px;margin:0 0 6px">إحصاءات الاستخدام</h2>
   <p class="sub" style="margin:0 0 12px">أعداد مجمّعة يرسلها التطبيق من كل جهاز —
@@ -405,6 +413,7 @@ async function loadCodes() {
         </td></tr>\`;
     }).join("");
     renderUsage(rows, data.usage_totals || {});
+    loadLog();
     document.getElementById("costCard").style.display = data.managed_ready ? "" : "none";
     if (data.config) {
       const totals = data.totals || {};
@@ -449,6 +458,24 @@ async function loadCodes() {
       ? err.message
       : "اكتب رمز الإدارة ثم اضغط دخول.";
   }
+}
+
+const ACTIONS = {"codes": "إصدار", "topup": "شحن", "revoke": "إلغاء",
+  "reset-device": "تصفير", "delete": "حذف", "config": "تسعير", "managed-switch": "تشغيل/إيقاف"};
+
+async function loadLog() {
+  try {
+    const data = await api("/admin/log?limit=50");
+    const card = document.getElementById("logCard");
+    card.style.display = "";
+    const when = (t) => new Date(t * 1000).toLocaleString("ar-EG",
+      {year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"});
+    document.getElementById("logRows").innerHTML = (data.log || []).length
+      ? data.log.map((e) => "<tr><td>" + esc(when(e.t)) + "</td><td>"
+          + esc(ACTIONS[e.action] || e.action) + "</td><td><code>" + esc(e.code || "—")
+          + "</code></td><td>" + esc(e.detail || "") + "</td></tr>").join("")
+      : '<tr><td colspan="4">لا عمليات مسجّلة بعد.</td></tr>';
+  } catch (err) { /* السجلّ إضافة: فشله لا يوقف الصفحة */ }
 }
 
 async function testAlert() {
@@ -709,6 +736,8 @@ const validCode = (value) => typeof value === "string" && CODE_RE.test(value);
 const validDevice = (value) => typeof value === "string" && DEVICE_RE.test(value);
 const usageKey = (code, device) => `usage:${code}:${String(device).slice(0, 12)}`;
 const clampInt = (value, low, high, fallback) => {
+  // ``Number(null)`` و``Number("")`` صفرٌ لا NaN: معاملٌ غائب يأخذ الافتراضي.
+  if (value === null || value === undefined || value === "") return fallback;
   const parsed = Math.floor(Number(value));
   return Number.isFinite(parsed) ? Math.min(high, Math.max(low, parsed)) : fallback;
 };
@@ -755,11 +784,24 @@ const licenseStateOf = (stored) => ({
   revoked: Boolean(stored && stored.revoked),
   resets: (stored && stored.resets) || 0,
   last_reset: (stored && stored.last_reset) || 0,
+  moves: (stored && stored.moves) || 0,
 });
 
 // يقرّر ربط جهاز: ``{ error }`` أو ``{ ok, changed, state }``. بلا أي I/O.
-function bindDevice(state, { device, max_devices: maxDevices, renew, days, now }) {
+function bindDevice(state, { device, previous, max_devices: maxDevices, renew, days, now }) {
   if (state.revoked) return { error: "revoked" };
+  // 1.22.7: الجهاز نفسه ببصمة جديدة (أُسقط منها اسم الجهاز والمستخدم). يُرسل
+  // التطبيقُ بصمته السابقة؛ إن كانت مربوطة حلّت الجديدة محلّها — في موضعها،
+  // فلا يُعدّ جهازًا ثانيًا ولا يحتاج «تصفيرًا».
+  if (previous && previous !== device && !state.devices.includes(device)
+      && state.devices.includes(previous)) {
+    const started = state.activated_at || now;
+    if (now > started + (days || 7) * 86400) return { error: "expired" };
+    return { ok: true, changed: true, state: {
+      ...state, activated_at: started,
+      devices: state.devices.map((d) => (d === previous ? device : d)),
+      moves: (state.moves || 0) + 1 } };
+  }
   // الأجهزة الأولى حتى ``max_devices`` تملك الكود، وما بعدها يُرفض.
   const known = state.devices.includes(device);
   if (!known && state.devices.length >= Math.max(1, maxDevices || 1)) {
@@ -807,6 +849,7 @@ function withLicenseState(stored, state) {
   if (state.activated_at) next.activated_at = state.activated_at;
   if (state.revoked) next.revoked = true;
   if (state.resets) { next.resets = state.resets; next.last_reset = state.last_reset; }
+  if (state.moves) next.moves = state.moves;
   return next;
 }
 const sameLicenseState = (stored, state) =>
@@ -824,7 +867,9 @@ async function activate(request, env, renew) {
   if (!stored) return json({ error: "كود التفعيل غير معروف." }, 404);
 
   const now = Math.floor(Date.now() / 1000);
-  const asked = { device, max_devices: stored.max_devices, renew, days: stored.days, now };
+  const previous = body && validDevice(body.previous) ? body.previous : "";
+  const asked = { device, previous, max_devices: stored.max_devices, renew,
+                  days: stored.days, now };
   // مع المحفظة: القرار داخل كائن الكود (ذرّي). ``seed`` حالة السجلّ القديم،
   // تُؤخذ مرّة واحدة لكودٍ لم يُرَ هناك بعد. بلا محفظة: KV وحده كما كان.
   const outcome = env.WALLET
@@ -1125,6 +1170,18 @@ export class Wallet {
       await store.put("balance_usd", body.balance_usd === null ? null : Number(body.balance_usd));
       await store.delete("alerts_sent");
       result = { balance_usd: body.balance_usd };
+    } else if (body.op === "audit_add") {
+      // 1.22.7: سجلّ عمليات الإدارة — آخر 500، بلا أي محتوى من العملاء.
+      const log = (await store.get("audit")) || [];
+      log.push({ t: Math.floor(now / 1000), action: String(body.action || "").slice(0, 32),
+                 code: String(body.code || "").slice(0, 64),
+                 detail: String(body.detail || "").slice(0, 160) });
+      while (log.length > 500) log.shift();
+      await store.put("audit", log);
+      result = { ok: true };
+    } else if (body.op === "audit_get") {
+      const log = (await store.get("audit")) || [];
+      result = { log: log.slice(-Math.min(500, Math.max(1, body.limit || 100))).reverse() };
     } else if (body.op === "get_flag") {
       result = {
         enabled: (await store.get("enabled")) !== false,
@@ -1176,6 +1233,18 @@ async function notify(env, alerts) {
         });
       }
     } catch (err) { /* التنبيه لا يُفشل نداء العميل */ }
+  }
+}
+
+// 1.22.7: من فعل ماذا ومتى — شحنٌ أو إلغاءٌ أو تصفير لا يُرى أثره إلا في
+// النتيجة، والسؤال «من شحن هذا الكود 300 دقيقة؟» كان بلا جواب. فشل السجلّ لا
+// يُفشل العملية نفسها.
+async function adminLog(env, action, code = "", detail = "") {
+  if (!env.WALLET) return;
+  try {
+    await wallet(env, "__global__", { op: "audit_add", action, code, detail });
+  } catch (err) {
+    console.error("admin log failed", action, err && err.message);
   }
 }
 
@@ -1664,6 +1733,11 @@ async function route(request, env, ctx) {
             });
           }
         }
+        await adminLog(env, "codes", codes.length === 1 ? codes[0] : "",
+          `${codes.length} كود · ${record.tier || "—"} · ${record.days} يومًا · `
+          + `${record.max_devices} جهاز`
+          + (record.managed ? ` · رصيد ${Number(body.credit_minutes) || 0} د` : "")
+          + (record.note ? ` · ${record.note}` : ""));
         return json({ ok: true, codes });
       }
 
@@ -1676,6 +1750,7 @@ async function route(request, env, ctx) {
         }
         // وحالته في الكائن: كودٌ يُعاد إصداره بالاسم نفسه يبدأ بلا أجهزة.
         if (env.WALLET) await wallet(env, code, { op: "lic_clear" });
+        await adminLog(env, "delete", code);
         return json({ ok: true });
       }
 
@@ -1711,14 +1786,19 @@ async function route(request, env, ctx) {
         }
         await wallet(env, "__global__", { op: "set_config", config: patch });
         const { enabled, ...config } = await globalConfig(env);
+        await adminLog(env, "config", "", Object.entries(patch)
+          .map(([key, value]) => `${key}=${value}`).join(" ")
+          + ("balance_usd" in body ? ` balance_usd=${body.balance_usd}` : ""));
         return json({ ok: true, config });
       }
 
       // شحن الرصيد بعد تأكيد التحويل. ``minutes`` سالبة للتصحيح.
       if (request.method === "POST" && path === "/admin/topup") {
         if (!env.WALLET) return json({ error: "المحفظة غير مربوطة." }, 500);
-        const { code, minutes } = await request.json();
-        const stored = await env.LICENSES.get(code, "json");
+        const body = (await readJson(request)) || {};
+        const code = normCode(body.code);
+        const minutes = body.minutes;
+        const stored = validCode(code) ? await env.LICENSES.get(code, "json") : null;
         if (!stored) return json({ error: "كود غير معروف." }, 404);
         if (!stored.managed) return json({ error: "هذا الكود ليس من باقة مُدار." }, 400);
         const amount = Number(minutes);
@@ -1729,7 +1809,10 @@ async function route(request, env, ctx) {
         const result = await wallet(env, code, {
           op: "add", units: Math.round(amount * upm),
         });
-        return json({ ok: true, credit_minutes: toMinutes(result.units, upm) });
+        const credit = toMinutes(result.units, upm);
+        await adminLog(env, "topup", code,
+          `${amount > 0 ? "+" : ""}${amount} د · الرصيد بعدها ${credit} د`);
+        return json({ ok: true, credit_minutes: credit });
       }
 
       // تجربة وصول التنبيهات إلى جوالك.
@@ -1744,9 +1827,10 @@ async function route(request, env, ctx) {
       // إيقاف طارئ للخدمة المُدارة كلها (أو إعادتها).
       if (request.method === "POST" && path === "/admin/managed-switch") {
         if (!env.WALLET) return json({ error: "المحفظة غير مربوطة." }, 500);
-        const { enabled } = await request.json();
-        return json({ ok: true, ...(await wallet(env, "__global__", {
-          op: "set_flag", enabled: Boolean(enabled) })) });
+        const enabled = Boolean(((await readJson(request)) || {}).enabled);
+        const flag = await wallet(env, "__global__", { op: "set_flag", enabled });
+        await adminLog(env, "managed-switch", "", enabled ? "تشغيل" : "إيقاف طارئ");
+        return json({ ok: true, ...flag });
       }
 
       // تصفير الأجهزة: يفكّ الربط فقط. ``activated_at`` يبقى، فلا تتجدّد
@@ -1760,6 +1844,7 @@ async function route(request, env, ctx) {
           ? await wallet(env, code, { op: "lic_reset", seed })
           : resetDevices(seed, Math.floor(Date.now() / 1000));
         await env.LICENSES.put(code, JSON.stringify(withLicenseState(stored, state)));
+        await adminLog(env, "reset-device", code, `التصفير رقم ${state.resets}`);
         return json({ ok: true, resets: state.resets });
       }
 
@@ -1773,7 +1858,14 @@ async function route(request, env, ctx) {
           ? await wallet(env, code, { op: "lic_revoke", seed })
           : { ...seed, revoked: true };
         await env.LICENSES.put(code, JSON.stringify(withLicenseState(stored, state)));
+        await adminLog(env, "revoke", code);
         return json({ ok: true });
+      }
+
+      if (request.method === "GET" && path === "/admin/log") {
+        if (!env.WALLET) return json({ log: [] });
+        const limit = clampInt(url.searchParams.get("limit"), 1, 500, 100);
+        return json(await wallet(env, "__global__", { op: "audit_get", limit }));
       }
 
       if (request.method === "GET" && path === "/admin/codes") {

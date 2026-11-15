@@ -403,17 +403,32 @@ def _default_model() -> str:
     return DEFAULT_MODEL
 
 
-def _engine_transcriber(model: Optional[str]) -> Callable[[Path], str]:
-    """محرّك الإنتاج بإعدادات المصنع — النموذج يُحمَّل مرّة واحدة."""
+def _engine(model: Optional[str]):
     from audio.transcriber import TranscriptionEngine
     from config.settings import TranscriptionConfig
 
     engine = TranscriptionEngine(TranscriptionConfig(model_size=model or _default_model()))
     engine.keep_model_loaded = True
+    return engine
+
+
+def _production_text(result) -> str:
+    """النصّ الذي يصل المستند: ``full_text_clean`` — **ولو فارغًا**.
+
+    كان ``clean or raw``: مقطعٌ لم يُفرَّغ منه إلا عبارة مختلَقة («ترجمة نانسي
+    قنقر») يُنظَّف إلى فراغ، فيعود القياس إلى الخام ويحسب العبارة المحذوفة كأن
+    البرنامج كتبها. الفراغ هو ما يكتبه البرنامج فعلًا.
+    """
+    clean = getattr(result, "full_text_clean", None)
+    return result.full_text_raw if clean is None else clean
+
+
+def _engine_transcriber(model: Optional[str]) -> Callable[[Path], str]:
+    """محرّك الإنتاج بإعدادات المصنع — النموذج يُحمَّل مرّة واحدة."""
+    engine = _engine(model)
 
     def run(path: Path) -> str:
-        result = engine.transcribe(path)
-        return result.full_text_clean or result.full_text_raw
+        return _production_text(engine.transcribe(path))
 
     return run
 
@@ -570,6 +585,85 @@ def run_score(eval_dir: Path, references: Optional[Path] = None,
     return report
 
 
+# ---------------------------------------------------------------------
+# compare — موجّهات بداية مختلفة على المراجع نفسها
+# ---------------------------------------------------------------------
+#: أول قياس حقيقي (15 نوفمبر 2026، 22 مقطعًا من تدريبات PowerSchool وSchoology
+#: بالعامية المصرية): دقة 69.1%. أوضح أعطاله أن النموذج **يحوّل العامية إلى
+#: الفصحى** («خلينا ننتقل… عايز أتفرج» ← «سأنتقل… أريد أن أتفرج»)، بل كتب
+#: «لدي أشياء خاصة باللغة العربية الفصحى» — وهي كلمات من موجّه البداية
+#: الافتراضي نفسه: «هذه محاضرة تعليمية باللغة العربية الفصحى». هذه البدائل
+#: تُقاس قبل تغيير أيّ افتراضي.
+PROMPT_VARIANTS = {
+    "screencast": ("موجّه «شرح برنامج» الحالي", None),          # يُقرأ من config/profiles
+    "dialect": ("عامّي محايد بمصطلحات إنجليزية",
+                "طيب، خلينا نشوف الصفحة دي. هنا بنختار الـ term وبعدين نضغط Next، "
+                "وبعدها نفتح الـ report بتاع المدرسة."),
+    "none": ("بلا موجّه", ""),
+}
+
+
+def _variant_prompt(key: str) -> str:
+    label, prompt = PROMPT_VARIANTS[key]
+    if prompt is not None:
+        return prompt
+    from config.profiles import PROFILES
+    return PROFILES[key].overrides["whisper"]["initial_prompt"]
+
+
+def compare(manifest: dict, references: dict, variants: List[str],
+            transcribe_with: Callable[[str, Path], str], clip_dir: Path,
+            log: Callable[[str], None] = print) -> dict:
+    """يعيد تفريغ المقاطع المراجَعة بكل موجّه، ويقيس كلًّا على المراجع نفسها."""
+    reviewed = [clip for clip in manifest["clips"]
+                if (references.get("clips") or {}).get(clip["name"], {}).get("reviewed")
+                and not references["clips"][clip["name"]].get("exclude")]
+    results = {"current": score(manifest, references)}
+    for key in variants:
+        prompt = _variant_prompt(key)
+        log(f"\n— {PROMPT_VARIANTS[key][0]} ({len(reviewed)} مقطعًا)…")
+        hyps = {}
+        for index, clip in enumerate(reviewed, start=1):
+            hyps[clip["name"]] = transcribe_with(prompt, clip_dir / f"{clip['name']}.wav")
+            log(f"  [{index}/{len(reviewed)}] {clip['name']}")
+        report = score(manifest, references, hyps)
+        report["prompt"] = prompt
+        report["hypotheses"] = hyps
+        results[key] = report
+    return results
+
+
+def print_comparison(results: dict, log: Callable[[str], None] = print) -> None:
+    names = {"current": "الحالي (موجّه الفصحى الافتراضي)",
+             **{k: v[0] for k, v in PROMPT_VARIANTS.items()}}
+    log("\n" + "=" * 60)
+    base = results["current"]["word_accuracy"]
+    for key, report in results.items():
+        low, high = report["word_accuracy_ci95"]
+        delta = "" if key == "current" else f"   ({(report['word_accuracy'] - base) * 100:+.1f} نقطة)"
+        log(f"{report['word_accuracy']:6.1%}  [{low:.0%}–{high:.0%}]  {names.get(key, key)}{delta}")
+    log("\nالفرق أصغر من عرض مجال الثقة لا يكفي وحده لتغيير الافتراضي — "
+        "انظر أيضًا أسوأ المقاطع في التقرير.")
+
+
+def run_compare(eval_dir: Path, variants: List[str], references: Optional[Path] = None,
+                model: Optional[str] = None, log: Callable[[str], None] = print) -> dict:
+    manifest = json.loads((eval_dir / "eval_set.json").read_text(encoding="utf-8"))
+    refs = json.loads(find_references(eval_dir, references).read_text(encoding="utf-8"))
+    engine = _engine(model or manifest.get("model") or None)
+
+    def transcribe_with(prompt: str, path: Path) -> str:
+        engine.config = engine.config.model_copy(update={"initial_prompt": prompt or None})
+        return _production_text(engine.transcribe(path))
+
+    results = compare(manifest, refs, variants, transcribe_with, eval_dir / "clips", log)
+    (eval_dir / "report_compare.json").write_text(
+        json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
+    print_comparison(results, log)
+    log(f"\nالتقرير: {eval_dir / 'report_compare.json'}")
+    return results
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         description="قياس دقة التفريغ على تسجيلاتك الحقيقية")
@@ -590,10 +684,24 @@ def main(argv=None) -> int:
     scr.add_argument("--references", type=Path, help="مسار references.json")
     scr.add_argument("--model", help="أعد التفريغ بنموذج آخر وقارنه على المراجع نفسها")
 
+    cmp = commands.add_parser(
+        "compare", help="أعد التفريغ بموجّهات بداية مختلفة وقارنها على المراجع نفسها")
+    cmp.add_argument("eval_dir", type=Path, help="مجلد القياس (_eval)")
+    cmp.add_argument("--variants", default="screencast,dialect,none",
+                     help=f"مفصولة بفواصل من: {', '.join(PROMPT_VARIANTS)}")
+    cmp.add_argument("--references", type=Path)
+    cmp.add_argument("--model")
+
     args = parser.parse_args(argv)
     if args.command == "prepare":
         prepare(args.folder, args.out, args.minutes, args.clip_seconds, args.seed,
                 args.model, args.blank)
+    elif args.command == "compare":
+        variants = [v.strip() for v in args.variants.split(",") if v.strip()]
+        unknown = [v for v in variants if v not in PROMPT_VARIANTS]
+        if unknown:
+            parser.error(f"موجّه غير معروف: {', '.join(unknown)}")
+        run_compare(args.eval_dir, variants, args.references, args.model)
     else:
         run_score(args.eval_dir, args.references, args.model)
     return 0

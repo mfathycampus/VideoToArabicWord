@@ -256,3 +256,51 @@ def test_run_score_reads_downloaded_references_and_writes_a_report(tmp_path, mon
 
 def test_clip_is_a_plain_record():
     assert Clip("clip_01", "a.mkv", 1.0, 30.0).duration == 30.0
+
+
+# ---------------------------------------------------------------------
+# 1.22.8: ما يكتبه البرنامج فعلًا، ومقارنة موجّهات البداية
+# ---------------------------------------------------------------------
+class _Result:
+    def __init__(self, raw, clean):
+        self.full_text_raw, self.full_text_clean = raw, clean
+
+
+def test_an_all_hallucination_clip_counts_as_what_the_document_gets():
+    """المنظَّف فارغ ⇒ البرنامج لم يكتب شيئًا. لا يعود القياس إلى الخام."""
+    assert eval_real._production_text(_Result("ترجمة نانسي قنقر", "")) == ""
+    assert eval_real._production_text(_Result("نص خام", "نص نظيف")) == "نص نظيف"
+    assert eval_real._production_text(_Result("نص خام", None)) == "نص خام"
+
+
+def test_compare_scores_each_prompt_on_the_same_references():
+    manifest = _manifest(["سأنتقل الى التقارير", "خلينا ننتقل", "لن يقاس"])
+    refs = _refs(["خلينا ننتقل على التقارير", "خلينا ننتقل", "لن يقاس"],
+                 clip_03={"exclude": True})
+    asked = []
+
+    def transcribe_with(prompt, wav):
+        asked.append((prompt, wav.name))
+        return {"clip_01": "خلينا ننتقل على التقارير", "clip_02": "خلينا ننتقل"}[wav.stem]
+
+    results = eval_real.compare(manifest, refs, ["dialect", "none"], transcribe_with,
+                                Path("clips"), log=lambda _: None)
+    assert list(results) == ["current", "dialect", "none"]
+    assert results["current"]["word_accuracy"] < 1.0
+    assert results["dialect"]["word_accuracy"] == 1.0
+    assert results["none"]["prompt"] == ""
+    assert {name for _, name in asked} == {"clip_01.wav", "clip_02.wav"}   # المستبعد لا يُفرَّغ
+    assert len(asked) == 4
+
+
+def test_screencast_variant_uses_the_profile_prompt_from_the_product():
+    from config.profiles import PROFILES
+
+    expected = PROFILES["screencast"].overrides["whisper"]["initial_prompt"]
+    assert eval_real._variant_prompt("screencast") == expected
+    assert "الفصحى" not in eval_real._variant_prompt("dialect")
+
+
+def test_compare_cli_rejects_unknown_variants(tmp_path):
+    with pytest.raises(SystemExit):
+        eval_real.main(["compare", str(tmp_path), "--variants", "dialect,nope"])

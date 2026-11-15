@@ -725,3 +725,139 @@ test("عقد التفعيل يحمل نهاية المدّة من حالة ال�
   assert.equal(payload(second.data.lease).expires_at,
     (await licState(env, code)).activated_at + 30 * 86400);
 });
+
+// ══ 1.22.7: الجهاز نفسه ببصمة جديدة ══════════════════════════════════
+const NEWID = "aaaabbbbccccdddd0000";
+const bind = (env, code, device, previous, path = "/recheck") =>
+  call(env, "POST", path, { body: { code, device, previous } });
+
+test("البصمة الجديدة تحلّ محلّ القديمة في موضعها، بلا تصفير ولا مقعد إضافي", async () => {
+  const env = makeEnv();
+  const code = await newCode(env, { max_devices: 1 });
+  await activate(env, code, DEVICE);
+  const reply = await bind(env, code, NEWID, DEVICE);
+  assert.equal(reply.status, 200, reply.text);
+  const payload = JSON.parse(Buffer.from(reply.data.lease.split(".")[1], "base64url").toString());
+  assert.equal(payload.device, NEWID);
+  const state = await licState(env, code);
+  assert.deepEqual(state.devices, [NEWID]);
+  assert.equal(state.moves, 1);
+  assert.deepEqual(env.LICENSES.record(code).devices, [NEWID]);
+  assert.equal((await activate(env, code, DEVICE, "/recheck")).status, 403);   // القديمة لم تعد مربوطة
+  assert.equal((await activate(env, code, NEWID, "/recheck")).status, 200);
+});
+
+test("الانتقال يبقي ترتيب الأجهزة ولا يمسّ جهازًا آخر على الكود", async () => {
+  const env = makeEnv();
+  const code = await newCode(env, { max_devices: 2 });
+  await activate(env, code, DEVICE);
+  await activate(env, code, OTHER);
+  assert.equal((await bind(env, code, NEWID, DEVICE)).status, 200);
+  assert.deepEqual((await licState(env, code)).devices, [NEWID, OTHER]);
+});
+
+test("بصمة «سابقة» غير مربوطة لا تمنح شيئًا: تُعامل كجهاز جديد", async () => {
+  const env = makeEnv();
+  const code = await newCode(env, { max_devices: 1 });
+  await activate(env, code, DEVICE);
+  const reply = await bind(env, code, NEWID, "ffffffffffffffffffff", "/activate");
+  assert.equal(reply.status, 403);
+  assert.deepEqual((await licState(env, code)).devices, [DEVICE]);
+});
+
+test("الانتقال لا يتجاوز الإلغاء ولا انتهاء المدّة", async () => {
+  const env = makeEnv();
+  const code = await newCode(env, { days: 7 });
+  await activate(env, code, DEVICE);
+  now += 8 * 86400 * 1000;
+  assert.equal((await bind(env, code, NEWID, DEVICE)).status, 403);
+  const other = await newCode(env);
+  await activate(env, other, DEVICE);
+  await call(env, "POST", "/admin/revoke", { admin: true, body: { code: other } });
+  assert.equal((await bind(env, other, NEWID, DEVICE)).status, 403);
+  assert.deepEqual((await licState(env, other)).devices, [DEVICE]);
+});
+
+test("جهازٌ انتقل من قبل: إرسال القديمة مرّة أخرى لا يغيّر شيئًا", async () => {
+  const env = makeEnv();
+  const code = await newCode(env);
+  await activate(env, code, DEVICE);
+  await bind(env, code, NEWID, DEVICE);
+  env.LICENSES.puts.length = 0;
+  assert.equal((await bind(env, code, NEWID, DEVICE)).status, 200);
+  assert.deepEqual(env.LICENSES.puts, []);
+  assert.equal((await licState(env, code)).moves, 1);
+});
+
+test("بصمة سابقة بشكل غير صالح تُتجاهل", async () => {
+  const env = makeEnv();
+  const code = await newCode(env, { max_devices: 1 });
+  await activate(env, code, DEVICE);
+  assert.equal((await bind(env, code, NEWID, "<x>", "/activate")).status, 403);
+});
+
+test("الانتقال يعمل بلا محفظة مربوطة أيضًا", async () => {
+  const env = makeEnv({ WALLET: undefined });
+  const code = await newCode(env);
+  await activate(env, code, DEVICE);
+  assert.equal((await bind(env, code, NEWID, DEVICE)).status, 200);
+  assert.deepEqual(env.LICENSES.record(code).devices, [NEWID]);
+});
+
+// ══ 1.22.7: سجلّ عمليات الإدارة ═══════════════════════════════════════
+test("كل عملية إدارة تُسجَّل: من فعل ماذا ومتى، الأحدث أولًا", async () => {
+  const env = makeEnv();
+  const code = await managedCode(env, 10);
+  await call(env, "POST", "/admin/topup", { admin: true, body: { code: code.toLowerCase(), minutes: 300 } });
+  await call(env, "POST", "/admin/reset-device", { admin: true, body: { code } });
+  await call(env, "POST", "/admin/config", { admin: true, body: { units_per_minute: 9000 } });
+  await call(env, "POST", "/admin/managed-switch", { admin: true, body: { enabled: false } });
+  await call(env, "POST", "/admin/revoke", { admin: true, body: { code } });
+  const log = (await call(env, "GET", "/admin/log", { admin: true })).data.log;
+  assert.deepEqual(log.map((e) => e.action),
+    ["revoke", "managed-switch", "config", "reset-device", "topup", "codes"]);
+  assert.equal(log[4].code, code);
+  assert.match(log[4].detail, /\+300 د/);
+  assert.match(log[5].detail, /managed · 30 يومًا · 1 جهاز · رصيد 10 د/);
+  assert.match(log[2].detail, /units_per_minute=9000/);
+  assert.ok(log.every((e) => Number.isInteger(e.t) && e.t > 0));
+});
+
+test("السجلّ للمشرف وحده، ويحتفظ بآخر 500", async () => {
+  const env = makeEnv();
+  assert.equal((await call(env, "GET", "/admin/log")).status, 401);
+  for (let i = 0; i < 505; i += 1) {
+    await walletOp(env, "__global__", { op: "audit_add", action: "topup", detail: String(i) });
+  }
+  const all = (await call(env, "GET", "/admin/log?limit=999", { admin: true })).data.log;
+  assert.equal(all.length, 500);
+  assert.equal(all[0].detail, "504");
+  assert.equal(all.at(-1).detail, "5");
+});
+
+test("العملية الفاشلة لا تُسجَّل، وفشل السجلّ لا يُفشل العملية", async () => {
+  const env = makeEnv();
+  await call(env, "POST", "/admin/topup", { admin: true, body: { code: "VTAW-NONE-NONE-NONE-NONE", minutes: 5 } });
+  assert.deepEqual((await call(env, "GET", "/admin/log", { admin: true })).data.log, []);
+  const code = await newCode(env);
+  const global = env.WALLET.get("__global__");
+  const original = global.fetch;
+  env.WALLET.get = ((get) => (id) => (id === "__global__"
+    ? { fetch: async (url, init) => (JSON.parse(init.body).op === "audit_add"
+        ? Promise.reject(new Error("storage down")) : original(url, init)) }
+    : get.call(env.WALLET, id)))(env.WALLET.get);
+  assert.equal((await call(env, "POST", "/admin/revoke", { admin: true, body: { code } })).status, 200);
+});
+
+test("صفحة الإدارة تعرض السجلّ مهرّبًا", async () => {
+  const page = (await call(makeEnv(), "GET", "/admin")).text;
+  const { api, element } = runAdminPage(page, {
+    codes: [], usage_totals: {}, managed_ready: false,
+    log: [{ t: 1_700_000_000, action: "topup", code: "VTAW-A", detail: "<img src=x>" }],
+  });
+  await api.loadCodes();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const html = element("logRows").innerHTML;
+  assert.ok(html.includes("شحن") && html.includes("&lt;img src=x&gt;"));
+  assert.ok(!html.includes("<img"));
+});

@@ -8,7 +8,7 @@ import time
 from typing import Optional
 
 from licensing import client
-from licensing.fingerprint import device_fingerprint
+from licensing.fingerprint import device_fingerprint, legacy_fingerprint
 from licensing.gate import Status, Verdict, evaluate, record_use
 from licensing.lease import LeaseError
 from licensing.signing import verify
@@ -16,20 +16,58 @@ from licensing.state import StateStore
 from utils.logger import logger
 
 _device: Optional[str] = None
+_legacy: Optional[tuple] = None
 _store: Optional[StateStore] = None
 
 
-def device_id() -> str:
-    global _device
+def machine_ids() -> tuple:
+    """كل بصمات هذا الجهاز: الحالية أولًا، ثم ما سبقها (1.22.7).
+
+    عقدٌ صدر لأيٍّ منها عقدٌ لهذا الجهاز. عقدٌ نُسخ من جهاز آخر لا يطابق أيًّا
+    منها، فيُرفض كما كان.
+    """
+    global _device, _legacy
     if _device is None:
         _device = device_fingerprint()
-    return _device
+    if _legacy is None:
+        try:
+            _legacy = (legacy_fingerprint(),)
+        except Exception:                              # noqa: BLE001
+            _legacy = ()
+    return (_device, *(d for d in _legacy if d and d != _device))
+
+
+def device_id() -> str:
+    """البصمة التي يعرف بها الخادم هذا الجهاز الآن.
+
+    هي بصمة العقد المثبَّت إن كانت من بصمات هذا الجهاز (عقدٌ صدر قبل 1.22.7
+    ببصمة قديمة، ولم يُجدَّد بعد)، وإلا البصمة الحالية. يُرسَل هذا لا غيره في
+    ترويسة «المُدار» والإحصاءات: الخادم لا يعرف الجديدة قبل الانتقال.
+    """
+    ids = machine_ids()
+    try:
+        bound = verify(store().read().get("lease") or "").device
+    except Exception:                                  # noqa: BLE001
+        return ids[0]
+    return bound if bound in ids else ids[0]
+
+
+def _previous_id() -> str:
+    """بصمة قديمة لهذا الجهاز ما زال العقد المثبَّت مربوطًا بها، أو ""."""
+    bound = device_id()
+    return bound if bound != machine_ids()[0] else ""
+
+
+def _previous_kw() -> dict:
+    previous = _previous_id()
+    return {"previous": previous} if previous else {}
 
 
 def store() -> StateStore:
     global _store
     if _store is None:
-        _store = StateStore(device_id())
+        ids = machine_ids()
+        _store = StateStore(ids[0], legacy_devices=ids[1:])
     return _store
 
 
@@ -98,9 +136,20 @@ def refresh_online(app_version: str = "") -> Verdict:
         lease = verify(text)
     except LeaseError:
         return check(app_version)
+    current, previous = machine_ids()[0], _previous_id()
     try:
-        renewed = client.recheck(lease.code, device_id(), app_version)
+        renewed = client.recheck(lease.code, current, app_version,
+                                 **({"previous": previous} if previous else {}))
     except client.ActivationError as exc:
+        if previous and not exc.offline:
+            # خادمٌ لا يعرف الانتقال بعد (أقدم من 1.22.7): يُجدَّد بالبصمة
+            # القديمة كما كان، ويُعاد الانتقال في التجديد التالي.
+            logger.info(f"تعذّر نقل الترخيص إلى البصمة الجديدة: {exc}")
+            try:
+                return _install(client.recheck(lease.code, previous, app_version),
+                                app_version)
+            except client.ActivationError as retry:
+                exc = retry
         logger.info(f"تعذّر تجديد الترخيص: {exc}")
         return check(app_version)
     return _install(renewed, app_version)
@@ -108,7 +157,8 @@ def refresh_online(app_version: str = "") -> Verdict:
 
 def activate(code: str, app_version: str = "") -> Verdict:
     """تفعيل بكود عبر الخادم."""
-    lease_text = client.activate(code, device_id(), app_version)
+    lease_text = client.activate(code, machine_ids()[0], app_version,
+                                 **_previous_kw())
     return _install(lease_text, app_version)
 
 
@@ -126,9 +176,10 @@ def fetch_lease(code: str, app_version: str = "") -> str:
     الواجهة تقارنه بالحالي أولًا (‏``describe_change``)؛ إن رفض المستخدم
     بقي العقد الحالي كما هو.
     """
-    lease_text = client.activate(code, device_id(), app_version)
+    lease_text = client.activate(code, machine_ids()[0], app_version,
+                                 **_previous_kw())
     lease = verify(lease_text)
-    if lease.device and lease.device != device_id():
+    if lease.device and lease.device not in machine_ids():
         raise LeaseError("هذا الترخيص صادر لجهاز آخر.")
     return lease_text
 
@@ -157,7 +208,7 @@ def activate_offline(lease_text: str, app_version: str = "") -> Verdict:
 
 def _install(lease_text: str, app_version: str) -> Verdict:
     lease = verify(lease_text)                      # يرفع LeaseError إن فسد
-    if lease.device and lease.device != device_id():
+    if lease.device and lease.device not in machine_ids():
         raise LeaseError("هذا الترخيص صادر لجهاز آخر.")
     record_use(store(), time.time(), lease_text)
     verdict = evaluate(store(), device_id())
