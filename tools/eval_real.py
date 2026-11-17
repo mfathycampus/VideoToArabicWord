@@ -784,22 +784,40 @@ def run_glossary(eval_dir: Path, references: Optional[Path] = None,
     log(f"\nالقاموس ({len(terms)} حرفًا): {terms[:200]}")
 
     engine = _engine(model or manifest.get("model") or None)
-    engine.config = engine.config.model_copy(update={"glossary": terms})
-    hyps = {}
-    for index, clip in enumerate(reviewed, start=1):
-        hyps[clip["name"]] = _production_text(
-            engine.transcribe(eval_dir / "clips" / f"{clip['name']}.wav"))
-        log(f"  [{index}/{len(reviewed)}] {clip['name']}")
 
-    report = score(manifest, refs, hyps)
+    def transcribe_all(glossary: str, label: str) -> Dict[str, str]:
+        engine.config = engine.config.model_copy(update={"glossary": glossary})
+        out = {}
+        log(f"\n— {label} ({len(reviewed)} مقطعًا)…")
+        for index, clip in enumerate(reviewed, start=1):
+            out[clip["name"]] = _production_text(
+                engine.transcribe(eval_dir / "clips" / f"{clip['name']}.wav"))
+            log(f"  [{index}/{len(reviewed)}] {clip['name']}")
+        return out
+
+    # ذراعان تُفرَّغان بالشيفرة نفسها. المسودّة المحفوظة في ``eval_set.json``
+    # لا تصلح أساسًا للمقارنة: أُنتجت بشيفرةٍ أقدم (قبل حذف صدى الموجّه مثلًا)،
+    # فطرحُها من ذراع القاموس ينسب إلى القاموس ما فعله إصلاحٌ آخر. التكلفة
+    # ضِعف الزمن، والبديل رقمٌ لا يقيس ما يدّعي قياسه.
+    base_hyps = transcribe_all("", "بلا قاموس")
+    glos_hyps = transcribe_all(terms, "بقاموس من نصّ الشاشة")
+
+    base = score(manifest, refs, base_hyps)
+    base["hypotheses"] = base_hyps
+    report = score(manifest, refs, glos_hyps)
     report["glossary"] = terms
-    report["hypotheses"] = hyps
-    results = {"current": score(manifest, refs), "glossary": report}
+    report["hypotheses"] = glos_hyps
+    #: المسودّة المحفوظة تبقى في التقرير للمقارنة التاريخية وحدها — لا
+    #: يُطرح منها شيء، فهي من شيفرةٍ أخرى.
+    results = {"current": base, "glossary": report,
+               "stored_draft": score(manifest, refs)}
     (eval_dir / "report_glossary.json").write_text(
         json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
-    print_comparison(results, log, names={
-        "current": "بلا قاموس (ما قيس سابقًا)",
+    print_comparison({"current": base, "glossary": report}, log, names={
+        "current": "بلا قاموس (شيفرة اليوم)",
         "glossary": "بقاموس من نصّ الشاشة (كالإنتاج)"})
+    log(f"\nللمقارنة التاريخية — المسودّة المحفوظة (شيفرة أقدم): "
+        f"{results['stored_draft']['word_accuracy']:.1%}")
     log(f"\nالتقرير: {eval_dir / 'report_glossary.json'}")
     return results
 
