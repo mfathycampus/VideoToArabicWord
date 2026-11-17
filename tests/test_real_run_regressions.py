@@ -364,6 +364,70 @@ def test_screen_glossary_autofill_is_on_and_never_overrides_the_user():
     assert TranscriptionConfig().auto_screen_glossary is True
 
 
+# ---------------------------------------------------------------------
+# قاموس الشاشة كان يتسرّب بين ملفّات الدفعة
+# ---------------------------------------------------------------------
+# ‏``core/batch`` يبني ``pipeline`` واحدًا للدفعة كلها ليُبقي أوزان النموذج
+# في الذاكرة، والإعداد مشترك. فكان أوّل ملفّ يملأ «مصطلحات المادة»، ثمّ
+# يراها كلّ ملفّ بعده غير فارغة فيتخطّى مسحَ شاشته — فتُفرَّغ تسعَ عشرةَ
+# محاضرة من عشرين بقاموس محاضرةٍ أخرى. وهذا أسوأ من بلا قاموس: الـ
+# ``hotwords`` تميل بالنموذج نحو كلمات ليست في الصوت.
+#
+# والقياس (17 نوفمبر 2026) أثبت أن القاموس الصحيح يستحقّ: دقة الحروف
+# 79.7% ← 83.1%، و«ثم نختار ترقيم صحيحة» صارت «ثم نختار Assign additional
+# course staff». فتسريبُه يُفسد ما قيس أنه ينفع.
+
+class _GlossaryHost:
+    """أقلّ ما يلزم لتشغيل ``_autofill_screen_glossary`` وحدها."""
+
+    def __init__(self, config):
+        self.config = config
+        self.ffmpeg = None
+
+    from core.pipeline_media import MediaStagesMixin
+    _autofill_screen_glossary = MediaStagesMixin._autofill_screen_glossary
+
+
+def _scanned_glossary(host, monkeypatch, terms):
+    from types import SimpleNamespace
+
+    import video.screen_terms as screen_terms
+
+    monkeypatch.setattr(screen_terms, "scan_video",
+                        lambda *a, **k: [(t, 1) for t in terms])
+    metadata = SimpleNamespace(has_video=True, duration_seconds=120.0)
+    host._autofill_screen_glossary(Path("v.mkv"), metadata, lambda *a, **k: None)
+    return host.config.whisper.glossary
+
+
+def test_each_file_in_a_batch_scans_its_own_screen(monkeypatch):
+    from config.settings import AppConfig
+
+    host = _GlossaryHost(AppConfig())
+    assert _scanned_glossary(host, monkeypatch, ["Gradebook"]) == "Gradebook"
+    # الملفّ التالي على الـpipeline نفسه: يُمسح هو أيضًا، فيُستبدل.
+    assert _scanned_glossary(host, monkeypatch, ["Attendance"]) == "Attendance"
+
+
+def test_what_the_user_typed_still_wins(monkeypatch):
+    from config.settings import AppConfig
+
+    config = AppConfig()
+    config.whisper.glossary = "مصطلحاتي أنا"
+    host = _GlossaryHost(config)
+    assert _scanned_glossary(host, monkeypatch, ["Gradebook"]) == "مصطلحاتي أنا"
+
+
+def test_the_user_may_override_what_we_scanned(monkeypatch):
+    """يكتب المستخدم شيئًا بعد مسحٍ تلقائي ⇒ لا يُمسح فوقه."""
+    from config.settings import AppConfig
+
+    host = _GlossaryHost(AppConfig())
+    _scanned_glossary(host, monkeypatch, ["Gradebook"])
+    host.config.whisper.glossary = "مصطلحاتي أنا"
+    assert _scanned_glossary(host, monkeypatch, ["Attendance"]) == "مصطلحاتي أنا"
+
+
 def test_figure_caption_falls_back_to_screen_text_not_to_emptiness():
     """أربع صور بتعليق فارغ بينما نصّ الشاشة لكلٍّ منها محفوظ."""
     from config.schemas import KeyframeMetadata
