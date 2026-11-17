@@ -198,7 +198,8 @@ def _split_point(words: List[WordTimestamp]) -> Optional[int]:
 
 
 def split_long_segments(segments: List[AudioSegment],
-                        max_seconds: float = MAX_SEGMENT_SECONDS
+                        max_seconds: float = MAX_SEGMENT_SECONDS,
+                        prompt: str = "",
                         ) -> List[AudioSegment]:
     """يقسّم المقاطع الأطول من الحدّ على حدود الكلمات، ويعيد الترقيم.
 
@@ -238,11 +239,27 @@ def split_long_segments(segments: List[AudioSegment],
         queue[:0] = [
             AudioSegment(id=segment.id, start=segment.start,
                          end=left_words[-1].end, text_raw=left_text,
-                         text_clean=clean_segment_text(left_text),
+                         # مقطعٌ مُحي نصُّه النظيف (صدى موجّه أو هلوسة)
+                         # لا يعود نصُّه بالقسمة. القسمة تعيد توزيع
+                         # الكلمات، لا تُحيي ما حُذف.
+                         #
+                         # و``prompt`` يُمرَّر هنا لا لأنه أنيق: النصّ
+                         # النظيف يُعاد بناؤه من الكلمات **الخام**، فما
+                         # حذفه المسار الرئيسي من صدى الموجّه كان يعود
+                         # حيًّا كلّما قُسم مقطع — ومقطعٌ مُنظَّف جزئيًّا
+                         # (بقي فيه كلامٌ حقيقي) يمرّ من حارس
+                         # ``if segment.text_clean`` أعلاه. قيس على
+                         # تسجيلات حقيقية (17 نوفمبر 2026): خرج في مستندٍ
+                         # «محاضرة تعليمية باللغة العربية الفصحى.» و«نص
+                         # مكتوب بعلامات ترقيم صحيحة.» — كلماتُ موجّهنا
+                         # تُنسب إلى المعلّم.
+                         text_clean=(clean_segment_text(left_text, prompt)
+                                     if segment.text_clean else ""),
                          words=left_words),
             AudioSegment(id=segment.id, start=right_words[0].start,
                          end=segment.end, text_raw=right_text,
-                         text_clean=clean_segment_text(right_text),
+                         text_clean=(clean_segment_text(right_text, prompt)
+                                     if segment.text_clean else ""),
                          words=right_words),
         ]
 
@@ -614,7 +631,7 @@ class TranscriptionEngine:
                 start = piece.start + shift
                 end = min(piece.end + shift, gap_end + offset)
                 raw = piece.text.strip()
-                clean = clean_segment_text(raw)
+                clean = clean_segment_text(raw, self._effective_prompt() or "")
                 if not clean or end <= start:
                     continue
                 piece_words = [
@@ -824,7 +841,9 @@ class TranscriptionEngine:
                     cancel_token.wait_if_paused()
 
                 raw = seg.text.strip()
-                clean = clean_segment_text(raw)
+                # الموجّه يُمرَّر: النموذج يُعيده بدل الكلام حين يضعف
+                # الصوت، فيصل نصّ موجّهنا إلى مستند المعلّم.
+                clean = clean_segment_text(raw, self._effective_prompt() or "")
                 raw_parts.append(raw)
                 if clean:
                     clean_parts.append(clean)
@@ -893,7 +912,8 @@ class TranscriptionEngine:
             # إلى مقطع واحد قد يكون طويلًا، فتقسمه الخطوة التالية.
             before = len(segments)
             segments = collapse_repeated_segments(segments)
-            segments = split_long_segments(segments)
+            segments = split_long_segments(
+                segments, prompt=self._effective_prompt() or "")
             if len(segments) != before:
                 logger.info("إعادة تشكيل المقاطع: %d ← %d", before, len(segments))
             # يُعاد بناء النصّ المجمّع دائمًا: الطيّ يغيّر ``text_clean``

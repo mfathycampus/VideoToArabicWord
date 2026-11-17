@@ -70,6 +70,11 @@ _KNOWN_HALLUCINATIONS = [re.compile(p) for p in (
     + r"(?:\s+(?:و\s*)?(?:تفعيل\s+)?(?:زر\s+)?الجرس)?",
     r"شكر" + _H + r"ا?" + _H + r"\s+(?:لكم\s+)?(?:على|ل)\s*(?:ال|ل)?مشاهدة",
     r"(?i)subtitles\s+by\s+the\s+amara\.org\s+community",
+    #: رُصدت حرفيًّا على ‏clip_02 من تسجيلات التدريب (17 نوفمبر 2026):
+    #: «المترجم الى صفحتنا ليصلك كل جديد». ترويسة اشتراك لا يقولها
+    #: معلّم. تُبتلع الكلمات التي قبلها في الجملة نفسها («المترجم الى»)
+    #: لأنها جزء من الترويسة لا من الكلام، والحدّ عند علامة الترقيم.
+    r"[^.،؛!؟]*صفحتنا\s+ليصل(?:ك|كم)\s+كل\s+جديد",
 )]
 _ORPHAN_PUNCT = re.compile(r"(^|\s)[،.؛!؟,]+(?=\s|$)")
 
@@ -85,9 +90,83 @@ def strip_known_hallucinations(text: str) -> str:
     return _MULTISPACE.sub(" ", text).strip(" ،,")
 
 
-def clean_segment_text(text: str) -> str:
-    return strip_known_hallucinations(
+# ── صدى موجّه البداية ────────────────────────────────────────────────
+#
+# ‏Whisper يقرأ ``initial_prompt`` بوصفه «ما قيل قبل هذه النافذة»، فحين
+# يضعف الصوت يُكمل الموجّه بدل أن يسمع. فيخرج نصّ **موجّهنا نحن** إلى
+# مستند المعلّم كأنه كلامه.
+#
+# مقيس على تسجيلات حقيقية (17 نوفمبر 2026، 22 مقطعًا):
+#   ‏clip_19 بـ‏large-v3 ← «محاضرة تعليمية باللغة العربية الفصحى.»
+#   ‏clip_02 بـ‏large-v3 ← «… نص مكتوب بعلامات ترقيم صحيحة.»
+# وكلاهما من الموجّه الافتراضي حرفًا بحرف. وعلى ``turbo`` وقع مرّة في
+# ‏clip_18. القائمة الثابتة أعلاه لا تمسّ هذا: الموجّه قابل للتغيير من
+# الواجهة، فلا تُكتب عباراته في قائمة.
+#
+# **لا يُطبَّق على «مصطلحات المادة»** (``hotwords``): تلك أسماء قوائم
+# وأعلام يقولها المتحدّث فعلًا، وحذفها حذفٌ لكلام حقيقي.
+#
+# المقايضة مذكورة صراحةً: جملةٌ يقولها المعلّم مطابقةً لجملة الموجّه
+# تُحذف. الحدّان أدناه يجعلان ذلك بعيدًا — ولا يضيع شيء على كلّ حال،
+# فالنصّ الخام محفوظ كما هو (ADR-005).
+
+#: أقلّ عدد كلمات متتالية من الموجّه يُعدّ صدى. ثلاث كلمات («هذه محاضرة
+#: تعليمية») جملةٌ قد تُقال فعلًا؛ أربعٌ متتالية حرفيًّا لا.
+MIN_PROMPT_ECHO_WORDS = 4
+
+#: نسبة الجملة التي يجب أن يغطّيها الصدى قبل حذفها كاملة. دون ذلك تُترك:
+#: جملةٌ فيها كلام حقيقي وبعضُ الموجّه كلامٌ حقيقي ناقص، لا صدى.
+PROMPT_ECHO_COVERAGE = 0.7
+
+_SENTENCE_SPLIT = re.compile(r"(?<=[.،؛!؟])\s+")
+_ALEF = re.compile(r"[أإآٱ]")
+
+
+def _match_words(text: str) -> list[str]:
+    """صورة للمقارنة وحدها — لا تُكتب في المستند إطلاقًا."""
+    text = normalize_arabic(text, strip_diacritics=True)
+    text = _COMPARISON_STRIP.sub(" ", text)
+    text = _ALEF.sub("ا", text).replace("ة", "ه").replace("ى", "ي")
+    return text.split()
+
+
+def _contains_run(haystack: list[str], needle: list[str]) -> bool:
+    span = len(needle)
+    return any(haystack[i:i + span] == needle
+               for i in range(len(haystack) - span + 1))
+
+
+def _longest_prompt_run(words: list[str], prompt_words: list[str]) -> int:
+    """أطول تتابع من ``words`` يرد حرفيًّا داخل كلمات الموجّه."""
+    best = 0
+    for start in range(len(words)):
+        end = start
+        while end < len(words) and _contains_run(prompt_words, words[start:end + 1]):
+            end += 1
+        best = max(best, end - start)
+    return best
+
+
+def strip_prompt_echo(text: str, prompt: str) -> str:
+    """يحذف الجمل التي أعاد فيها النموذج موجّه البداية بدل الكلام."""
+    prompt_words = _match_words(prompt or "")
+    if len(prompt_words) < MIN_PROMPT_ECHO_WORDS:
+        return text
+    kept = []
+    for sentence in _SENTENCE_SPLIT.split(text):
+        words = _match_words(sentence)
+        if len(words) >= MIN_PROMPT_ECHO_WORDS:
+            run = _longest_prompt_run(words, prompt_words)
+            if run >= MIN_PROMPT_ECHO_WORDS and run >= PROMPT_ECHO_COVERAGE * len(words):
+                continue
+        kept.append(sentence.strip())
+    return _MULTISPACE.sub(" ", " ".join(k for k in kept if k)).strip()
+
+
+def clean_segment_text(text: str, prompt: str = "") -> str:
+    text = strip_known_hallucinations(
         collapse_hallucinated_repeats(normalize_arabic(text)))
+    return strip_prompt_echo(text, prompt) if prompt else text
 
 
 # ── التكرار الممتدّ عبر المقاطع ───────────────────────────────────────
