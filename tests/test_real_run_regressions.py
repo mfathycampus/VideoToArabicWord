@@ -418,6 +418,36 @@ def test_what_the_user_typed_still_wins(monkeypatch):
     assert _scanned_glossary(host, monkeypatch, ["Gradebook"]) == "مصطلحاتي أنا"
 
 
+def test_the_scanned_glossary_is_not_left_in_the_users_settings():
+    """‏``self.config`` هو كائن الواجهة نفسه الذي يُحفظ في config.yaml.
+
+    بلا إعادة الخانة يجد المعلّم بعد تشغيلٍ واحد مصطلحاتٍ لم يكتبها —
+    مقروءةً من شاشته، وقد تحمل أسماء زملاء وطلّاب. وقياس 17 نوفمبر 2026
+    أخرج فعلًا أسماء أشخاص واسم مدرسة كاملًا.
+    """
+    from config.settings import AppConfig
+    from core.pipeline import VideoToDocPipeline
+
+    config = AppConfig()
+    config.whisper.glossary = "مصطلحاتي أنا"
+    pipeline = VideoToDocPipeline.__new__(VideoToDocPipeline)
+    pipeline.config = config
+
+    class _Job:
+        def fail(self, _): pass
+
+    def _execute(*a, **k):                       # يمسح ثمّ يفشل
+        config.whisper.glossary = "Mohammed Yosef، Gradebook"
+        raise RuntimeError("انقطع")
+
+    pipeline._execute = _execute
+    with pytest.raises(RuntimeError):
+        pipeline._run_guarded(_Job(), Path("v.mkv"), None, lambda *a, **k: None,
+                              False, False, None, False)
+    assert config.whisper.glossary == "مصطلحاتي أنا"
+    assert pipeline._autofilled_glossary is None
+
+
 def test_the_user_may_override_what_we_scanned(monkeypatch):
     """يكتب المستخدم شيئًا بعد مسحٍ تلقائي ⇒ لا يُمسح فوقه."""
     from config.settings import AppConfig

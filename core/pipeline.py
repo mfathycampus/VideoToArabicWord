@@ -411,6 +411,19 @@ class VideoToDocPipeline(MediaStagesMixin, OutputsMixin):
     def _run_guarded(self, job, video_path, cancel_token, emit,
                      allow_model_download, allow_audio_only, clip,
                      transcript_only, audit=None) -> Path:
+        # مصطلحات الشاشة الممسوحة تخصّ هذا الملفّ وحده، فتُعاد الخانة
+        # إلى ما تركها عليه المستخدم عند انتهائه — نجح أو فشل أو أُلغي.
+        #
+        # ``self.config`` هو كائن الإعداد نفسه الذي تعرضه الواجهة
+        # (``main_window`` يقرأ ``glossary`` في الخانة ويحفظها في
+        # ``config.yaml``). فبلا هذه الإعادة يجد المعلّم بعد تشغيلٍ واحد
+        # مصطلحاتٍ لم يكتبها في خانته — وهي مقروءة من شاشته، فقد تحمل
+        # أسماء زملاء وطلّاب ظهرت في واجهة Teams أو PowerSchool. قياس
+        # 17 نوفمبر 2026 أخرج فعلًا أسماء أشخاص واسم مدرسة كاملًا.
+        #
+        # وما تحتاجه مراحلُ التشغيل نفسها لا يضيع: الإعادة بعد انتهاء
+        # المهمة كلها، فيرى التفريغُ وإعادةُ الصياغة القاموسَ كما كان.
+        user_glossary = self.config.whisper.glossary
         try:
             # ساعةٌ من المعالجة بلا لمس لوحة المفاتيح تُنيم ويندوز
             # بسياسته الافتراضية، فيقف التنفيذ بلا خطأ ولا تفسير.
@@ -432,6 +445,9 @@ class VideoToDocPipeline(MediaStagesMixin, OutputsMixin):
             job.fail(f"{type(exc).__name__}: {exc}")
             logger.exception("فشل الـ pipeline")
             raise
+        finally:
+            self.config.whisper.glossary = user_glossary
+            self._autofilled_glossary = None
 
 
     @staticmethod
