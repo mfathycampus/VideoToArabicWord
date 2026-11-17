@@ -306,6 +306,59 @@ def test_screencast_variant_keeps_the_deleted_prompt_verbatim():
     assert "الفصحى" not in eval_real._variant_prompt("dialect")
 
 
+# ---------------------------------------------------------------------
+# قاموس مصطلحات الشاشة: ما يفعله الإنتاج ولا يقيسه الصوت
+# ---------------------------------------------------------------------
+def test_screen_glossary_merges_terms_across_the_source_recordings(tmp_path):
+    """مقاطع من تسجيلين ⇒ يُمسح كلٌّ منهما مرّة، وتُجمع التكرارات."""
+    (tmp_path / "c.mkv").write_bytes(b"x")
+    (tmp_path / "d.mkv").write_bytes(b"x")
+    manifest = {**_manifest(["a", "b"]), "source_folder": str(tmp_path)}
+    scanned = []
+
+    def scan(path):
+        scanned.append(path.name)
+        return ([("Analytics", 3), ("Insights", 1)] if path.name == "c.mkv"
+                else [("Analytics", 2), ("Gradebook", 5)])
+
+    glossary = eval_real.screen_glossary(
+        manifest, ["c.mkv", "d.mkv"], scan=scan, log=lambda _: None)
+    assert scanned == ["c.mkv", "d.mkv"]
+    # الترتيب بالتكرار المجموع: Analytics‏ 5، Gradebook‏ 5 (أبجديًّا)، Insights‏ 1
+    assert glossary.split("، ") == ["Analytics", "Gradebook", "Insights"]
+
+
+def test_screen_glossary_skips_a_missing_source_instead_of_failing(tmp_path):
+    manifest = {**_manifest(["a"]), "source_folder": str(tmp_path)}
+    lines = []
+    glossary = eval_real.screen_glossary(
+        manifest, ["ghost.mkv"], scan=lambda _: [("X", 1)], log=lines.append)
+    assert glossary == ""
+    assert any("غير موجود" in line for line in lines)
+
+
+def test_glossary_run_refuses_to_call_an_empty_glossary_a_result(tmp_path):
+    """بلا Tesseract لا نصّ شاشة. قياسُ قاموسٍ فارغ ليس قياسًا — يُقال صراحة."""
+    (tmp_path / "eval_set.json").write_text(
+        json.dumps({**_manifest(["a"]), "source_folder": str(tmp_path)}),
+        encoding="utf-8")
+    (tmp_path / "references.json").write_text(json.dumps(_refs(["a"])),
+                                              encoding="utf-8")
+    with pytest.raises(SystemExit) as excinfo:
+        eval_real.run_glossary(tmp_path, terms="   ", log=lambda _: None)
+    assert "Tesseract" in str(excinfo.value)
+    assert "--terms" in str(excinfo.value)
+
+
+def test_glossary_run_needs_reviewed_clips(tmp_path):
+    (tmp_path / "eval_set.json").write_text(json.dumps(_manifest(["a"])),
+                                            encoding="utf-8")
+    (tmp_path / "references.json").write_text(
+        json.dumps(_refs(["a"], clip_01={"reviewed": False})), encoding="utf-8")
+    with pytest.raises(SystemExit):
+        eval_real.run_glossary(tmp_path, terms="X", log=lambda _: None)
+
+
 def test_compare_cli_rejects_unknown_variants(tmp_path):
     with pytest.raises(SystemExit):
         eval_real.main(["compare", str(tmp_path), "--variants", "dialect,nope"])
