@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -350,6 +351,40 @@ def test_glossary_run_refuses_to_call_an_empty_glossary_a_result(tmp_path):
     assert "--terms" in str(excinfo.value)
 
 
+def test_glossary_run_transcribes_both_arms_with_todays_code(tmp_path, monkeypatch):
+    """المسودّة المحفوظة أُنتجت بشيفرة أقدم؛ طرحُها ينسب إلى القاموس
+    ما فعله إصلاحٌ آخر. الذراعان تُفرَّغان الآن بالشيفرة نفسها."""
+    (tmp_path / "eval_set.json").write_text(
+        json.dumps(_manifest(["مسودّة قديمة", "مسودّة قديمة"])), encoding="utf-8")
+    (tmp_path / "references.json").write_text(
+        json.dumps(_refs(["نفتح Analytics", "نفتح Gradebook"])), encoding="utf-8")
+    used = []          # القاموس السارِي عند كل تفريغ، بالترتيب
+
+    class _Config:
+        def model_copy(self, update):
+            used.append(update.get("glossary", ""))
+            return self
+
+    class _Engine:
+        config = _Config()
+
+        def transcribe(self, path):
+            heard = "نفتح Analytics" if path.stem == "clip_01" else "نفتح Gradebook"
+            return SimpleNamespace(full_text_raw=heard,
+                                   full_text_clean=heard if used[-1] else "نفتح شيئًا")
+
+    monkeypatch.setattr(eval_real, "_engine", lambda _: _Engine())
+
+    results = eval_real.run_glossary(tmp_path, terms="Analytics، Gradebook",
+                                     log=lambda _: None)
+    assert used == ["", "Analytics، Gradebook"]        # بلا قاموس أوّلًا ثمّ به
+    assert set(results) == {"current", "glossary", "stored_draft"}
+    assert results["glossary"]["word_accuracy"] > results["current"]["word_accuracy"]
+    assert results["stored_draft"]["word_accuracy"] == 0.0          # المسودّة القديمة
+    saved = json.loads((tmp_path / "report_glossary.json").read_text(encoding="utf-8"))
+    assert saved["current"]["hypotheses"] and saved["glossary"]["hypotheses"]
+
+
 def test_glossary_run_needs_reviewed_clips(tmp_path):
     (tmp_path / "eval_set.json").write_text(json.dumps(_manifest(["a"])),
                                             encoding="utf-8")
@@ -357,6 +392,37 @@ def test_glossary_run_needs_reviewed_clips(tmp_path):
         json.dumps(_refs(["a"], clip_01={"reviewed": False})), encoding="utf-8")
     with pytest.raises(SystemExit):
         eval_real.run_glossary(tmp_path, terms="X", log=lambda _: None)
+
+
+# ---------------------------------------------------------------------
+# المقطع الفارغ: خطؤه 100% حتمًا، فلا يُخلط بسوء التعرّف
+# ---------------------------------------------------------------------
+def test_an_empty_hypothesis_is_counted_and_named():
+    """‏large-v3 أعطى 33.6% و**خمسة مقاطع فارغة**. الرقم وحده يقرأ الصمت
+    كأنه خطأ تعرّف، فيُحكم على النموذج بما لم يفعله."""
+    report = score(_manifest(["نص صحيح", "", "   "]),
+                   _refs(["نص صحيح", "كلام ضائع", "كلام آخر"]))
+    assert report["empty_clips"] == 2
+    assert any("لم يكتب فيها البرنامج شيئًا" in c for c in report["caveats"])
+
+
+def test_a_full_transcript_reports_no_empty_clips():
+    report = score(_manifest(["نص صحيح"]), _refs(["نص صحيح"]))
+    assert report["empty_clips"] == 0
+    assert not any("فارغة" in c for c in report["caveats"])
+
+
+def test_print_report_names_the_empty_clips(capsys):
+    report = score(_manifest(["نص صحيح", ""]), _refs(["نص صحيح", "كلام ضائع"]))
+    lines = []
+    eval_real.print_report(report, lines.append)
+    assert any("مقاطع فارغة" in line for line in lines)
+
+
+def test_clips_filter_needs_a_model(tmp_path):
+    """بلا ``--model`` لا يُعاد تفريغ شيء، فتحديد مقاطع بعينها بلا معنى."""
+    with pytest.raises(SystemExit):
+        eval_real.main(["score", str(tmp_path), "--clips", "clip_01"])
 
 
 def test_compare_cli_rejects_unknown_variants(tmp_path):
