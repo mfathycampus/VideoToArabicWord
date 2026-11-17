@@ -109,9 +109,20 @@ def test_screencast_enables_screen_text_extraction():
         config.scene_detection.minimum_gap_seconds
 
 
-def test_screencast_prompt_mentions_the_english_interface_terms():
-    config = apply_profile(_base(), "screencast")
-    assert "برنامج" in config.whisper.initial_prompt
+def test_screencast_does_not_override_the_initial_prompt():
+    """الموجّه الخاصّ بهذا الملفّ حُذف بعد أن أسقطه القياس.
+
+    ‏17 نوفمبر 2026، 22 مقطعًا من تسجيلات حقيقية: دقة الكلمات 60.5%
+    بهذا الموجّه مقابل 69.1% بالافتراضي — أسوأ بـ8.6 نقاط، والفرق خارج
+    مجال الثقة. والسبب مرئيّ: النموذج نسخ نصّ الموجّه في المخرج («ثم
+    نختار مصطلحات إنجليزية لأسماء القوائم والأزرار»).
+
+    فالملفّ يرث الموجّه الافتراضي، ولا يحمل ``whisper`` إطلاقًا.
+    """
+    base = _base()
+    config = apply_profile(base, "screencast")
+    assert config.whisper.initial_prompt == base.whisper.initial_prompt
+    assert "whisper" not in PROFILES["screencast"].overrides
 
 
 # ── الملفّات المُستنتَجة: تُعلن عن نفسها ─────────────────────────────

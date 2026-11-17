@@ -293,11 +293,16 @@ def test_compare_scores_each_prompt_on_the_same_references():
     assert len(asked) == 4
 
 
-def test_screencast_variant_uses_the_profile_prompt_from_the_product():
+def test_screencast_variant_keeps_the_deleted_prompt_verbatim():
+    """الموجّه حُذف من المنتج، ويبقى هنا حتى تُعاد المقارنة كما قيست.
+
+    لو قُرئ من ``config/profiles`` لانكسرت الأداة بحذفه، ولضاع ما
+    يفسّر رقم الـ60.5% في ``report_compare.json``.
+    """
     from config.profiles import PROFILES
 
-    expected = PROFILES["screencast"].overrides["whisper"]["initial_prompt"]
-    assert eval_real._variant_prompt("screencast") == expected
+    assert "whisper" not in PROFILES["screencast"].overrides
+    assert "القوائم والأزرار" in eval_real._variant_prompt("screencast")
     assert "الفصحى" not in eval_real._variant_prompt("dialect")
 
 
