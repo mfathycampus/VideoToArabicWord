@@ -359,6 +359,37 @@ def test_glossary_run_needs_reviewed_clips(tmp_path):
         eval_real.run_glossary(tmp_path, terms="X", log=lambda _: None)
 
 
+# ---------------------------------------------------------------------
+# المقطع الفارغ: خطؤه 100% حتمًا، فلا يُخلط بسوء التعرّف
+# ---------------------------------------------------------------------
+def test_an_empty_hypothesis_is_counted_and_named():
+    """‏large-v3 أعطى 33.6% و**خمسة مقاطع فارغة**. الرقم وحده يقرأ الصمت
+    كأنه خطأ تعرّف، فيُحكم على النموذج بما لم يفعله."""
+    report = score(_manifest(["نص صحيح", "", "   "]),
+                   _refs(["نص صحيح", "كلام ضائع", "كلام آخر"]))
+    assert report["empty_clips"] == 2
+    assert any("لم يكتب فيها البرنامج شيئًا" in c for c in report["caveats"])
+
+
+def test_a_full_transcript_reports_no_empty_clips():
+    report = score(_manifest(["نص صحيح"]), _refs(["نص صحيح"]))
+    assert report["empty_clips"] == 0
+    assert not any("فارغة" in c for c in report["caveats"])
+
+
+def test_print_report_names_the_empty_clips(capsys):
+    report = score(_manifest(["نص صحيح", ""]), _refs(["نص صحيح", "كلام ضائع"]))
+    lines = []
+    eval_real.print_report(report, lines.append)
+    assert any("مقاطع فارغة" in line for line in lines)
+
+
+def test_clips_filter_needs_a_model(tmp_path):
+    """بلا ``--model`` لا يُعاد تفريغ شيء، فتحديد مقاطع بعينها بلا معنى."""
+    with pytest.raises(SystemExit):
+        eval_real.main(["score", str(tmp_path), "--clips", "clip_01"])
+
+
 def test_compare_cli_rejects_unknown_variants(tmp_path):
     with pytest.raises(SystemExit):
         eval_real.main(["compare", str(tmp_path), "--variants", "dialect,nope"])

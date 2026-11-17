@@ -493,6 +493,7 @@ def score(manifest: dict, references: dict,
         rows.append({"name": clip["name"], "source": clip["source"],
                      "duration": clip["duration"], "wer": (we, wl), "cer": (ce, cl),
                      "tol": (te, tl), "untouched": we == 0,
+                     "empty": not hypothesis.strip(),
                      "weak_speech": bool(clip.get("weak_speech"))})
     if not rows:
         raise SystemExit("لا مقاطع مراجَعة بعد — راجع المقاطع في review.html أولًا.")
@@ -517,6 +518,11 @@ def score(manifest: dict, references: dict,
         "word_accuracy_ci95": [round(1 - high, 4), round(1 - low, 4)],
         "char_accuracy": round(1 - _pooled(rows, "cer"), 4),
         "untouched_clips": sum(row["untouched"] for row in rows),
+        #: مقاطع لم يكتب فيها البرنامج شيئًا. خطؤها 100% حتمًا، فتسحب
+        #: المعدّل إلى أسفل بلا أن يُظهر الرقمُ وحده السبب — وهذا ما حدث
+        #: مع ``large-v3`` (17 نوفمبر 2026): خمسة مقاطع فارغة قرأها
+        #: التقرير «دقّة 33.6%» كأنها أخطاء تعرّف، وهي صمتٌ تامّ.
+        "empty_clips": sum(row["empty"] for row in rows),
         "reference_from_draft": not manifest.get("blank", False),
         "by_source": {source: {"clips": len(items),
                                "wer": round(_pooled(items, "wer"), 4)}
@@ -537,6 +543,12 @@ def score(manifest: dict, references: dict,
     if report["untouched_clips"] > 0.8 * len(rows) and len(rows) >= 5:
         report["caveats"].append(
             "أكثر من 80% من المقاطع لم يُغيَّر فيها حرف — تأكّد أنها سُمعت فعلًا.")
+    if report["empty_clips"]:
+        report["caveats"].append(
+            f"{report['empty_clips']} مقطعًا لم يكتب فيها البرنامج شيئًا "
+            "(خطؤها 100% حتمًا). هذا صمتٌ أو مخرَجٌ حُذف كاملًا بمنظّف "
+            "الهلوسة، لا سوء تعرّف — افحص نصوصها في hypotheses قبل الحكم "
+            "على النموذج.")
     return report
 
 
@@ -551,6 +563,10 @@ def print_report(report: dict, log: Callable[[str], None] = print) -> None:
         f"(مجال الثقة 95%: {low:.1%} – {high:.1%})")
     log(f"دقة الحروف  : {report['char_accuracy']:.1%}")
     log(f"دقة الكلمات بتسامح إملائي: {1 - report['wer_orthography_tolerant']:.1%}")
+    if report.get("empty_clips"):
+        # رقمٌ واحدٌ يفرّق بين «نموذج يُخطئ» و«نموذج لا يكتب شيئًا».
+        log(f"مقاطع فارغة : {report['empty_clips']} من {report['clips_scored']}"
+            "  ← خطؤها 100% حتمًا وتسحب المعدّل")
     if len(report["by_source"]) > 1:
         log("\nلكل تسجيل:")
         for source, item in report["by_source"].items():
@@ -560,23 +576,46 @@ def print_report(report: dict, log: Callable[[str], None] = print) -> None:
 
 
 def run_score(eval_dir: Path, references: Optional[Path] = None,
-              model: Optional[str] = None, log: Callable[[str], None] = print) -> dict:
+              model: Optional[str] = None, only: Optional[List[str]] = None,
+              log: Callable[[str], None] = print) -> dict:
     manifest = json.loads((eval_dir / "eval_set.json").read_text(encoding="utf-8"))
     refs_path = find_references(eval_dir, references)
     refs = json.loads(refs_path.read_text(encoding="utf-8"))
     log(f"المراجع: {refs_path}")
     hypotheses = None
+    scrubbed: Dict[str, str] = {}
     if model and model != manifest.get("model"):
         # مقارنة نموذج آخر على المراجع نفسها: يُعاد التفريغ ولا تُمسّ المسودّة.
-        transcribe = _engine_transcriber(model)
+        engine = _engine(model)
         reviewed = {name for name, entry in (refs.get("clips") or {}).items()
                     if entry.get("reviewed") and not entry.get("exclude")}
+        if only:
+            missing = [name for name in only if name not in reviewed]
+            if missing:
+                raise SystemExit(f"مقاطع غير مراجَعة أو مستبعَدة: {', '.join(missing)}")
+            reviewed &= set(only)
         hypotheses = {}
         for clip in manifest["clips"]:
-            if clip["name"] in reviewed:
-                hypotheses[clip["name"]] = transcribe(eval_dir / "clips" / f"{clip['name']}.wav")
+            if clip["name"] not in reviewed:
+                continue
+            result = engine.transcribe(eval_dir / "clips" / f"{clip['name']}.wav")
+            hypotheses[clip["name"]] = text = _production_text(result)
+            raw = (result.full_text_raw or "").strip()
+            if raw and not text.strip():
+                # المنظّف محا المخرَج كاملًا. بلا حفظ الخام يبدو المقطع
+                # «صمتًا» في التقرير، والسببُ الحقيقي هلوسةٌ حُذفت.
+                scrubbed[clip["name"]] = raw
+            log(f"  {clip['name']}: {len(text.split())} كلمة"
+                + ("  ⚠ مُحي بالكامل بمنظّف الهلوسة" if clip["name"] in scrubbed else ""))
         manifest = {**manifest, "model": model}
     report = score(manifest, refs, hypotheses)
+    if hypotheses is not None:
+        # بلا هذا السطر يُحفظ رقمٌ بلا النصّ الذي أنتجه، فلا يُشخَّص.
+        # حدث فعلًا مع ``large-v3``: خمسة مقاطع فارغة ولا سبيل لمعرفة
+        # السبب إلا بإعادة تفريغ ساعتين.
+        report["hypotheses"] = hypotheses
+        if scrubbed:
+            report["scrubbed_by_cleaner"] = scrubbed
     suffix = "" if hypotheses is None else f"_{re.sub(r'[^A-Za-z0-9.-]+', '-', model or '')}"
     (eval_dir / f"report{suffix}.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -784,6 +823,8 @@ def main(argv=None) -> int:
     scr.add_argument("eval_dir", type=Path, help="مجلد القياس (_eval)")
     scr.add_argument("--references", type=Path, help="مسار references.json")
     scr.add_argument("--model", help="أعد التفريغ بنموذج آخر وقارنه على المراجع نفسها")
+    scr.add_argument("--clips",
+                     help="مقاطع بعينها مع --model (clip_02,clip_06) — للتشخيص بلا إعادة الكلّ")
 
     cmp = commands.add_parser(
         "compare", help="أعد التفريغ بموجّهات بداية مختلفة وقارنها على المراجع نفسها")
@@ -815,7 +856,10 @@ def main(argv=None) -> int:
     elif args.command == "glossary":
         run_glossary(args.eval_dir, args.references, args.model, args.terms)
     else:
-        run_score(args.eval_dir, args.references, args.model)
+        only = [c.strip() for c in (args.clips or "").split(",") if c.strip()]
+        if only and not args.model:
+            parser.error("‏--clips لا معنى له بلا --model: بلا نموذج جديد لا يُعاد تفريغ شيء.")
+        run_score(args.eval_dir, args.references, args.model, only or None)
     return 0
 
 
