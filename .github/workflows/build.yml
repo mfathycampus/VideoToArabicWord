@@ -219,11 +219,23 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: python tools/build_smoke.py dist/VideoToArabicWord
       - name: تحزيم dmg
+        # 1.22.9: ``hdiutil create`` سقط بـ«Resource busy» على عدّاء GitHub
+        # بينما نجح البناء وفحصُ الإقلاع قبله — فهرسة Spotlight تمسك المجلد
+        # لحظة الحزم. العطل عابر، وعلاجه إعادة محاولة لا ``continue-on-error``:
+        # التجاهل يُمرّر يومًا عطلًا حقيقيًّا في التحزيم بلا أن يراه أحد.
         run: |
           test -d dist/VideoToArabicWord.app
-          hdiutil create -volname VideoToArabicWord \
-            -srcfolder dist/VideoToArabicWord.app -ov -format UDZO \
-            dist/VideoToArabicWord-macos-arm64.dmg
+          for attempt in 1 2 3; do
+            if hdiutil create -volname VideoToArabicWord \
+                 -srcfolder dist/VideoToArabicWord.app -ov -format UDZO \
+                 dist/VideoToArabicWord-macos-arm64.dmg; then
+              exit 0
+            fi
+            echo "المحاولة $attempt فشلت — انتظار ثمّ إعادة"
+            sleep 15
+          done
+          echo "تعذّر تحزيم dmg بعد ثلاث محاولات — ليس عطلًا عابرًا"
+          exit 1
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         continue-on-error: true
         with:
