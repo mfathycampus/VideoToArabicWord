@@ -646,9 +646,10 @@ def compare(manifest: dict, references: dict, variants: List[str],
     return results
 
 
-def print_comparison(results: dict, log: Callable[[str], None] = print) -> None:
-    names = {"current": "الحالي (موجّه الفصحى الافتراضي)",
-             **{k: v[0] for k, v in PROMPT_VARIANTS.items()}}
+def print_comparison(results: dict, log: Callable[[str], None] = print,
+                     names: Optional[Dict[str, str]] = None) -> None:
+    names = names or {"current": "الحالي (موجّه الفصحى الافتراضي)",
+                      **{k: v[0] for k, v in PROMPT_VARIANTS.items()}}
     log("\n" + "=" * 60)
     base = results["current"]["word_accuracy"]
     for key, report in results.items():
@@ -674,6 +675,93 @@ def run_compare(eval_dir: Path, variants: List[str], references: Optional[Path] 
         json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
     print_comparison(results, log)
     log(f"\nالتقرير: {eval_dir / 'report_compare.json'}")
+    return results
+
+
+# ---------------------------------------------------------------------
+# glossary — أثر مصطلحات الشاشة، وهو ما يفعله الإنتاج ولا يقيسه الصوت
+# ---------------------------------------------------------------------
+#: ثغرة في القياس نفسه: ``prepare`` يقتطع **صوتًا** (wav)، والبرنامج في
+#: الإنتاج يمسح نصّ الشاشة من **الفيديو** قبل التفريغ ويحقن ما يجده في
+#: ``glossary`` — فتصل المصطلحات إلى كل نافذة تفريغ عبر ``hotwords``.
+#: أي أن رقم الـ69.1% مقيس بقاموس **فارغ**، بينما تسجيلُ شرحِ برنامجٍ
+#: حقيقي يُفرَّغ بقاموس مملوء. والقياس على 22 مقطعًا أظهر 31 خطأً من 366
+#: تتعلّق بكلمة لاتينية، وهي بالضبط ما يُفترض أن يعالجه القاموس.
+#:
+#: هذا الأمر يسدّ الثغرة: يمسح التسجيلات المصدر كما يمسحها البرنامج، ثم
+#: يعيد تفريغ المقاطع المراجَعة بالقاموس الناتج على المراجع نفسها.
+#: يتطلّب Tesseract مثبَّتًا — بدونه لا نصّ شاشة، ويقولها صراحة بدل أن
+#: يقيس قاموسًا فارغًا ويسمّيه نتيجة.
+def screen_glossary(manifest: dict, sources: List[str], ffmpeg=None,
+                    scan: Optional[Callable[[Path], List]] = None,
+                    log: Callable[[str], None] = print) -> str:
+    """يبني القاموس من نصّ شاشة التسجيلات المصدر، كما يفعل البرنامج."""
+    from video.screen_terms import as_glossary
+
+    if scan is None:
+        from video.screen_terms import scan_video
+        if ffmpeg is None:
+            from utils.ffmpeg_service import FFmpegService
+            ffmpeg = FFmpegService()
+
+        def scan(path: Path) -> List:
+            return scan_video(path, ffmpeg, probe_duration(path))
+
+    folder = Path(manifest.get("source_folder") or "")
+    counts: Dict[str, int] = {}
+    for name in sources:
+        path = folder / name
+        if not path.exists():
+            log(f"  ⚠ التسجيل المصدر غير موجود: {path}")
+            continue
+        terms = scan(path)
+        for phrase, count in terms:
+            counts[phrase] = counts.get(phrase, 0) + count
+        log(f"  {name}: {len(terms)} مصطلحًا")
+    ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    return as_glossary(ranked)
+
+
+def run_glossary(eval_dir: Path, references: Optional[Path] = None,
+                 model: Optional[str] = None, terms: Optional[str] = None,
+                 log: Callable[[str], None] = print) -> dict:
+    manifest = json.loads((eval_dir / "eval_set.json").read_text(encoding="utf-8"))
+    refs = json.loads(find_references(eval_dir, references).read_text(encoding="utf-8"))
+    reviewed = [clip for clip in manifest["clips"]
+                if (refs.get("clips") or {}).get(clip["name"], {}).get("reviewed")
+                and not refs["clips"][clip["name"]].get("exclude")]
+    if not reviewed:
+        raise SystemExit("لا مقاطع مراجَعة. افتح review.html وصحّح النصوص أولًا.")
+
+    if terms is None:
+        log("مسح نصّ الشاشة من التسجيلات المصدر…")
+        sources = sorted({clip["source"] for clip in reviewed})
+        terms = screen_glossary(manifest, sources, log=log)
+    if not (terms or "").strip():
+        raise SystemExit(
+            "لا مصطلحات. السبب الأرجح أن Tesseract غير مثبَّت، فلا يُقرأ نصّ "
+            "الشاشة — وقياسُ قاموسٍ فارغ لا يقول شيئًا. ثبّته، أو مرّر قائمتك "
+            "بنفسك: --terms \"Analytics, Insights, …\"")
+    log(f"\nالقاموس ({len(terms)} حرفًا): {terms[:200]}")
+
+    engine = _engine(model or manifest.get("model") or None)
+    engine.config = engine.config.model_copy(update={"glossary": terms})
+    hyps = {}
+    for index, clip in enumerate(reviewed, start=1):
+        hyps[clip["name"]] = _production_text(
+            engine.transcribe(eval_dir / "clips" / f"{clip['name']}.wav"))
+        log(f"  [{index}/{len(reviewed)}] {clip['name']}")
+
+    report = score(manifest, refs, hyps)
+    report["glossary"] = terms
+    report["hypotheses"] = hyps
+    results = {"current": score(manifest, refs), "glossary": report}
+    (eval_dir / "report_glossary.json").write_text(
+        json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
+    print_comparison(results, log, names={
+        "current": "بلا قاموس (ما قيس سابقًا)",
+        "glossary": "بقاموس من نصّ الشاشة (كالإنتاج)"})
+    log(f"\nالتقرير: {eval_dir / 'report_glossary.json'}")
     return results
 
 
@@ -705,6 +793,15 @@ def main(argv=None) -> int:
     cmp.add_argument("--references", type=Path)
     cmp.add_argument("--model")
 
+    glo = commands.add_parser(
+        "glossary",
+        help="قِس أثر مصطلحات الشاشة — ما يفعله البرنامج في الإنتاج ولا يقيسه الصوت")
+    glo.add_argument("eval_dir", type=Path, help="مجلد القياس (_eval)")
+    glo.add_argument("--references", type=Path)
+    glo.add_argument("--model")
+    glo.add_argument("--terms",
+                     help="قائمتك بدل مسح الشاشة (مفصولة بفواصل). يفيد بلا Tesseract.")
+
     args = parser.parse_args(argv)
     if args.command == "prepare":
         prepare(args.folder, args.out, args.minutes, args.clip_seconds, args.seed,
@@ -715,6 +812,8 @@ def main(argv=None) -> int:
         if unknown:
             parser.error(f"موجّه غير معروف: {', '.join(unknown)}")
         run_compare(args.eval_dir, variants, args.references, args.model)
+    elif args.command == "glossary":
+        run_glossary(args.eval_dir, args.references, args.model, args.terms)
     else:
         run_score(args.eval_dir, args.references, args.model)
     return 0
