@@ -401,6 +401,43 @@ def check_vad_asset() -> CheckResult:
         else f"{_pip_command()} install --force-reinstall faster-whisper")
 
 
+def check_transcription_model() -> CheckResult:
+    """أوزان نموذج التفريغ على القرص — كاملةٌ أم ناقصة؟
+
+    الدرسُ نفسه المكتوب فوق في ``check_vad_asset``: **الوجود لا يعني
+    العمل.** وقع هنا بصورةٍ ثالثة (18 نوفمبر 2026): لقطةُ المخبأ موجودة
+    وفيها ``model.bin``، وتنقصها ``config.json`` وغيرها. فمرّ كل فحصٍ
+    عندنا، ثم سقط التفريغ بعد استخراج الصوت برسالةٍ إنجليزية من مكتبةٍ
+    بعيدة:
+
+        [E4001] The cached snapshot … is incomplete: 5 file(s) are missing
+
+    الفحص هنا لأن ``diagnose`` يُنادى من إقلاع التطبيق — فيعرف المعلّم
+    في الثانية الأولى — ومن ``--selftest`` على كل بناء.
+
+    ولا يتّصل بشبكة ولا ينزّل شيئًا: قراءةُ قرصٍ وحدها.
+    """
+    from audio.model_manager import DEFAULT_MODEL, ModelManager
+
+    manager = ModelManager()
+    folder = manager.local_path(DEFAULT_MODEL)
+    if folder is not None:
+        return CheckResult("نموذج التفريغ", True, str(folder))
+
+    damaged = manager.incomplete_path(DEFAULT_MODEL)
+    if damaged is not None:
+        return CheckResult(
+            "نموذج التفريغ", False,
+            f"ملفّاته ناقصة في {damaged} — الناقص: "
+            f"{'، '.join(manager.missing_files(damaged))}",
+            "شغّل المعالجة مع «السماح بتنزيل النموذج» ليُكمَل ما نقص، "
+            f"أو احذف المجلد: {damaged}")
+
+    # الغياب التامّ ليس عطلًا: أوّل تشغيلٍ ينزّله بإذن المستخدم.
+    return CheckResult("نموذج التفريغ", True,
+                       f"غير منزَّل بعد ({manager.cache_root})")
+
+
 #: متّجه RFC 8032 الأوّل (رسالة فارغة) — فحصٌ حقيقي لمسار التحقّق.
 _RFC8032_PUBLIC = "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
 _RFC8032_SIGNATURE = (
@@ -439,6 +476,7 @@ def diagnose() -> Diagnosis:
     diagnosis.results.append(check_docx_package())
     diagnosis.results.extend(r for r in check_imports() if r.name != "python-docx")
     diagnosis.results.append(check_vad_asset())
+    diagnosis.results.append(check_transcription_model())
     diagnosis.results.append(check_license_verifier())
     diagnosis.results.extend(check_binaries())
     diagnosis.results.append(check_ocr_binary())

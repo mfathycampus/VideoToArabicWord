@@ -486,6 +486,22 @@ class VideoToDocPipeline(MediaStagesMixin, OutputsMixin):
 
         return emit
 
+    def _require_transcription_model(self, allow_download: bool) -> None:
+        """يسقط فورًا إن كان النموذج غائبًا أو ناقصًا — لا بعد الاستخراج.
+
+        لا يُنزّل شيئًا: التنزيل يبقى في مرحلة التفريغ بتقدّمه ورسائله.
+        هذا فحصٌ على القرص وحده، ثمنه أجزاء من الثانية.
+        """
+        engine = (self.config.whisper.engine or "faster-whisper").strip()
+        if not engine.startswith("faster-whisper"):
+            return                      # محرّك آخر: أوزان Whisper لا تعنيه
+        name = self.config.whisper.model_size
+        if allow_download or self.model_manager.is_available(name):
+            return
+        # يرفع ``ModelUnavailableError`` بنصٍّ عربيّ يفرّق بين «غير مثبّت»
+        # و«مثبّت ناقص»، ويقول ما ينقص وأين.
+        self.model_manager.ensure_available(name, allow_download=False)
+
     def _cleanup_temp(self, job_dir: Path) -> None:
         temp = job_dir / "temp"
         if temp.exists():
@@ -509,6 +525,10 @@ class VideoToDocPipeline(MediaStagesMixin, OutputsMixin):
              "التحقق من الملف الصوتي…" if allow_audio_only
              else "التحقق من ملف الفيديو…")
         self._validate_input(video_path, allow_audio_only)
+        # نموذج التفريغ يُفحص **هنا**، قبل استخراج الصوت. كان يُفحص عند
+        # بداية مرحلة التفريغ، فيقضي المستخدم دقائق في الاستخراج ثم يسقط
+        # العمل على نموذجٍ كان غيابه معلومًا من الثانية الأولى.
+        self._require_transcription_model(allow_model_download)
         cancel_token.raise_if_cancelled()
         job.complete_stage(Stage.VALIDATION)
 
