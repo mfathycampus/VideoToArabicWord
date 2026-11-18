@@ -39,11 +39,24 @@ class MediaStagesMixin:
         أمام ساعات التفريغ.
 
         ولا يُلمس ما كتبه المستخدم بيده: اختياره يفوز دائمًا.
+
+        **ما يملؤه هذا المسح ليس «ما كتبه المستخدم».** الإعداد مشترك بين
+        الملفّات: ``core/batch`` يبني ``pipeline`` واحدًا للدفعة كلها
+        (ليُبقي الأوزان في الذاكرة)، وواجهة البرنامج تمرّر كائن الإعداد
+        نفسه. فكان أوّل ملفّ يملأ الخانة، ثمّ يراها كلّ ملفّ بعده غير
+        فارغة فيتخطّى مسحَ شاشته — وتُحقَن مصطلحاتُ الفيديو الأوّل في
+        تفريغ البقيّة. دفعةٌ من عشرين محاضرة تُفرَّغ تسعَ عشرةَ منها
+        بقاموس محاضرةٍ أخرى، وهذا أسوأ من بلا قاموس: الـ``hotwords``
+        تميل بالنموذج نحو كلمات ليست في الصوت.
+
+        فما مسحناه نحن يُستبدَل بمسح الملفّ الحالي؛ وما كتبه المستخدم
+        وحده هو الذي يفوز.
         """
         settings = self.config.whisper
         if not getattr(settings, "auto_screen_glossary", True):
             return
-        if (settings.glossary or "").strip():
+        current = (settings.glossary or "").strip()
+        if current and current != getattr(self, "_autofilled_glossary", None):
             return
         if not metadata.has_video or metadata.duration_seconds <= 0:
             return
@@ -60,6 +73,7 @@ class MediaStagesMixin:
             glossary = as_glossary(terms)
             if glossary:
                 settings.glossary = glossary
+                self._autofilled_glossary = glossary
                 logger.info(
                     f"مصطلحات من الشاشة ({len(terms)}): {glossary[:160]}")
         except Exception as exc:
