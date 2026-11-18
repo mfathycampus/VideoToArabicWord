@@ -12,7 +12,7 @@ import shutil
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, List, Optional
 
 from core.exceptions import ModelUnavailableError
 from utils.logger import logger
@@ -142,12 +142,48 @@ class ModelManager:
         وجود ``large-v3-turbo``، لأن الأول مقطع فرعي من الثاني. النتيجة:
         تمرّ ``ensure_available`` بلا سؤال، ثم ينزّل faster-whisper
         3.1 جيجابايت صامتًا — خرقٌ مباشر لـ ADR-014 و ADR-002.
+
+        **تعريفٌ واحدٌ لـ«متوفّر»: ما يستطيع ``local_path`` تحميله.**
+        كان هنا فحصٌ أرخَ: وجودُ ``model.bin`` وحده يكفي. و``local_path``
+        أشدّ — يشترط ``config.json`` و``tokenizer.json`` معه. فحين تنقص
+        لقطةٌ بعضَ ملفّاتها كان الاثنان يتناقضان: ``ensure_available``
+        تقول «متوفّر محليًا» فلا تنزّل شيئًا، ثم يعود ``local_path``
+        بـ ``None`` فيسقط التحميل إلى الاسم، فيفحص ``huggingface_hub``
+        المخبأ ويرمي E4001 «The cached snapshot … is incomplete»
+        **بالإنجليزية في منتصف التفريغ**، بعد أن استُخرج الصوت وضاع وقت
+        المستخدم. ومخبأٌ ناقص قابلٌ للإصلاح بتنزيلٍ يُكمله، لا عطلٌ
+        يستحقّ إسقاط المهمة.
+
+        بتوحيد التعريف: اللقطة الناقصة = غير متوفّرة ⇒ تُكمَّل بالتنزيل
+        إن أُذن، وإلا خرج للمستخدم نصٌّ عربيّ يقول ما ينقص وأين.
+        """
+        return self.local_path(name) is not None
+
+    def incomplete_path(self, name: str) -> Optional[Path]:
+        """مجلد لقطةٍ لهذا النموذج فيها ``model.bin`` وتنقصها ملفّات.
+
+        يفرّق بين «غير مثبّت» و«مثبّت ناقص»، وهما حالتان مختلفتان
+        تمامًا عند المستخدم: الأولى تنزيلٌ كامل، والثانية إكمالُ ما نقص.
         """
         root = self.cache_root
         if not root.exists():
-            return False
-        return any(_matches_model_dir(path.parent, name)
-                   for path in root.rglob("model.bin"))
+            return None
+        for path in root.rglob("model.bin"):
+            folder = path.parent
+            if _matches_model_dir(folder, name) and not _model_files_present(folder):
+                return folder
+        return None
+
+    def missing_files(self, folder: Path) -> List[str]:
+        """أسماء الملفّات الأساسية الغائبة عن هذا المجلد."""
+        missing = []
+        for name in _MODEL_FILES:
+            try:
+                if not (folder / name).is_file():
+                    missing.append(name)
+            except OSError:
+                missing.append(name)
+        return missing
 
     def local_path(self, name: str) -> Optional[Path]:
         """مجلد النموذج على القرص (فيه ``model.bin``)، أو ``None``.
@@ -203,7 +239,16 @@ class ModelManager:
             logger.info(f"النموذج {name} متوفر محليًا.")
             return self.cache_root
 
+        damaged = self.incomplete_path(name)
         if not allow_download:
+            if damaged is not None:
+                raise ModelUnavailableError(
+                    f"ملفّات النموذج «{spec.label_ar}» ناقصة على القرص.\n"
+                    f"الناقص: {'، '.join(self.missing_files(damaged))}\n"
+                    f"المجلد: {damaged}\n"
+                    "فعّل «السماح بتنزيل النموذج» ليُكمِل البرنامج ما نقص، "
+                    "أو احذف المجلد أعلاه ليُنزَّل من جديد."
+                )
             raise ModelUnavailableError(
                 f"النموذج «{spec.label_ar}» غير مثبّت.\n"
                 f"الحجم المطلوب: ~{spec.approx_size_gb:.1f} جيجابايت.\n"
@@ -219,8 +264,11 @@ class ModelManager:
 
         if progress_callback:
             progress_callback(
-                f"تنزيل النموذج «{spec.label_ar}» (~{spec.approx_size_gb:.1f}GB)… "
-                "يُنفَّذ مرة واحدة فقط.")
+                (f"إكمال ملفّات النموذج «{spec.label_ar}» الناقصة "
+                 f"({'، '.join(self.missing_files(damaged))})…")
+                if damaged is not None else
+                (f"تنزيل النموذج «{spec.label_ar}» "
+                 f"(~{spec.approx_size_gb:.1f}GB)… يُنفَّذ مرة واحدة فقط."))
         logger.info(f"تنزيل النموذج {name} إلى {self.cache_root}")
         self.cache_root.mkdir(parents=True, exist_ok=True)
 
