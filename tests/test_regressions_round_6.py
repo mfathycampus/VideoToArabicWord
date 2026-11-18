@@ -22,9 +22,17 @@ from document.subtitles import build_cues, render_srt, render_vtt
 # 1 · التنزيل الصامت: ``large-v3`` ليس ``large-v3-turbo``
 # ---------------------------------------------------------------------
 def _make_cache(root: Path, model_dir: str) -> None:
+    """لقطةٌ **كاملة**: منذ 1.22.10 الناقصة ليست «متوفّرة».
+
+    كان هنا ``model.bin`` وحده، وهو ما تفحصه هذه الاختبارات أصلًا
+    (المطابقة الدقيقة للاسم) لا اكتمال اللقطة. والاكتمال صار شرطًا
+    بعد أن سقط التفريغ عند مستخدم بلقطةٍ فيها ``model.bin`` وتنقصها
+    ``config.json`` — انظر ``tests/test_model_local_path.py``.
+    """
     target = root / model_dir / "snapshots" / "abc123"
     target.mkdir(parents=True)
-    (target / "model.bin").write_bytes(b"\x00")
+    for name in ("model.bin", "config.json", "tokenizer.json"):
+        (target / name).write_bytes(b"\x00")
 
 
 def test_turbo_in_cache_does_not_mark_large_v3_as_installed(tmp_path):
@@ -48,7 +56,8 @@ def test_large_v3_in_cache_does_not_mark_turbo_as_installed(tmp_path):
 def test_plain_directory_layout_is_recognised(tmp_path):
     """بعض الإعدادات تضع اسم النموذج مجلدًا مباشرًا بلا بادئة HuggingFace."""
     (tmp_path / "medium").mkdir()
-    (tmp_path / "medium" / "model.bin").write_bytes(b"\x00")
+    for name in ("model.bin", "config.json", "tokenizer.json"):
+        (tmp_path / "medium" / name).write_bytes(b"\x00")
     assert ModelManager(tmp_path).is_available("medium") is True
     assert ModelManager(tmp_path).is_available("small") is False
 

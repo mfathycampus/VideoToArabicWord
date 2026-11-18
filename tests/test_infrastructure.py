@@ -215,10 +215,19 @@ def test_no_core_module_imports_torch():
     """
     root = Path(__file__).resolve().parents[1]
     allowed = {"audio/engines/cohere_engine.py"}
+    # شيفرتنا وحدها. البيئة الافتراضية ومجلدات البناء تقع داخل المستودع
+    # على جهاز المطوّر، وفيها ``ctranslate2`` و``onnxruntime`` تستوردان
+    # ‏torch في مُحوِّلاتها — فكان الاختبار يسقط محليًّا وينجح في CI
+    # (لا ``.venv`` هناك). اختبارٌ يفشل حيث لا عطل يُعلَّم المطوّر تجاهلَه،
+    # فيضيع يوم يصدق.
+    skipped = (".venv", "venv", "build", "dist", ".git", "site-packages",
+               "__pycache__", "tests")
     offenders = []
     for path in root.rglob("*.py"):
         relative = path.relative_to(root).as_posix()
-        if relative.startswith("tests/") or relative in allowed:
+        if relative.split("/")[0] in skipped or relative in allowed:
+            continue
+        if any(part in skipped for part in relative.split("/")):
             continue
         text = path.read_text(encoding="utf-8")
         for line in text.splitlines():

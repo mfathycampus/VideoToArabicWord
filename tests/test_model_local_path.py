@@ -178,6 +178,28 @@ def test_the_pipeline_checks_the_model_before_extracting_audio(tmp_path):
     pipeline._require_transcription_model(allow_download=True)
 
 
+def test_an_injected_model_manager_without_the_check_is_not_a_failure():
+    """فحصٌ مبكّر لا بوّابة: البوّابة ``ensure_available`` في مرحلة التفريغ.
+
+    مديرُ نماذج مُحقَن (ADR-008) قد لا يعرض ``is_available``؛ وإسقاطُ عمل
+    المستخدم على واجهةٍ ناقصة في مُحقَنٍ بديل خطأ، فيمضي إلى البوّابة.
+    """
+    from core.pipeline import VideoToDocPipeline
+
+    class _OldStub:
+        def ensure_available(self, *a, **k): ...
+
+    pipeline = VideoToDocPipeline.__new__(VideoToDocPipeline)
+    pipeline.model_manager = _OldStub()
+
+    class _Whisper:
+        engine = "faster-whisper"
+        model_size = "large-v3-turbo"
+
+    pipeline.config = type("C", (), {"whisper": _Whisper()})()
+    pipeline._require_transcription_model(allow_download=False)   # لا يرفع
+
+
 def test_without_a_local_folder_the_name_is_used(tmp_path, monkeypatch):
     pytest.importorskip("faster_whisper")
     from audio import transcriber as module

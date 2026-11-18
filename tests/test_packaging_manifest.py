@@ -16,10 +16,16 @@ def test_wheel_includes_every_source_package():
     find = config["tool"]["setuptools"]["packages"]["find"]
     shipped = set(find_packages(str(ROOT), include=find["include"],
                                 exclude=find.get("exclude", [])))
+    # شيفرتنا وحدها: البيئة الافتراضية تقع داخل المستودع على جهاز
+    # المطوّر، فكان الاختبار يعدّ ثلاثمئة حزمة من ``site-packages``
+    # «لا تُشحن» — يسقط محليًّا وينجح في CI. اختبارٌ يفشل حيث لا عطل
+    # يُعلّم المطوّر تجاهلَه، فيضيع يوم يصدق.
+    skipped = {"tests", "build", "dist", ".git", ".venv", "venv",
+               "site-packages", "__pycache__"}
     on_disk = {
         ".".join(p.parent.relative_to(ROOT).parts)
         for p in ROOT.rglob("__init__.py")
-        if p.parent.relative_to(ROOT).parts[0] not in {"tests", "build", "dist", ".git"}
+        if not (skipped & set(p.parent.relative_to(ROOT).parts))
     }
     assert on_disk <= shipped, f"حزم لا تُشحن: {sorted(on_disk - shipped)}"
     assert "licensing" in shipped and "document.exporters" in shipped

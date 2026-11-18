@@ -496,7 +496,12 @@ class VideoToDocPipeline(MediaStagesMixin, OutputsMixin):
         if not engine.startswith("faster-whisper"):
             return                      # محرّك آخر: أوزان Whisper لا تعنيه
         name = self.config.whisper.model_size
-        if allow_download or self.model_manager.is_available(name):
+        # فحصٌ **مبكّر لا بوّابة**: البوّابة تبقى ``ensure_available`` في
+        # مرحلة التفريغ. ومدير نماذج مُحقَن (ADR-008) قد لا يعرض
+        # ``is_available`` أصلًا — فلا يُسقَط عمل المستخدم على واجهة
+        # ناقصة في مُحقَنٍ بديل، بل يمضي إلى البوّابة الحقيقية.
+        available = getattr(self.model_manager, "is_available", None)
+        if allow_download or available is None or available(name):
             return
         # يرفع ``ModelUnavailableError`` بنصٍّ عربيّ يفرّق بين «غير مثبّت»
         # و«مثبّت ناقص»، ويقول ما ينقص وأين.
